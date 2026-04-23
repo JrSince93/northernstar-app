@@ -3002,92 +3002,185 @@ async function deleteInvoiceFile(ptId, fileIndex) {
 // ══════════════════════════════════════════════
 
 // ── Wise Transfer Fetching ──
-// Helper: parse Wise activities API primaryAmount, which is a formatted string
-// like "- 87.00 AUD" or "<positive>+ 1,234.56 AUD</positive>"
+// Strip HTML tags and collapse whitespace. Wise's activities API returns fields
+// like `title` and `description` with <strong>, <positive>, <negative> wrappers.
+function stripWiseHtml(s) {
+  if(s == null) return '';
+  return String(s).replace(/<[^>]+>/g,' ').replace(/\s+/g,' ').trim();
+}
+
+// Parse a Wise primaryAmount, which may be:
+//   - a number
+//   - an object like { value: 87, currency: "AUD" }
+//   - a formatted string like "- 87.00 AUD", "+ 1,234.56 AUD",
+//     "<positive>+ 1,234.56 AUD</positive>", "<negative>- 87.00 AUD</negative>"
+// Returns { value, sign, currency } where `value` is always the absolute numeric amount.
 function parseWiseFormattedAmount(s) {
-  if(s == null) return { value:0, sign:0 };
-  if(typeof s === 'number') return { value:Math.abs(s), sign: s<0?-1:1 };
-  var str = String(s).replace(/<[^>]+>/g,'').trim(); // strip any HTML tags
-  var signMatch = str.match(/^[+\-−]/); // handle unicode minus too
-  var sign = (signMatch && (signMatch[0]==='-'||signMatch[0]==='−')) ? -1 : 1;
-  // Remove currency codes (3-letter uppercase at end) and any non-numeric/decimal chars
-  var numMatch = str.match(/([\d,]+(?:\.\d+)?)/);
-  if(!numMatch) return { value:0, sign:sign };
+  if(s == null) return { value:0, sign:0, currency:'' };
+  if(typeof s === 'number') {
+    if(isNaN(s)) return { value:0, sign:0, currency:'' };
+    return { value:Math.abs(s), sign: s<0?-1:(s>0?1:0), currency:'' };
+  }
+  if(typeof s === 'object' && s && 'value' in s) {
+    var v = +s.value;
+    if(isNaN(v)) return { value:0, sign:0, currency:s.currency||'' };
+    return { value:Math.abs(v), sign: v<0?-1:(v>0?1:0), currency: s.currency||'' };
+  }
+  var raw = String(s);
+  // Pick up the sign from the HTML wrapper class first, then from a leading +/-.
+  var sign = 0;
+  if(/<negative\b/i.test(raw)) sign = -1;
+  else if(/<positive\b/i.test(raw)) sign = 1;
+  var clean = raw.replace(/<[^>]+>/g,' ').replace(/\s+/g,' ').trim();
+  if(!sign) {
+    if(/^[\-\u2212]/.test(clean)) sign = -1;
+    else if(/^\+/.test(clean)) sign = 1;
+  }
+  var curMatch = clean.match(/\b([A-Z]{3})\b/);
+  var currency = curMatch ? curMatch[1] : '';
+  var numMatch = clean.match(/([\d,]+(?:\.\d+)?)/);
+  if(!numMatch) return { value:0, sign:sign, currency:currency };
   var val = parseFloat(numMatch[1].replace(/,/g,''));
-  if(isNaN(val)) return { value:0, sign:sign };
-  return { value: val, sign: sign };
+  if(isNaN(val)) return { value:0, sign:sign, currency:currency };
+  // If we saw a number but no sign indicator at all, treat as positive.
+  return { value: val, sign: sign || 1, currency: currency };
+}
+
+// Map a transaction from the balance-statement endpoint (clean numeric amount +
+// explicit CREDIT/DEBIT type).
+function mapWiseStatementTx(t) {
+  var amtObj = (t && t.amount) || {};
+  var amtVal = +amtObj.value;
+  if(isNaN(amtVal)) amtVal = 0;
+  var details = (t && t.details) || {};
+  var merchant = details.merchant || {};
+  var typeStr = String(t.type || '').toUpperCase();
+  var detailType = String(details.type || '').toUpperCase();
+  var dir = typeStr === 'CREDIT' ? 'in'
+          : typeStr === 'DEBIT'  ? 'out'
+          : (amtVal > 0 ? 'in' : 'out');
+  var when = String(t.date || '');
+  var absAmt = Math.abs(amtVal);
+  return {
+    id: t.referenceNumber || details.paymentReference || (when + '_' + absAmt),
+    date: when.slice(0,10),
+    amount: absAmt,
+    currency: amtObj.currency || 'AUD',
+    description: stripWiseHtml(details.description || merchant.name || ''),
+    reference: details.paymentReference || '',
+    senderName: stripWiseHtml(details.senderName || ''),
+    recipientName: stripWiseHtml(details.recipientName || merchant.name || ''),
+    direction: dir,
+    status: 'COMPLETED',
+    type: detailType || typeStr
+  };
+}
+
+// Decide direction for an activities endpoint entry. Uses explicit flags first,
+// known one-way activity types next, then the sign parsed from primaryAmount.
+function wiseActivityDirection(a, resource, sign) {
+  var type = String(a.type || '').toUpperCase();
+  var dirHint = String((resource && resource.direction) || a.direction || '').toUpperCase();
+  if(type === 'CREDIT' || dirHint === 'IN' || dirHint === 'INCOMING') return 'in';
+  if(type === 'DEBIT'  || dirHint === 'OUT' || dirHint === 'OUTGOING') return 'out';
+  if(type === 'CARD_PAYMENT' || type === 'DIRECT_DEBIT' || type === 'WITHDRAWAL' ||
+     type === 'FEE' || type === 'BALANCE_CASHBACK_FEE') return 'out';
+  if(type === 'DEPOSIT' || type === 'REFUND' || type === 'INTEREST') return 'in';
+  if(sign > 0) return 'in';
+  if(sign < 0) return 'out';
+  return 'out';
+}
+
+// Map an activity entry. primaryAmount is a formatted string with HTML; we parse
+// it for both the numeric amount AND the sign (which drives direction for TRANSFER).
+function mapWiseActivity(a) {
+  var resource = a.resource || {};
+  var parsed = parseWiseFormattedAmount(a.primaryAmount);
+  // If the resource carries an explicit numeric amount, prefer that value — but
+  // keep the sign from primaryAmount since resource amounts are unsigned.
+  var rawResAmt = resource.sourceAmount != null ? resource.sourceAmount : resource.amount;
+  if(rawResAmt != null) {
+    var fromResource = parseWiseFormattedAmount(rawResAmt);
+    if(fromResource.value > 0) {
+      parsed.value = fromResource.value;
+      if(!parsed.currency && fromResource.currency) parsed.currency = fromResource.currency;
+    }
+  }
+  var dir = wiseActivityDirection(a, resource, parsed.sign);
+  var plainTitle = stripWiseHtml(a.title || '');
+  var plainDesc = stripWiseHtml(a.description || '');
+  var plainSubtitle = stripWiseHtml(a.subtitle || '');
+  var id = resource.id != null ? String(resource.id)
+         : a.id != null ? String(a.id)
+         : (a.createdOn || '') + '_' + parsed.value;
+  return {
+    id: id,
+    date: String(a.createdOn || a.updatedOn || '').slice(0,10),
+    amount: parsed.value,
+    currency: parsed.currency || 'AUD',
+    description: plainDesc || plainTitle || plainSubtitle || '',
+    reference: stripWiseHtml(resource.reference || a.reference || ''),
+    senderName: dir === 'in' ? plainTitle : '',
+    recipientName: dir === 'out' ? plainTitle : '',
+    direction: dir,
+    status: String(a.status || 'COMPLETED').toUpperCase(),
+    type: String(a.type || resource.type || '').toUpperCase()
+  };
 }
 
 async function fetchWiseTransfers() {
   try {
     var since = new Date(); since.setDate(since.getDate()-90);
-    var sinceStr = since.toISOString().slice(0,10)+'T00:00:00.000Z';
+    var sinceStr = since.toISOString().slice(0,10) + 'T00:00:00.000Z';
+    var nowStr = new Date().toISOString();
 
-    // Try STATEMENT endpoint first — it returns clean numeric amounts.
-    // Statement endpoint needs the balance ID, not the profile — but the v3 URL we're using
-    // reads from the default AUD borderless balance. If it works, great.
-    var stmtResp = await fetch(WISE_FN_URL + '?path=v3/profiles/' + WISE_PROFILE_ID + '/borderless-accounts/statement?currency=AUD&intervalStart='+encodeURIComponent(sinceStr)+'&intervalEnd='+encodeURIComponent(new Date().toISOString())+'&type=COMPACT');
-    if(stmtResp.ok) {
-      var stmtData = await stmtResp.json();
-      var txs = stmtData.transactions||[];
-      if(txs.length > 0) {
-        S.wiseTransfers = txs.map(function(t){
-          var amtVal = +((t.amount&&t.amount.value)||0);
-          var rawType = (t.type||'').toUpperCase();
-          return {
-            id: t.referenceNumber||(t.details&&t.details.paymentReference)||String(t.date||'')+'_'+amtVal,
-            date: (t.date||'').slice(0,10),
-            amount: Math.abs(amtVal),
-            currency: t.amount&&t.amount.currency||'AUD',
-            description: (t.details&&(t.details.description||t.details.merchant&&t.details.merchant.name))||'',
-            reference: t.details&&t.details.paymentReference||'',
-            senderName: t.details&&t.details.senderName||'',
-            recipientName: (t.details&&(t.details.recipientName||(t.details.merchant&&t.details.merchant.name)))||'',
-            direction: (t.type==='CREDIT'||amtVal>0)?'in':'out',
-            status: 'COMPLETED',
-            type: rawType
-          };
-        });
-        console.log('[Wise] Loaded '+S.wiseTransfers.length+' transfers from statement endpoint');
-        return;
+    // Step 1: resolve the AUD balance ID — the statement endpoint is keyed on it.
+    var audBalanceId = null;
+    try {
+      var balResp = await fetch(WISE_FN_URL + '?path=' + encodeURIComponent('v4/profiles/' + WISE_PROFILE_ID + '/balances?types=STANDARD'));
+      if(balResp.ok) {
+        var bals = await balResp.json();
+        if(Array.isArray(bals)) {
+          var aud = bals.find(function(b){ return b && b.currency === 'AUD'; });
+          if(aud && aud.id != null) audBalanceId = aud.id;
+        }
       }
+    } catch(e) { console.warn('Wise balance lookup error:', e); }
+
+    // Step 2: prefer the statement endpoint — numeric amounts + explicit CREDIT/DEBIT.
+    if(audBalanceId) {
+      try {
+        var stmtQS = 'currency=AUD&intervalStart=' + encodeURIComponent(sinceStr)
+                   + '&intervalEnd=' + encodeURIComponent(nowStr) + '&type=COMPACT';
+        var stmtPath = 'v1/profiles/' + WISE_PROFILE_ID + '/balance-statements/' + audBalanceId + '/statement.json?' + stmtQS;
+        var stmtResp = await fetch(WISE_FN_URL + '?path=' + encodeURIComponent(stmtPath));
+        if(stmtResp.ok) {
+          var stmtData = await stmtResp.json();
+          var txs = (stmtData && stmtData.transactions) || [];
+          if(txs.length > 0) {
+            try { console.log('[Wise debug] statement first tx:', JSON.stringify(txs[0]).slice(0,800)); } catch(_){}
+            S.wiseTransfers = txs.map(mapWiseStatementTx);
+            console.log('[Wise] Loaded ' + S.wiseTransfers.length + ' transfers from statement endpoint');
+            return;
+          }
+        } else {
+          console.warn('[Wise] statement endpoint HTTP ' + stmtResp.status);
+        }
+      } catch(e) { console.warn('Wise statement error:', e); }
     }
 
-    // Fallback: activities endpoint. primaryAmount is a formatted string; parse carefully.
-    var resp = await fetch(WISE_FN_URL + '?path=v1/profiles/' + WISE_PROFILE_ID + '/activities?since='+encodeURIComponent(sinceStr)+'&size=50');
-    if(!resp.ok) throw new Error('HTTP '+resp.status);
+    // Step 3: fall back to the activities endpoint. primaryAmount is a formatted
+    // string with HTML; parse carefully for both amount and sign/direction.
+    var actPath = 'v1/profiles/' + WISE_PROFILE_ID + '/activities?since=' + sinceStr + '&size=50';
+    var resp = await fetch(WISE_FN_URL + '?path=' + encodeURIComponent(actPath));
+    if(!resp.ok) throw new Error('HTTP ' + resp.status);
     var data = await resp.json();
-    S.wiseTransfers = (data.activities||data||[]).map(function(a){
-      var t = a.resource||{};
-      // Prefer numeric amount on the nested resource if present
-      var numericAmt = +(t.sourceAmount||t.amount||0);
-      var sign = 0;
-      if(!numericAmt && a.primaryAmount) {
-        var parsed = parseWiseFormattedAmount(a.primaryAmount);
-        numericAmt = parsed.value;
-        sign = parsed.sign;
-      }
-      // Direction: prefer explicit API hints, else derive from parsed sign
-      var dirHint = (a.type==='CREDIT'||t.direction==='IN'||sign>0);
-      // Some activities have type like "DEBIT" / "CREDIT"; others have type like "TRANSFER"
-      // with the direction encoded only in the sign of primaryAmount.
-      if(a.type==='DEBIT'||t.direction==='OUT') dirHint = false;
-      return {
-        id: t.id||a.id||'',
-        date: (a.createdOn||a.date||t.created||'').slice(0,10),
-        amount: Math.abs(numericAmt)||0,
-        targetAmount: Math.abs(+(t.targetAmount||0)),
-        currency: t.sourceCurrency||t.currency||'AUD',
-        description: (t.description||a.title||'').replace(/<[^>]+>/g,'').trim(),
-        reference: t.reference||t.paymentReference||'',
-        senderName: t.senderName||'',
-        recipientName: (t.recipientName||a.title||'').replace(/<[^>]+>/g,'').trim(),
-        direction: dirHint?'in':'out',
-        status: (t.status||a.status||'COMPLETED').toUpperCase(),
-        type: (a.type||t.type||'').toUpperCase()
-      };
-    });
-    console.log('[Wise] Loaded '+S.wiseTransfers.length+' transfers from activities endpoint');
+    var activities = (data && data.activities) || (Array.isArray(data) ? data : []) || [];
+    if(activities.length > 0) {
+      try { console.log('[Wise debug] activities first item:', JSON.stringify(activities[0]).slice(0,1200)); } catch(_){}
+    }
+    S.wiseTransfers = activities.map(mapWiseActivity);
+    console.log('[Wise] Loaded ' + S.wiseTransfers.length + ' transfers from activities endpoint');
   } catch(e) {
     console.error('Wise transfers error:', e);
     S.wiseTransfers = [];
