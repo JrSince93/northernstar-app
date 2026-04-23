@@ -3558,6 +3558,7 @@ async function initWiseSync() {
   await fetchWiseTransfers();
   await syncPayRunWiseStatuses();
   await autoImportWiseExpenses();
+  await autoImportWiseIncome();
   if(document.getElementById('page-payroll').classList.contains('active')) renderPR();
   if(document.getElementById('page-invoices').classList.contains('active')) renderInvoices();
 }
@@ -3598,10 +3599,13 @@ async function autoImportWiseExpenses() {
     // Skip: Wise account fees, currency conversions, cashback, and internal transfers
     var desc = (t.description||'').toLowerCase();
     var tType = (t.type||'').toLowerCase();
+    var tTypeUpper = (t.type||'').toUpperCase();
     var recipient = (t.recipientName||'').toLowerCase();
+    var internalTypesOut = ['MONEY_ADDED','TOPPED_UP','CASHBACK','CONVERSION','INTEREST_PAYMENT','BALANCE_TO_BALANCE'];
+    if(internalTypesOut.indexOf(tTypeUpper)!==-1) { skipped.feeOrConv++; continue; }
     if(tType==='conversion'||tType==='fee'||tType==='balance-cashback') { skipped.feeOrConv++; continue; }
     if(desc.indexOf('balance cashback')!==-1||desc.indexOf('cashback')!==-1) { skipped.feeOrConv++; continue; }
-    if(desc.indexOf('wise fee')!==-1||desc.indexOf('transfer fee')!==-1) { skipped.feeOrConv++; continue; }
+    if(desc.indexOf('topped up account')!==-1||desc.indexOf('transferred between')!==-1) { skipped.feeOrConv++; continue; }
     if(recipient==='wise'||desc.indexOf('jar')!==-1) { skipped.feeOrConv++; continue; }
 
     // Skip: matches an existing pay run (amount within 2c, date within 5 days)
@@ -3639,6 +3643,15 @@ async function autoImportWiseExpenses() {
 
     // Create cash book expense
     var txDesc2 = t.recipientName||t.description||'Wise payment';
+    var feeBlob = ((t.description||'')+' '+(t.recipientName||'')).toLowerCase();
+    if(tTypeUpper==='UNKNOWN' && (
+         feeBlob.indexOf('bank details')!==-1 ||
+         feeBlob.indexOf('wise fee')!==-1 ||
+         feeBlob.indexOf('transfer fee')!==-1 ||
+         feeBlob.indexOf('account fee')!==-1 ||
+         feeBlob.indexOf('monthly fee')!==-1)) {
+      txDesc2 = ('Wise Fee - '+txDesc2).slice(0,80);
+    }
     var month = MONTHS[new Date(tDate).getMonth()];
     var ref = 'WISE-'+(wiseRefSuffix||Date.now().toString().slice(-8));
 
@@ -3672,6 +3685,89 @@ async function autoImportWiseExpenses() {
     renderDash();
     if(document.getElementById('page-cashbook').classList.contains('active')) renderCB();
     showToast(imported+' Wise expense(s) added to cash book','ok');
+  }
+}
+
+// ── Auto-import Wise inbound deposits (non-invoice) as cash book income ──
+async function autoImportWiseIncome() {
+  if(!S.wiseTransfers||S.wiseTransfers.length===0) return;
+
+  var inbound = S.wiseTransfers.filter(function(t){ return t.direction==='in'; });
+  console.log('[Wise income-import] '+inbound.length+' inbound transfers to consider');
+  if(inbound.length===0) return;
+
+  var internalTypesIn = ['MONEY_ADDED','TOPPED_UP','CASHBACK','CONVERSION','INTEREST_PAYMENT','BALANCE_TO_BALANCE'];
+  var imported = 0;
+  var skipped = { invoiceMatch:0, alreadyCB:0, internal:0, noData:0, notCompleted:0 };
+
+  for(var i=0; i<inbound.length; i++) {
+    var t = inbound[i];
+    var tAmt = Math.abs(+(t.amount||0));
+    var tDate = t.date||'';
+    var tStatus = (t.status||'').toUpperCase();
+    var tType = (t.type||'').toUpperCase();
+    var descLower = (t.description||'').toLowerCase();
+    var senderLower = (t.senderName||'').toLowerCase();
+
+    console.log('[Wise income-import] transfer', i, 'type='+tType, 'amt='+tAmt, 'date='+tDate,
+                'sender='+(t.senderName||'').slice(0,40), 'status='+tStatus);
+
+    if(!tAmt||tAmt<0.01||!tDate) { skipped.noData++; continue; }
+    if(tStatus && tStatus!=='COMPLETED' && tStatus!=='FUNDS_CONVERTED') { skipped.notCompleted++; continue; }
+    if(internalTypesIn.indexOf(tType)!==-1) { skipped.internal++; continue; }
+    if(descLower.indexOf('topped up account')!==-1||descLower.indexOf('transferred between')!==-1||
+       senderLower.indexOf('topped up account')!==-1||senderLower.indexOf('transferred between')!==-1) {
+      skipped.internal++; continue;
+    }
+
+    var matchedToInvoice = (S.invoiceLedger||[]).some(function(inv){
+      if(inv.wise_transfer_id && inv.wise_transfer_id === t.id) return true;
+      if(inv.status === 'awaiting_payment' && Math.abs((+inv.amount||0) - tAmt) <= 1.00) return true;
+      return false;
+    });
+    if(matchedToInvoice) { skipped.invoiceMatch++; continue; }
+
+    var wiseRefSuffix = (t.id||'').toString().slice(-8);
+    var ref = 'WISE-'+(wiseRefSuffix||Date.now().toString().slice(-8));
+    var alreadyInCB = S.tx.some(function(tx){
+      var txRef = (tx.reference||'').toString();
+      return wiseRefSuffix && txRef.indexOf('WISE-'+wiseRefSuffix)!==-1;
+    });
+    if(alreadyInCB) { skipped.alreadyCB++; continue; }
+
+    var txDesc2 = 'Deposit - '+(t.senderName||t.description||'Unknown');
+    var month = MONTHS[new Date(tDate).getMonth()];
+
+    try {
+      var res = await sb2.from('transactions').insert({
+        month: month,
+        date: tDate,
+        description: txDesc2,
+        payment_type: 'Wise Transfer',
+        reference: ref,
+        amount_in: tAmt,
+        amount_out: 0
+      }).select();
+
+      if(res.error) {
+        console.warn('[Wise income-import] insert error:', res.error.message, 'for', txDesc2);
+        continue;
+      }
+      if(res.data&&res.data[0]) {
+        S.tx.push(res.data[0]);
+        imported++;
+      }
+    } catch(insertErr) {
+      console.warn('[Wise income-import] insert exception:', insertErr);
+    }
+  }
+
+  console.log('[Wise income-import] summary — imported:', imported, 'skipped:', skipped);
+
+  if(imported > 0) {
+    renderDash();
+    if(document.getElementById('page-cashbook').classList.contains('active')) renderCB();
+    showToast(imported+' Wise deposit(s) added to cash book','ok');
   }
 }
 
