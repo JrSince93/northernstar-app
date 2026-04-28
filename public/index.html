@@ -330,10 +330,10 @@ input[type=number]{text-align:right}
   <div class="form-grid">
     <div class="form-row"><div class="field"><label>Full name</label><input type="text" id="e-name" placeholder="Jane Smith"></div><div class="field"><label>Role</label><input type="text" id="e-role" placeholder="Support Worker"></div></div>
     <div class="form-row"><div class="field"><label>Email</label><input type="email" id="e-email"></div><div class="field"><label>Phone</label><input type="text" id="e-phone" placeholder="04xx xxx xxx"></div></div>
-    <div class="form-row"><div class="field"><label>Employment type</label><select id="e-etype"><option>Casual</option><option>Part-time</option><option>Full-time</option></select></div><div class="field"><label>Pay type</label><select id="e-ptype"><option value="hourly">Hourly</option><option value="salary">Salary</option></select></div></div>
-    <div class="form-row"><div class="field"><label>Weekday rate ($/hr)</label><input type="number" id="e-rate" placeholder="32.00" step="0.01" oninput="autoFillRates()"></div><div class="field"><label>Start date</label><input type="date" id="e-start"></div></div>
-    <div class="form-row"><div class="field"><label style="color:#d29922">Saturday rate ($/hr)</label><input type="number" id="e-sat-rate" placeholder="auto 1.5x" step="0.01"></div><div class="field"><label style="color:#f85149">Sunday rate ($/hr)</label><input type="number" id="e-sun-rate" placeholder="auto 2x" step="0.01"></div><div class="field"><label style="color:#bc8cff">Public holiday ($/hr)</label><input type="number" id="e-ph-rate" placeholder="auto 2.25x" step="0.01"></div></div>
-    <div style="font-size:10px;color:var(--text3);margin-top:-4px;margin-bottom:4px">Leave blank to auto-calculate from weekday rate (SCHADS Award)</div>
+    <div class="form-row"><div class="field"><label>Employment type</label><select id="e-etype"><option>Casual</option><option>Part-time</option><option>Full-time</option></select></div><div class="field"><label>Pay type</label><select id="e-ptype" onchange="togglePayTypeFields()"><option value="hourly">Hourly</option><option value="salary">Salary</option></select></div></div>
+    <div class="form-row"><div class="field"><label id="e-rate-label">Weekday rate ($/hr)</label><input type="number" id="e-rate" placeholder="32.00" step="0.01" oninput="autoFillRates()"></div><div class="field"><label>Start date</label><input type="date" id="e-start"></div></div>
+    <div class="form-row" id="e-penalty-rates-row"><div class="field"><label style="color:#d29922">Saturday rate ($/hr)</label><input type="number" id="e-sat-rate" placeholder="auto 1.5x" step="0.01"></div><div class="field"><label style="color:#f85149">Sunday rate ($/hr)</label><input type="number" id="e-sun-rate" placeholder="auto 2x" step="0.01"></div><div class="field"><label style="color:#bc8cff">Public holiday ($/hr)</label><input type="number" id="e-ph-rate" placeholder="auto 2.25x" step="0.01"></div></div>
+    <div id="e-penalty-rates-help" style="font-size:10px;color:var(--text3);margin-top:-4px;margin-bottom:4px">Leave blank to auto-calculate from weekday rate (SCHADS Award)</div>
     <div class="form-row"><div class="field"><label>Tax File Number</label><input type="text" id="e-tfn" placeholder="123 456 789"></div><div class="field"><label>Super fund</label><input type="text" id="e-super" placeholder="AustralianSuper"></div></div>
     <div class="field"><label>ABN (if contractor)</label><input type="text" id="e-abn" placeholder="12 345 678 901"></div>    <div class="form-row"><div class="field"><label>BSB</label><input type="text" id="e-bsb" placeholder="062-000"></div><div class="field"><label>Account number</label><input type="text" id="e-acct" placeholder="12345678"></div></div>
   </div>
@@ -1300,13 +1300,35 @@ function openEmpModal(id){
   eid('e-rate').value=e&&e.pay_rate||'';eid('e-start').value=e&&e.start_date||tod();
   eid('e-etype').value=e&&e.employment_type||'Casual';
   eid('e-ptype').value=e&&e.pay_type||'hourly';
+  togglePayTypeFields();
   eid('m-emp').style.display='block';
+}
+function togglePayTypeFields(){
+  var isSalary=eid('e-ptype').value==='salary';
+  var label=eid('e-rate-label');
+  var rate=eid('e-rate');
+  var row=eid('e-penalty-rates-row');
+  var help=eid('e-penalty-rates-help');
+  if(isSalary){
+    label.textContent='Annual salary ($)';
+    rate.placeholder='65000';
+    row.style.display='none';
+    help.style.display='none';
+    eid('e-sat-rate').value='';
+    eid('e-sun-rate').value='';
+    eid('e-ph-rate').value='';
+  }else{
+    label.textContent='Weekday rate ($/hr)';
+    rate.placeholder='32.00';
+    row.style.display='';
+    help.style.display='';
+  }
 }
 async function saveEmp(){
   // Sanitize all free-text fields against invisible Unicode (bidi marks,
   // ZWSP, BOM) that ride along when pasting from PDFs/Word. These are
   // invisible everywhere but break TFN/ABN/BSB validation downstream.
-  var row={name:stripInvisibles(eid('e-name').value),role:stripInvisibles(eid('e-role').value),email:stripInvisibles(eid('e-email').value),phone:stripInvisibles(eid('e-phone').value),employment_type:eid('e-etype').value,pay_type:eid('e-ptype').value,pay_rate:parseFloat(eid('e-rate').value)||0,start_date:eid('e-start').value||null,tax_file_number:stripInvisibles(eid('e-tfn').value),super_fund:stripInvisibles(eid('e-super').value),bank_bsb:stripInvisibles(eid('e-bsb').value),bank_account:stripInvisibles(eid('e-acct').value),abn:stripInvisibles(eid('e-abn').value),sat_rate:parseFloat(eid('e-sat-rate').value)||null,sun_rate:parseFloat(eid('e-sun-rate').value)||null,ph_rate:parseFloat(eid('e-ph-rate').value)||null,active:true};
+  var row={name:stripInvisibles(eid('e-name').value),role:stripInvisibles(eid('e-role').value),email:stripInvisibles(eid('e-email').value),phone:stripInvisibles(eid('e-phone').value),employment_type:eid('e-etype').value,pay_type:eid('e-ptype').value,pay_rate:parseFloat(eid('e-rate').value)||0,start_date:eid('e-start').value||null,tax_file_number:stripInvisibles(eid('e-tfn').value),super_fund:stripInvisibles(eid('e-super').value),bank_bsb:stripInvisibles(eid('e-bsb').value),bank_account:stripInvisibles(eid('e-acct').value),abn:stripInvisibles(eid('e-abn').value),sat_rate:eid('e-ptype').value==='salary'?null:(parseFloat(eid('e-sat-rate').value)||null),sun_rate:eid('e-ptype').value==='salary'?null:(parseFloat(eid('e-sun-rate').value)||null),ph_rate:eid('e-ptype').value==='salary'?null:(parseFloat(eid('e-ph-rate').value)||null),active:true};
   if(!row.name){showToast('Name required','err');return;}
   setSync('saving');
   var res;
