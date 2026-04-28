@@ -2261,15 +2261,32 @@ function doExportPaymentFile(platform, periodStartStr, periodEndStr) {
       count++;
     });
   } else if(platform === 'wise') {
-    csv = 'recipient_name,account_number,bsb_code,amount,currency,reference\n';
+    var wiseCsvCell = function(v){
+      var s = stripInvisibles(v == null ? '' : String(v));
+      if(/[",\n\r]/.test(s)) return '"' + s.replace(/"/g,'""') + '"';
+      return s;
+    };
+    var wiseRef = stripInvisibles('Wages ' + periodStartStr + ' to ' + periodEndStr).slice(0, 21);
+    var wiseLines = ['name,recipientEmail,paymentReference,receiverType,amountCurrency,amount,sourceCurrency,targetCurrency,accountNumber,bsbCode'];
     runs.forEach(function(r){
       var emp = S.emps.find(function(e){ return e.id === r.employee_id; });
       if(!emp) return;
       if(!emp.bank_account || !emp.bank_bsb){ missing.push(emp.name); return; }
-      csv += ['"'+(emp.name||'')+'"',emp.bank_account,emp.bank_bsb.replace(/-/g,''),
-        parseFloat(r.net_pay||0).toFixed(2),'AUD','"Wages '+periodStartStr+' to '+periodEndStr+'"'].join(',') + '\n';
+      wiseLines.push([
+        wiseCsvCell(emp.name||''),
+        '',
+        wiseCsvCell(wiseRef),
+        'PERSON',
+        'target',
+        wiseCsvCell(parseFloat(r.net_pay||0).toFixed(2)),
+        'AUD',
+        'AUD',
+        wiseCsvCell(String(emp.bank_account||'').replace(/\s+/g,'')),
+        wiseCsvCell(String(emp.bank_bsb||'').replace(/-/g,''))
+      ].join(','));
       count++;
     });
+    csv = wiseLines.join('\r\n') + '\r\n';
   } else {
     csv = 'Employee Name,Bank BSB,Account Number,Amount (AUD),Currency,Payment Reference,Period Start,Period End,Employment Type,Hourly Rate,Hours Worked,Gross Pay,PAYG Withheld,Super (11.5%),Net Pay\n';
     runs.forEach(function(r){
