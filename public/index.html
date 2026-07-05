@@ -376,6 +376,15 @@ input[type=number]{text-align:right}
       <div id="pr-day-grid-body" style="display:grid;grid-template-columns:repeat(7,1fr);gap:4px"></div>
       <div style="display:flex;justify-content:space-between;margin-top:8px;font-size:11px;color:var(--text3)"><span>Total: <b id="pr-day-total" style="color:var(--text)">0</b>h</span></div>
     </div>
+    <!-- Sleepover shifts (SCHADS Award) — always visible for hourly pay runs -->
+    <div id="pr-sleep-box" style="background:rgba(188,140,255,0.07);border:1px solid rgba(188,140,255,0.25);border-radius:var(--r);padding:12px">
+      <div style="font-size:10px;font-weight:700;color:#bc8cff;text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px">Sleepover shifts (SCHADS)</div>
+      <div class="form-row">
+        <div class="field"><label>Sleepover shifts this period</label><input type="number" id="pr-sleep-shifts" value="0" min="0" step="1" oninput="calcPay()" style="width:100%"></div>
+        <div class="field"><label>Active min per shift <span style="font-size:10px;color:var(--text3)">(overtime; min 1 hr if &gt;0)</span></label><input type="number" id="pr-sleep-active-min" value="0" min="0" max="480" step="5" oninput="calcPay()" style="width:100%"></div>
+      </div>
+      <div style="font-size:10px;color:var(--text3)">$58.69 SCHADS allowance per shift + overtime rate for active minutes. Not counted in regular hours.</div>
+    </div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:4px"><label style="display:flex;align-items:center;gap:10px;background:var(--bg4);border:1px solid var(--border2);border-radius:var(--r);padding:10px 14px;cursor:pointer;user-select:none"><input type="checkbox" id="pr-payg-on" checked onchange="calcPay()" class="cb-circle"><span style="font-size:12px;color:var(--text2)">Withhold PAYG tax</span></label><label style="display:flex;align-items:center;gap:10px;background:var(--bg4);border:1px solid var(--border2);border-radius:var(--r);padding:10px 14px;cursor:pointer;user-select:none"><input type="checkbox" id="pr-super-on" checked onchange="calcPay()" class="cb-circle"><span style="font-size:12px;color:var(--text2)">Include super</span></label></div>
     <div class="pay-breakdown">
       <div id="pp-day-breakdown" style="margin-bottom:8px;padding-bottom:8px;border-bottom:1px solid var(--border)"></div>
@@ -546,6 +555,28 @@ input[type=number]{text-align:right}
 
       <div class="field"><label>Notes</label><textarea id="pt-notes" placeholder="Support needs, preferences, goals..." style="height:60px"></textarea></div>
 
+      <!-- Sleepover configuration -->
+      <div class="field" style="border-top:1px solid var(--border);padding-top:10px;margin-top:4px">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+          <label style="margin:0;color:#bc8cff;font-weight:600">Sleepover shifts <span style="font-size:10px;font-weight:400;color:var(--text3)">(inactive overnight — excluded from active hour totals)</span></label>
+          <span id="pt-sleep-badge" style="font-size:10px;background:rgba(188,140,255,.15);color:#bc8cff;padding:2px 8px;border-radius:10px;font-weight:600;display:none"></span>
+        </div>
+        <div style="font-size:10px;color:var(--text3);margin-bottom:8px">Tick which nights this participant has sleepovers. Billed at the NDIS flat sleepover rate — NOT as active hourly support.</div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px">
+          <label style="display:flex;flex-direction:column;align-items:center;gap:3px;cursor:pointer;background:var(--bg4);border:1px solid var(--border2);border-radius:var(--r);padding:5px 9px;min-width:42px"><input type="checkbox" class="cb-circle pt-sleep-day-cb" data-dow="0" onchange="updateSleepBadge()"><span style="font-size:10px;color:var(--text2)">Sun</span></label>
+          <label style="display:flex;flex-direction:column;align-items:center;gap:3px;cursor:pointer;background:var(--bg4);border:1px solid var(--border2);border-radius:var(--r);padding:5px 9px;min-width:42px"><input type="checkbox" class="cb-circle pt-sleep-day-cb" data-dow="1" onchange="updateSleepBadge()"><span style="font-size:10px;color:var(--text2)">Mon</span></label>
+          <label style="display:flex;flex-direction:column;align-items:center;gap:3px;cursor:pointer;background:var(--bg4);border:1px solid var(--border2);border-radius:var(--r);padding:5px 9px;min-width:42px"><input type="checkbox" class="cb-circle pt-sleep-day-cb" data-dow="2" onchange="updateSleepBadge()"><span style="font-size:10px;color:var(--text2)">Tue</span></label>
+          <label style="display:flex;flex-direction:column;align-items:center;gap:3px;cursor:pointer;background:var(--bg4);border:1px solid var(--border2);border-radius:var(--r);padding:5px 9px;min-width:42px"><input type="checkbox" class="cb-circle pt-sleep-day-cb" data-dow="3" onchange="updateSleepBadge()"><span style="font-size:10px;color:var(--text2)">Wed</span></label>
+          <label style="display:flex;flex-direction:column;align-items:center;gap:3px;cursor:pointer;background:var(--bg4);border:1px solid var(--border2);border-radius:var(--r);padding:5px 9px;min-width:42px"><input type="checkbox" class="cb-circle pt-sleep-day-cb" data-dow="4" onchange="updateSleepBadge()"><span style="font-size:10px;color:var(--text2)">Thu</span></label>
+          <label style="display:flex;flex-direction:column;align-items:center;gap:3px;cursor:pointer;background:var(--bg4);border:1px solid var(--border2);border-radius:var(--r);padding:5px 9px;min-width:42px"><input type="checkbox" class="cb-circle pt-sleep-day-cb" data-dow="5" onchange="updateSleepBadge()"><span style="font-size:10px;color:var(--text2)">Fri</span></label>
+          <label style="display:flex;flex-direction:column;align-items:center;gap:3px;cursor:pointer;background:var(--bg4);border:1px solid var(--border2);border-radius:var(--r);padding:5px 9px;min-width:42px"><input type="checkbox" class="cb-circle pt-sleep-day-cb" data-dow="6" onchange="updateSleepBadge()"><span style="font-size:10px;color:var(--text2)">Sat</span></label>
+        </div>
+        <div class="form-row">
+          <div class="field"><label>Active min per shift <span style="font-size:10px;color:var(--text3)">(during 8-hr span; &gt;120 triggers overflow billing)</span></label><input type="number" id="pt-sleep-active-min" value="0" min="0" max="480" step="5" placeholder="0" style="width:100%"></div>
+          <div class="field"><label>Hrs outside 8-hr span per shift <span style="font-size:10px;color:var(--text3)">(billed at active support rate)</span></label><input type="number" id="pt-sleep-outside-hrs" value="0" min="0" max="8" step="0.5" placeholder="0" style="width:100%"></div>
+        </div>
+      </div>
+
       <!-- Budget lines repeater -->
       <div class="field" style="border-top:1px solid var(--border);padding-top:12px;margin-top:4px">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
@@ -613,6 +644,31 @@ input[type=number]{text-align:right}
     </div>
     <!-- Dynamic hour inputs — populated by ndisInvApplyBudgetLineDefaults() -->
     <div id="ndis-inv-hrs-section"></div>
+    <!-- Sleepover section — shown when participant has sleepover_config days -->
+    <div id="ndis-inv-sleep-section" style="display:none;background:rgba(188,140,255,0.07);border:1px solid rgba(188,140,255,0.25);border-radius:var(--r);padding:12px;margin-top:4px">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+        <div style="font-size:10px;font-weight:700;color:#bc8cff;text-transform:uppercase;letter-spacing:.05em">Sleepover billing</div>
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:11px;color:var(--text2)"><input type="checkbox" id="ii-sleep-enabled" class="cb-circle" checked onchange="calcNdisInvSleepCount()"> Include sleepover shifts</label>
+      </div>
+      <div class="form-row">
+        <div class="field"><label>Shifts in period <span style="font-size:10px;color:var(--text3)">(auto-counted)</span></label><input type="number" id="ii-sleep-shifts" value="0" min="0" step="1" style="width:100%"></div>
+        <div class="field"><label>Outside-span hrs per shift</label><input type="number" id="ii-sleep-outside-hrs" value="0" min="0" max="8" step="0.5" style="width:100%"></div>
+      </div>
+      <div class="form-row">
+        <div class="field"><label>Active min per shift <span style="font-size:10px;color:var(--text3)">(overflow if &gt;120)</span></label><input type="number" id="ii-sleep-active-min" value="0" min="0" max="480" step="5" style="width:100%"></div>
+        <div class="field"><label>Day type for outside-span hrs</label>
+          <select id="ii-sleep-day-type" style="width:100%">
+            <option value="weekday">Weekday (daytime)</option>
+            <option value="evening" selected>Weekday Evening (9pm default)</option>
+            <option value="night">Weekday Night</option>
+            <option value="saturday">Saturday</option>
+            <option value="sunday">Sunday</option>
+            <option value="public_holiday">Public Holiday</option>
+          </select>
+        </div>
+      </div>
+      <div style="font-size:10px;color:var(--text3)">Flat $297.60/shift. Outside-span hrs at active support rate. Overflow (&gt;2 hrs active) at Sat rate (weekday) or applicable day rate (Sat/Sun/PH).</div>
+    </div>
     <div class="form-row" id="ndis-inv-travel-row">
       <div class="field"><label>Travel km (round trip)</label><input type="number" id="ndis-inv-km" value="14" min="0" step="1"></div>
       <div class="field"><label>Travel time (min each way)</label><input type="number" id="ndis-inv-travelmin" value="10" min="0" step="1"></div>
@@ -686,6 +742,19 @@ function getSuperRate(periodEnd){
   return (periodEnd && periodEnd >= '2026-07-01') ? 0.12 : 0.115;
 }
 var SUPER_RATE = 0.115; // legacy constant — use getSuperRate(periodEnd) wherever period is known
+// ── NDIS Sleepover (PAPL 2025-26) ───────────────────────────────────────────────────────────────────────
+// Flat rate per inactive overnight shift (MMM 1-5). Named constant — do NOT hardcode.
+var NDIS_SLEEPOVER_SHIFT_RATE = 297.60;
+// Active support hours INCLUDED in the flat rate before overflow billing triggers.
+var NDIS_SLEEPOVER_ACTIVE_INCLUDED_HRS = 2;
+// Overflow for weekday shifts billed at the Saturday active-support rate per PAPL.
+// Saturday/Sunday/PH shifts use the applicable day rate (from the budget line).
+// Placeholder NDIS codes — verify against current NDIS Support Catalogue before submitting.
+var NDIS_SLEEPOVER_CODES = {core:'01_020_0107_1_1',sil:'01_820_0138_1_1',community:'01_020_0107_1_1',employment:'01_020_0107_1_1',custom:'01_020_0107_1_1'};
+// SCHADS Award: flat allowance per overnight shift (not per hour).
+var SCHADS_SLEEPOVER_ALLOWANCE = 58.69;
+// Minimum overtime hours paid for any active work performed during a sleepover shift.
+var SCHADS_SLEEPOVER_ACTIVE_MIN_HRS = 1;
 var pendingExportPlatform = null;
 var S = {tx:[],emps:[],runs:[],participants:[],dd:{description:[],type:[]},curMonth:new Date().getMonth(),editEmpId:null,ddField:null,ddTargetId:null,ch:{},wiseTransfers:[],invoiceLedger:[],_lastGenInvoice:null};
 
@@ -1064,7 +1133,9 @@ function renderDash(){
         var st=getParticipantStatus(p);
         var hasCfl=cfls.some(function(c){return(p.assigned_workers||[]).some(function(wid){var emp=S.emps.find(function(e){return e.id===wid;});return emp&&emp.name===c.worker;});});
         var roster=p.roster||{};var rostered=0;
-        (p.assigned_workers||[]).forEach(function(wid){var wr=roster[wid]||{};['Sun','Mon','Tue','Wed','Thu','Fri','Sat'].forEach(function(d){rostered+=parseFloat(wr[d]||0);});});
+        var scP=(p.sleepover_config)||{};var slDaysP=Array.isArray(scP.days)?scP.days:[];
+        var slDayNamesP=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'].filter(function(_,i){return slDaysP.indexOf(i)!==-1;});
+        (p.assigned_workers||[]).forEach(function(wid){var wr=roster[wid]||{};['Sun','Mon','Tue','Wed','Thu','Fri','Sat'].forEach(function(d){if(slDayNamesP.indexOf(d)===-1)rostered+=parseFloat(wr[d]||0);});});
         return '<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)">'
           +'<div style="width:10px;height:10px;border-radius:50%;background:'+stC[st]+';flex-shrink:0"></div>'
           +'<div style="flex:1"><div style="font-size:12px;font-weight:600">'+p.name+'</div>'
@@ -1369,6 +1440,8 @@ function openPayModal(){
   if(eid('pr-hol-hrs'))eid('pr-hol-hrs').value='';
   if(eid('pr-hol-rate'))eid('pr-hol-rate').value='';
   if(eid('pr-holiday-box'))eid('pr-holiday-box').style.display='none';
+  if(eid('pr-sleep-shifts'))eid('pr-sleep-shifts').value='0';
+  if(eid('pr-sleep-active-min'))eid('pr-sleep-active-min').value='0';
   eid('pr-period-display').textContent='\u{1F4C5} Click to select pay period...';
   eid('pr-period-display').style.color='var(--text3)';
   eid('pr-multi-wrap').style.display='none';
@@ -1666,6 +1739,22 @@ function calcPay(){
     if(holHrs>0){var hg=holHrs*holRate;gross+=hg;breakdown.push({label:'Public holiday',hrs:holHrs,rate:holRate,amt:hg});}
   }
 
+  // Sleepover shifts (SCHADS Award) — flat allowance + overtime for active minutes.
+  // Active minutes >=1 attract overtime at 1.5x base, minimum 1 hour per shift.
+  var sleepShifts=parseFloat((eid('pr-sleep-shifts')||{value:'0'}).value)||0;
+  if(sleepShifts>0 && empType!=='salary'){
+    var sleepAllow=+(sleepShifts*SCHADS_SLEEPOVER_ALLOWANCE).toFixed(2);
+    gross+=sleepAllow;
+    breakdown.push({label:'Sleepover allowance ('+sleepShifts+' shift'+(sleepShifts!==1?'s':'')+')',hrs:'',rate:'',amt:sleepAllow,isSleep:true});
+    var sleepActMin=parseFloat((eid('pr-sleep-active-min')||{value:'0'}).value)||0;
+    if(sleepActMin>0){
+      var sleepActHrsPerShift=Math.max(SCHADS_SLEEPOVER_ACTIVE_MIN_HRS,+(sleepActMin/60).toFixed(2));
+      var sleepOTRate=+(baseRate*1.5).toFixed(2);
+      var sleepActTotal=+(sleepShifts*sleepActHrsPerShift*sleepOTRate).toFixed(2);
+      gross+=sleepActTotal;
+      breakdown.push({label:'Sleepover active work ('+sleepShifts+'×'+sleepActHrsPerShift.toFixed(1)+'h @ $'+sleepOTRate+'/hr OT)',hrs:+(sleepShifts*sleepActHrsPerShift).toFixed(2),rate:sleepOTRate,amt:sleepActTotal,isSleep:true});
+    }
+  }
   gross=+gross.toFixed(2);
   var annualEq=empType==='salary'?baseRate:gross*26;
   var periodTax=paygOn?+(paygCalc(annualEq)/26).toFixed(2):0;
@@ -1679,9 +1768,10 @@ function calcPay(){
       dbEl.innerHTML='';
     } else {
       dbEl.innerHTML=breakdown.map(function(b){
-        return '<div class="pay-line" style="font-size:11px;color:var(--text3)">'
+        var clr=b.isSleep?'#bc8cff':'var(--text3)';
+        return '<div class="pay-line" style="font-size:11px;color:'+clr+'">'
           +'<span>'+b.label+(b.hrs?(' — '+b.hrs+'h @ $'+parseFloat(b.rate).toFixed(2)+'/hr'):'')+'</span>'
-          +'<span style="color:var(--text2)">'+fmt(b.amt)+'</span>'
+          +'<span style="color:'+(b.isSleep?'#bc8cff':'var(--text2)')+'">'+fmt(b.amt)+'</span>'
           +'</div>';
       }).join('');
     }
@@ -1743,6 +1833,13 @@ async function savePayRun(){
 
   setSync('saving');
   var insertRow={employee_id:sel.value,period_start:s,period_end:e,hours_worked:hrs,gross_pay:p.gross,tax_withheld:p.tax,super_amount:p.sup,net_pay:p.net,status:'processed',wise_status:'pending',paid_date:e};
+  // Append sleepover meta-entry to dayBreakdown so the payslip can render it correctly.
+  var prSleepShifts=parseFloat((eid('pr-sleep-shifts')||{value:'0'}).value)||0;
+  if(prSleepShifts>0){
+    var prSleepActMin=parseFloat((eid('pr-sleep-active-min')||{value:'0'}).value)||0;
+    if(!dayBreakdown) dayBreakdown=[];
+    dayBreakdown.push({type:'sleepover_meta',shifts:prSleepShifts,active_minutes:prSleepActMin});
+  }
   if(dayBreakdown) insertRow.day_breakdown=dayBreakdown;
   var res=await sb2.from('pay_runs').insert(insertRow).select();
   // If the day_breakdown column doesn't exist yet, retry without it. Run this
@@ -2428,8 +2525,15 @@ function genPayslip(id) {
       // what was paid for (specific dates, hours, types) — independent of any
       // later roster edits. Falls back to roster reconstruction for old pay
       // runs that pre-date the column or were saved before it was added.
+      // Extract sleepover meta entry before rendering regular day lines
+      var sleepMeta = null;
+      if(Array.isArray(run.day_breakdown)){
+        var sMeta = run.day_breakdown.filter(function(d){ return d.type==='sleepover_meta'; });
+        if(sMeta.length) sleepMeta = sMeta[0];
+      }
       if(Array.isArray(run.day_breakdown) && run.day_breakdown.length>0){
         run.day_breakdown.forEach(function(d){
+          if(d.type==='sleepover_meta') return; // handled separately below
           if(!d.worked) return; // unticked days don't appear on paystub
           var ds=d.date, isH=!!VIC_HOLIDAYS[ds];
           var rate, rType;
@@ -2456,8 +2560,29 @@ function genPayslip(id) {
   var gross=parseFloat(run.gross_pay)||0,tax=parseFloat(run.tax_withheld)||0,sup=parseFloat(run.super_amount)||0,net=parseFloat(run.net_pay)||0;
   var superPct=Math.round(getSuperRate(periodEnd)*1000)/10; // e.g. 11.5 or 12
   var superLabel='Super ('+superPct+'%)';
+  // Build sleepover payslip rows if present
+  var sleepRows='';
+  if(sleepMeta && sleepMeta.shifts>0){
+    var br2=parseFloat(emp.pay_rate)||0;
+    var sAllow=+(sleepMeta.shifts*SCHADS_SLEEPOVER_ALLOWANCE).toFixed(2);
+    sleepRows+='<tr style="background:rgba(188,140,255,0.07)">'
+      +'<td colspan="3" style="padding:6px 10px;border-bottom:1px solid #f0f0f0;font-size:12px;color:#6b21a8;font-weight:600">Sleepover allowance — '+sleepMeta.shifts+' shift'+(sleepMeta.shifts!==1?'s':'')+'</td>'
+      +'<td style="padding:6px 10px;border-bottom:1px solid #f0f0f0;font-size:12px;text-align:right;color:#6b21a8">'+(sleepMeta.shifts)+' sh</td>'
+      +'<td style="padding:6px 10px;border-bottom:1px solid #f0f0f0;font-size:12px;text-align:right;color:#6b21a8">$'+SCHADS_SLEEPOVER_ALLOWANCE.toFixed(2)+'</td>'
+      +'<td style="padding:6px 10px;border-bottom:1px solid #f0f0f0;font-size:12px;text-align:right;font-weight:600;color:#6b21a8">$'+sAllow.toFixed(2)+'</td></tr>';
+    if(sleepMeta.active_minutes>0){
+      var sActHrs=Math.max(SCHADS_SLEEPOVER_ACTIVE_MIN_HRS,+(sleepMeta.active_minutes/60).toFixed(2));
+      var sOTRate=+(br2*1.5).toFixed(2);
+      var sActAmt=+(sleepMeta.shifts*sActHrs*sOTRate).toFixed(2);
+      sleepRows+='<tr style="background:rgba(188,140,255,0.05)">'
+        +'<td colspan="3" style="padding:6px 10px;border-bottom:1px solid #f0f0f0;font-size:12px;color:#7c3aed">Sleepover active work — overtime ('+sleepMeta.shifts+'×'+sActHrs.toFixed(1)+'h)</td>'
+        +'<td style="padding:6px 10px;border-bottom:1px solid #f0f0f0;font-size:12px;text-align:right;color:#7c3aed">'+(+(sleepMeta.shifts*sActHrs).toFixed(2))+'h</td>'
+        +'<td style="padding:6px 10px;border-bottom:1px solid #f0f0f0;font-size:12px;text-align:right;color:#7c3aed">$'+sOTRate.toFixed(2)+'</td>'
+        +'<td style="padding:6px 10px;border-bottom:1px solid #f0f0f0;font-size:12px;text-align:right;font-weight:600;color:#7c3aed">$'+sActAmt.toFixed(2)+'</td></tr>';
+    }
+  }
   var dr=dayLines.map(function(d){var bg=d.hol?'rgba(248,81,73,0.06)':d.type==='Saturday'||d.type==='Sunday'?'rgba(210,153,34,0.06)':'transparent';if(d.salary){return '<tr style="background:'+bg+'"><td style="padding:6px 10px;border-bottom:1px solid #f0f0f0;font-size:12px">'+d.date+'</td><td style="padding:6px 10px;border-bottom:1px solid #f0f0f0;font-size:12px;font-weight:600">'+d.day+'</td><td style="padding:6px 10px;border-bottom:1px solid #f0f0f0;font-size:12px;color:'+(d.hol?'#dc2626':'#555')+'">'+d.type+(d.hol?' ('+d.hol+')':'')+'</td><td colspan="3" style="padding:6px 10px;border-bottom:1px solid #f0f0f0;font-size:12px;text-align:center;font-weight:600;color:#15803d">Worked</td></tr>';}return '<tr style="background:'+bg+'"><td style="padding:6px 10px;border-bottom:1px solid #f0f0f0;font-size:12px">'+d.date+'</td><td style="padding:6px 10px;border-bottom:1px solid #f0f0f0;font-size:12px;font-weight:600">'+d.day+'</td><td style="padding:6px 10px;border-bottom:1px solid #f0f0f0;font-size:12px;color:'+(d.hol?'#dc2626':'#555')+'">'+d.type+(d.hol?' ('+d.hol+')':'')+'</td><td style="padding:6px 10px;border-bottom:1px solid #f0f0f0;font-size:12px;text-align:right">'+d.hrs.toFixed(1)+'h</td><td style="padding:6px 10px;border-bottom:1px solid #f0f0f0;font-size:12px;text-align:right">$'+d.rate.toFixed(2)+'</td><td style="padding:6px 10px;border-bottom:1px solid #f0f0f0;font-size:12px;text-align:right;font-weight:600">$'+d.amt.toFixed(2)+'</td></tr>';}).join('');
-  var h='<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Payslip - '+emp.name+'</title><style>body{font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;margin:0;padding:0;background:#fff;color:#1a1a1a}.page{max-width:720px;margin:0 auto;padding:40px}@media print{.page{padding:20px}}</style></head><body><div class="page"><div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:28px;padding-bottom:20px;border-bottom:2px solid #1a1a1a"><div><div style="font-size:18px;font-weight:700;margin-bottom:4px">Northern Star Support Services</div><div style="font-size:12px;color:#555;line-height:1.6">Falaax Group Pty Ltd<br>ABN: 22 671 393 070<br>12 Dimboola Rd, Broadmeadows VIC 3064<br>Phone: 03 7057 1645</div></div><div style="text-align:right"><div style="font-size:11px;color:#888;text-transform:uppercase;letter-spacing:.05em">Payslip</div><div style="font-size:18px;font-weight:700">'+refNo+'</div><div style="font-size:12px;color:#888;margin-top:6px">Paid: '+paidDate+'</div></div></div><div style="background:#f8f9fa;border:1px solid #e5e5e5;border-radius:8px;padding:16px;margin-bottom:20px"><div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:13px"><div><span style="color:#888">Name:</span> <b>'+emp.name+'</b></div><div><span style="color:#888">Role:</span> '+(emp.role||'--')+'</div><div><span style="color:#888">Employment:</span> '+(emp.employment_type||'--')+'</div><div><span style="color:#888">Period:</span> '+periodStart+' to '+periodEnd+'</div></div></div><div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:#888;margin-bottom:8px">Days Worked</div><table style="width:100%;border-collapse:collapse;margin-bottom:20px"><thead><tr style="background:#f0f0f0"><th style="padding:8px 10px;text-align:left;font-size:10px;font-weight:700;text-transform:uppercase;color:#666">Date</th><th style="padding:8px 10px;text-align:left;font-size:10px;font-weight:700;text-transform:uppercase;color:#666">Day</th><th style="padding:8px 10px;text-align:left;font-size:10px;font-weight:700;text-transform:uppercase;color:#666">Type</th><th style="padding:8px 10px;text-align:right;font-size:10px;font-weight:700;text-transform:uppercase;color:#666">Hours</th><th style="padding:8px 10px;text-align:right;font-size:10px;font-weight:700;text-transform:uppercase;color:#666">Rate</th><th style="padding:8px 10px;text-align:right;font-size:10px;font-weight:700;text-transform:uppercase;color:#666">Amount</th></tr></thead><tbody>'+dr+'</tbody></table><div style="display:flex;justify-content:flex-end;margin-bottom:20px"><div style="width:280px"><div style="display:flex;justify-content:space-between;padding:6px 0;font-size:13px"><span>Gross pay</span><span style="font-weight:600">$'+gross.toFixed(2)+'</span></div>'+(tax>0?'<div style="display:flex;justify-content:space-between;padding:6px 0;font-size:13px;color:#dc2626"><span>PAYG tax withheld</span><span>-$'+tax.toFixed(2)+'</span></div>':'<div style="display:flex;justify-content:space-between;padding:6px 0;font-size:13px;color:#888"><span>PAYG tax</span><span>Not withheld</span></div>')+'<div style="display:flex;justify-content:space-between;padding:6px 0;font-size:13px;color:#d97706"><span>'+superLabel+'</span><span>$'+sup.toFixed(2)+'</span></div><div style="display:flex;justify-content:space-between;padding:10px 0;font-size:16px;font-weight:700;border-top:2px solid #1a1a1a;margin-top:4px;color:#15803d"><span>Net pay to bank</span><span>$'+net.toFixed(2)+'</span></div></div></div>'+(bsb?'<div style="background:#f0f9f4;border:2px solid #22c55e;border-radius:10px;padding:16px;text-align:center;margin-bottom:20px"><div style="font-size:11px;font-weight:700;text-transform:uppercase;color:#16a34a;margin-bottom:6px">Deposited to your account</div><div style="font-size:13px;color:#15803d">BSB: '+bsb+' | Account: '+acctMask+'</div><div style="font-size:24px;font-weight:700;color:#15803d;margin-top:8px">$'+net.toFixed(2)+'</div></div>':'')+'<div style="margin-top:30px;padding-top:16px;border-top:1px solid #e5e5e5;font-size:11px;color:#aaa;text-align:center;line-height:1.6">Northern Star Support Services - Falaax Group Pty Ltd - ABN 22 671 393 070</div></div></body></html>';
+  var h='<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Payslip - '+emp.name+'</title><style>body{font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;margin:0;padding:0;background:#fff;color:#1a1a1a}.page{max-width:720px;margin:0 auto;padding:40px}@media print{.page{padding:20px}}</style></head><body><div class="page"><div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:28px;padding-bottom:20px;border-bottom:2px solid #1a1a1a"><div><div style="font-size:18px;font-weight:700;margin-bottom:4px">Northern Star Support Services</div><div style="font-size:12px;color:#555;line-height:1.6">Falaax Group Pty Ltd<br>ABN: 22 671 393 070<br>12 Dimboola Rd, Broadmeadows VIC 3064<br>Phone: 03 7057 1645</div></div><div style="text-align:right"><div style="font-size:11px;color:#888;text-transform:uppercase;letter-spacing:.05em">Payslip</div><div style="font-size:18px;font-weight:700">'+refNo+'</div><div style="font-size:12px;color:#888;margin-top:6px">Paid: '+paidDate+'</div></div></div><div style="background:#f8f9fa;border:1px solid #e5e5e5;border-radius:8px;padding:16px;margin-bottom:20px"><div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:13px"><div><span style="color:#888">Name:</span> <b>'+emp.name+'</b></div><div><span style="color:#888">Role:</span> '+(emp.role||'--')+'</div><div><span style="color:#888">Employment:</span> '+(emp.employment_type||'--')+'</div><div><span style="color:#888">Period:</span> '+periodStart+' to '+periodEnd+'</div></div></div><div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:#888;margin-bottom:8px">Days Worked</div><table style="width:100%;border-collapse:collapse;margin-bottom:20px"><thead><tr style="background:#f0f0f0"><th style="padding:8px 10px;text-align:left;font-size:10px;font-weight:700;text-transform:uppercase;color:#666">Date</th><th style="padding:8px 10px;text-align:left;font-size:10px;font-weight:700;text-transform:uppercase;color:#666">Day</th><th style="padding:8px 10px;text-align:left;font-size:10px;font-weight:700;text-transform:uppercase;color:#666">Type</th><th style="padding:8px 10px;text-align:right;font-size:10px;font-weight:700;text-transform:uppercase;color:#666">Hours</th><th style="padding:8px 10px;text-align:right;font-size:10px;font-weight:700;text-transform:uppercase;color:#666">Rate</th><th style="padding:8px 10px;text-align:right;font-size:10px;font-weight:700;text-transform:uppercase;color:#666">Amount</th></tr></thead><tbody>'+dr+sleepRows+'</tbody></table><div style="display:flex;justify-content:flex-end;margin-bottom:20px"><div style="width:280px"><div style="display:flex;justify-content:space-between;padding:6px 0;font-size:13px"><span>Gross pay</span><span style="font-weight:600">$'+gross.toFixed(2)+'</span></div>'+(tax>0?'<div style="display:flex;justify-content:space-between;padding:6px 0;font-size:13px;color:#dc2626"><span>PAYG tax withheld</span><span>-$'+tax.toFixed(2)+'</span></div>':'<div style="display:flex;justify-content:space-between;padding:6px 0;font-size:13px;color:#888"><span>PAYG tax</span><span>Not withheld</span></div>')+'<div style="display:flex;justify-content:space-between;padding:6px 0;font-size:13px;color:#d97706"><span>'+superLabel+'</span><span>$'+sup.toFixed(2)+'</span></div><div style="display:flex;justify-content:space-between;padding:10px 0;font-size:16px;font-weight:700;border-top:2px solid #1a1a1a;margin-top:4px;color:#15803d"><span>Net pay to bank</span><span>$'+net.toFixed(2)+'</span></div></div></div>'+(bsb?'<div style="background:#f0f9f4;border:2px solid #22c55e;border-radius:10px;padding:16px;text-align:center;margin-bottom:20px"><div style="font-size:11px;font-weight:700;text-transform:uppercase;color:#16a34a;margin-bottom:6px">Deposited to your account</div><div style="font-size:13px;color:#15803d">BSB: '+bsb+' | Account: '+acctMask+'</div><div style="font-size:24px;font-weight:700;color:#15803d;margin-top:8px">$'+net.toFixed(2)+'</div></div>':'')+'<div style="margin-top:30px;padding-top:16px;border-top:1px solid #e5e5e5;font-size:11px;color:#aaa;text-align:center;line-height:1.6">Northern Star Support Services - Falaax Group Pty Ltd - ABN 22 671 393 070</div></div></body></html>';
   var w=window.open('','_blank');if(!w){showToast('Popup blocked — allow popups for this site','err');return;}w.document.write(h);w.document.close();w.focus();setTimeout(function(){w.print();},500);
 }
 
@@ -3058,6 +3183,25 @@ function renderParticipants(){
   el.innerHTML = html;
 }
 
+function collectSleepoverConfig(){
+  var days=[];
+  document.querySelectorAll('.pt-sleep-day-cb').forEach(function(cb){
+    if(cb.checked) days.push(parseInt(cb.dataset.dow));
+  });
+  days.sort(function(a,b){return a-b;});
+  var activeMin=parseFloat((eid('pt-sleep-active-min')||{value:'0'}).value)||0;
+  var outsideHrs=parseFloat((eid('pt-sleep-outside-hrs')||{value:'0'}).value)||0;
+  return {days:days,active_minutes:activeMin,outside_hours:outsideHrs};
+}
+
+function updateSleepBadge(){
+  var checked=document.querySelectorAll('.pt-sleep-day-cb:checked').length;
+  var badge=eid('pt-sleep-badge');
+  if(!badge)return;
+  if(checked>0){badge.textContent=checked+' night'+(checked!==1?'s':'');badge.style.display='inline';}
+  else badge.style.display='none';
+}
+
 function openParticipantModal(id){
   var p = id ? (S.participants||[]).find(function(x){ return x.id===id; }) : null;
   document.getElementById('pt-modal-title').textContent = id ? 'Edit participant' : 'Add participant';
@@ -3095,6 +3239,16 @@ function openParticipantModal(id){
   if(_blScratch.length===0 && p) migrateLegacyPlan(p); // ensure in-memory migration ran
   _blScratch = JSON.parse(JSON.stringify(Array.isArray(p&&p.budget_lines)?p.budget_lines:[]));
   renderBudgetLinesInModal();
+
+  // Populate sleepover config
+  var sc = (p && p.sleepover_config) || {};
+  var scDays = Array.isArray(sc.days) ? sc.days : [];
+  document.querySelectorAll('.pt-sleep-day-cb').forEach(function(cb){
+    cb.checked = scDays.indexOf(parseInt(cb.dataset.dow)) !== -1;
+  });
+  if(eid('pt-sleep-active-min')) eid('pt-sleep-active-min').value = sc.active_minutes != null ? sc.active_minutes : 0;
+  if(eid('pt-sleep-outside-hrs')) eid('pt-sleep-outside-hrs').value = sc.outside_hours != null ? sc.outside_hours : 0;
+  updateSleepBadge();
 
   // Build worker checkboxes
   var assignedWorkers = p&&p.assigned_workers||[];
@@ -3342,6 +3496,7 @@ async function saveParticipant(){
     roster: roster,
     ndis_plan: collectPtNdisPlan(),
     budget_lines: collectBudgetLines(),
+    sleepover_config: collectSleepoverConfig(),
     active: true
   };
   setSync('saving');
@@ -3354,9 +3509,9 @@ async function saveParticipant(){
     if(!res.error){ if(!S.participants)S.participants=[];var inserted=res.data[0];migrateLegacyPlan(inserted);S.participants.push(inserted); }
   }
   // Graceful fallback when ndis_plan or budget_lines column not yet added
-  if(res.error && (/ndis_plan/i.test(res.error.message||'')||/budget_lines/i.test(res.error.message||''))) {
-    console.warn('[saveParticipant] ndis_plan/budget_lines column missing — saving without them.');
-    delete row.ndis_plan; delete row.budget_lines;
+  if(res.error && (/ndis_plan/i.test(res.error.message||'')||/budget_lines/i.test(res.error.message||'')||/sleepover_config/i.test(res.error.message||''))) {
+    console.warn('[saveParticipant] ndis_plan/budget_lines/sleepover_config column missing — saving without them. Run: ALTER TABLE participants ADD COLUMN sleepover_config JSONB;');
+    delete row.ndis_plan; delete row.budget_lines; delete row.sleepover_config;
     if(id){
       res = await sb2.from('participants').update(row).eq('id',id).select();
       if(!res.error) S.participants = S.participants.map(function(p){ return p.id===id?res.data[0]:p; });
@@ -3491,18 +3646,24 @@ function renderHoursUtilisation() {
   var monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
   var html = '<div class="tbl-wrap"><table><thead><tr>'
     + '<th>Participant</th><th class="td-right">Plan hrs/wk</th>'
-    + '<th class="td-right">Rostered hrs/wk</th>'
+    + '<th class="td-right">Active hrs/wk</th>'
+    + '<th class="td-right">Sleepover shifts/wk</th>'
     + '<th class="td-right">Delivered this month</th>'
     + '<th>Coverage</th>'
     + '</tr></thead><tbody>';
 
   S.participants.forEach(function(p) {
     var roster = p.roster || {};
+    var sc = (p.sleepover_config) || {};
+    var slDays = Array.isArray(sc.days) ? sc.days : [];
+    var slDayNames = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'].filter(function(_,i){ return slDays.indexOf(i)!==-1; });
+    var sleepShiftsPerWk = slDays.length;
     var rostered = 0;
     (p.assigned_workers || []).forEach(function(wid) {
       var wr = roster[wid] || {};
       ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'].forEach(function(d) {
-        rostered += parseFloat(wr[d] || 0);
+        // Exclude sleepover-marked days from active hours total
+        if(slDayNames.indexOf(d)===-1) rostered += parseFloat(wr[d] || 0);
       });
     });
 
@@ -3526,6 +3687,7 @@ function renderHoursUtilisation() {
       + '</td>'
       + '<td class="td-right">' + (target || '--') + '</td>'
       + '<td class="td-right" style="color:' + statusColors[status] + ';font-weight:700">' + rostered.toFixed(1) + '</td>'
+      + '<td class="td-right td-muted">' + (sleepShiftsPerWk > 0 ? sleepShiftsPerWk + ' night'+(sleepShiftsPerWk!==1?'s':'') : '—') + '</td>'
       + '<td class="td-right td-muted">' + delivered.toFixed(1) + ' hrs</td>'
       + '<td><div style="display:flex;align-items:center;gap:8px">'
       + '<div style="flex:1;height:6px;background:var(--bg5);border-radius:3px">'
@@ -3996,7 +4158,42 @@ function ndisInvLoadBudgetLines() {
   eid('ndis-inv-bl').innerHTML = active.length
     ? active.map(function(bl,i){ return '<option value="'+i+'">'+bl.name+' ('+BL_CARD_LABELS[bl.rate_card||'core']+')'+'</option>'; }).join('')
     : '<option value="">No budget lines — add one on the participant card</option>';
+  // Populate sleepover section from participant's sleepover_config
+  ndisInvPopulateSleepover(pt);
   ndisInvApplyBudgetLineDefaults();
+}
+
+function ndisInvPopulateSleepover(pt) {
+  var sec = eid('ndis-inv-sleep-section');
+  if(!sec) return;
+  var sc = (pt && pt.sleepover_config) || {};
+  var days = Array.isArray(sc.days) ? sc.days : [];
+  if(days.length === 0){
+    sec.style.display = 'none';
+    return;
+  }
+  sec.style.display = 'block';
+  // Auto-count sleepover shifts in the current period
+  calcNdisInvSleepCount();
+  if(eid('ii-sleep-outside-hrs')) eid('ii-sleep-outside-hrs').value = sc.outside_hours != null ? sc.outside_hours : 0;
+  if(eid('ii-sleep-active-min'))  eid('ii-sleep-active-min').value  = sc.active_minutes != null ? sc.active_minutes : 0;
+}
+
+function calcNdisInvSleepCount(){
+  var ptId = eid('ndis-inv-pt').value;
+  var pt = (S.participants||[]).find(function(p){ return p.id===ptId; });
+  var sc = (pt && pt.sleepover_config) || {};
+  var days = Array.isArray(sc.days) ? sc.days : [];
+  if(!days.length || !eid('ii-sleep-shifts')) return;
+  var start = eid('ndis-inv-start').value;
+  var end   = eid('ndis-inv-end').value;
+  if(!start || !end){ eid('ii-sleep-shifts').value = 0; return; }
+  var ps = start.split('-'), pe = end.split('-');
+  var cur = new Date(parseInt(ps[0]),parseInt(ps[1])-1,parseInt(ps[2]));
+  var endD = new Date(parseInt(pe[0]),parseInt(pe[1])-1,parseInt(pe[2]));
+  var count = 0;
+  while(cur <= endD){ if(days.indexOf(cur.getDay())!==-1) count++; cur.setDate(cur.getDate()+1); }
+  eid('ii-sleep-shifts').value = count;
 }
 
 function ndisInvApplyBudgetLineDefaults() {
@@ -4035,9 +4232,12 @@ function ndisInvApplyBudgetLineDefaults() {
 }
 
 // ── Build invoice line items from budget line + user inputs ──────────────────
-function _buildInvLines(bl, periodStart, periodEnd, travelKm, travelMin) {
+function _buildInvLines(bl, periodStart, periodEnd, travelKm, travelMin, opts) {
   var lines = [];
   var card = bl.rate_card||'core';
+  // opts.sleepovers = { enabled, shifts, outside_hours, active_minutes, day_type }
+  var slOpts = (opts && opts.sleepovers) || {};
+  var slEnabled = slOpts.enabled && slOpts.shifts > 0;
   var travel = bl.travel||{};
   var travelDays = travel.days||[];
   var DNShort = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
@@ -4122,6 +4322,36 @@ function _buildInvLines(bl, periodStart, periodEnd, travelKm, travelMin) {
       cur6.setDate(cur6.getDate()+1);
     }
   }
+  // Sleepover shift billing — emitted AFTER active support lines to keep invoice clean.
+  if(slEnabled){
+    var slShifts = slOpts.shifts||0;
+    var slOutsideHrs = slOpts.outside_hours||0;
+    var slActiveMin  = slOpts.active_minutes||0;
+    var slDayType    = slOpts.day_type||'weekday';
+    var slCode = NDIS_SLEEPOVER_CODES[card] || NDIS_SLEEPOVER_CODES['core'];
+    var slDesc = 'Inactive Overnight Support (Sleepover) — '+slShifts+' shift'+(slShifts!==1?'s':'');
+    var slAmt  = +(slShifts * NDIS_SLEEPOVER_SHIFT_RATE).toFixed(2);
+    lines.push({ date:svcRangeStr, day:'—', desc:slDesc, code:slCode, qty:slShifts, rate:NDIS_SLEEPOVER_SHIFT_RATE, amt:slAmt });
+    // Hours outside the 8-hr span — billed at the applicable active support rate
+    if(slOutsideHrs > 0){
+      var slOutRi = blRate(bl, slDayType) || blRate(bl, 'weekday') || blRate(bl, 'any_day');
+      if(slOutRi){
+        var slOutAmt = +(slShifts * slOutsideHrs * slOutRi.rate).toFixed(2);
+        lines.push({ date:svcRangeStr, day:'—', desc:slOutRi.desc+' — Outside sleepover span ('+slShifts+'×'+slOutsideHrs+'h)', code:slOutRi.code, qty:+(slShifts*slOutsideHrs).toFixed(2), rate:slOutRi.rate, amt:slOutAmt });
+      }
+    }
+    // Overflow: active minutes during the 8-hr span exceeding the included 2 hrs
+    if(slActiveMin > NDIS_SLEEPOVER_ACTIVE_INCLUDED_HRS * 60){
+      var slOverflowHrs = +(slShifts * (slActiveMin/60 - NDIS_SLEEPOVER_ACTIVE_INCLUDED_HRS)).toFixed(2);
+      // Weekday overflow billed at Saturday rate (per PAPL); Sat/Sun/PH at applicable day rate
+      var slOverDt = (slDayType==='weekday') ? 'saturday' : slDayType;
+      var slOverRi = blRate(bl, slOverDt) || blRate(bl, 'saturday') || blRate(bl, 'weekday');
+      if(slOverRi && slOverflowHrs > 0){
+        var slOverAmt = +(slOverflowHrs * slOverRi.rate).toFixed(2);
+        lines.push({ date:svcRangeStr, day:'—', desc:slOverRi.desc+' — Sleepover active overflow ('+slShifts+'×'+(slActiveMin/60-NDIS_SLEEPOVER_ACTIVE_INCLUDED_HRS).toFixed(1)+'h)', code:slOverRi.code, qty:slOverflowHrs, rate:slOverRi.rate, amt:slOverAmt });
+      }
+    }
+  }
   return lines;
 }
 
@@ -4138,7 +4368,16 @@ function genNDISInvoice() {
   if(!periodStart||!periodEnd){ showToast('Select service period','err'); return; }
   var travelKm = parseFloat(eid('ndis-inv-km').value)||0;
   var travelMin = parseFloat(eid('ndis-inv-travelmin').value)||0;
-  var lines = _buildInvLines(bl, periodStart, periodEnd, travelKm, travelMin);
+  var slSec = eid('ndis-inv-sleep-section');
+  var slEnabled2 = slSec && slSec.style.display!=='none' && eid('ii-sleep-enabled') && eid('ii-sleep-enabled').checked;
+  var slOpts2 = slEnabled2 ? {
+    enabled: true,
+    shifts:       parseFloat((eid('ii-sleep-shifts')||{value:'0'}).value)||0,
+    outside_hours:parseFloat((eid('ii-sleep-outside-hrs')||{value:'0'}).value)||0,
+    active_minutes:parseFloat((eid('ii-sleep-active-min')||{value:'0'}).value)||0,
+    day_type:     (eid('ii-sleep-day-type')||{value:'weekday'}).value||'weekday'
+  } : null;
+  var lines = _buildInvLines(bl, periodStart, periodEnd, travelKm, travelMin, slOpts2 ? {sleepovers:slOpts2} : undefined);
   if(lines.length===0){ showToast('Nothing to invoice — enter hours for at least one service','err'); return; }
   var subtotal = lines.reduce(function(s,l){return s+l.amt;},0);
   var prefix = BL_INV_PREFIXES[bl.rate_card||'core'];
@@ -4243,7 +4482,16 @@ function genMyPlaceCSV() {
   if(!periodStart||!periodEnd){ showToast('Select service period','err'); return; }
   var travelKm = parseFloat(eid('ndis-inv-km').value)||0;
   var travelMin = parseFloat(eid('ndis-inv-travelmin').value)||0;
-  var lines = _buildInvLines(bl, periodStart, periodEnd, travelKm, travelMin);
+  var slSecC = eid('ndis-inv-sleep-section');
+  var slEnabledC = slSecC && slSecC.style.display!=='none' && eid('ii-sleep-enabled') && eid('ii-sleep-enabled').checked;
+  var slOptsC = slEnabledC ? {
+    enabled: true,
+    shifts:        parseFloat((eid('ii-sleep-shifts')||{value:'0'}).value)||0,
+    outside_hours: parseFloat((eid('ii-sleep-outside-hrs')||{value:'0'}).value)||0,
+    active_minutes:parseFloat((eid('ii-sleep-active-min')||{value:'0'}).value)||0,
+    day_type:      (eid('ii-sleep-day-type')||{value:'weekday'}).value||'weekday'
+  } : null;
+  var lines = _buildInvLines(bl, periodStart, periodEnd, travelKm, travelMin, slOptsC ? {sleepovers:slOptsC} : undefined);
   if(lines.length===0){ showToast('Nothing to export — enter hours for at least one service','err'); return; }
   var ndisNum = stripInvisibles(pt.ndis_number||'').replace(/\s+/g,'');
   if(!ndisNum){ showToast('Participant has no NDIS number','err'); return; }
