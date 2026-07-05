@@ -376,12 +376,12 @@ input[type=number]{text-align:right}
       <div id="pr-day-grid-body" style="display:grid;grid-template-columns:repeat(7,1fr);gap:4px"></div>
       <div style="display:flex;justify-content:space-between;margin-top:8px;font-size:11px;color:var(--text3)"><span>Total: <b id="pr-day-total" style="color:var(--text)">0</b>h</span></div>
     </div>
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:4px"><label style="display:flex;align-items:center;gap:10px;background:var(--bg4);border:1px solid var(--border2);border-radius:var(--r);padding:10px 14px;cursor:pointer;user-select:none"><input type="checkbox" id="pr-payg-on" checked onchange="calcPay()" class="cb-circle"><span style="font-size:12px;color:var(--text2)">Withhold PAYG tax</span></label><label style="display:flex;align-items:center;gap:10px;background:var(--bg4);border:1px solid var(--border2);border-radius:var(--r);padding:10px 14px;cursor:pointer;user-select:none"><input type="checkbox" id="pr-super-on" checked onchange="calcPay()" class="cb-circle"><span style="font-size:12px;color:var(--text2)">Include super (11.5%)</span></label></div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:4px"><label style="display:flex;align-items:center;gap:10px;background:var(--bg4);border:1px solid var(--border2);border-radius:var(--r);padding:10px 14px;cursor:pointer;user-select:none"><input type="checkbox" id="pr-payg-on" checked onchange="calcPay()" class="cb-circle"><span style="font-size:12px;color:var(--text2)">Withhold PAYG tax</span></label><label style="display:flex;align-items:center;gap:10px;background:var(--bg4);border:1px solid var(--border2);border-radius:var(--r);padding:10px 14px;cursor:pointer;user-select:none"><input type="checkbox" id="pr-super-on" checked onchange="calcPay()" class="cb-circle"><span style="font-size:12px;color:var(--text2)">Include super</span></label></div>
     <div class="pay-breakdown">
       <div id="pp-day-breakdown" style="margin-bottom:8px;padding-bottom:8px;border-bottom:1px solid var(--border)"></div>
       <div class="pay-line"><span>Gross pay</span><span id="pp-g">--</span></div>
       <div class="pay-line deduct" id="pp-tax-row"><span>PAYG tax (est.)</span><span id="pp-t">--</span></div>
-      <div class="pay-line deduct" id="pp-super-row"><span>Super (11.5%)</span><span id="pp-s">--</span></div>
+      <div class="pay-line deduct" id="pp-super-row"><span>Super</span><span id="pp-s">--</span></div>
       <div class="pay-line total net-line"><span>Net pay to employee</span><span id="pp-n">--</span></div>
     </div>
   </div>
@@ -546,89 +546,50 @@ input[type=number]{text-align:right}
 
       <div class="field"><label>Notes</label><textarea id="pt-notes" placeholder="Support needs, preferences, goals..." style="height:60px"></textarea></div>
 
-      <!-- NDIS Plan overrides (collapsible) -->
+      <!-- Budget lines repeater -->
       <div class="field" style="border-top:1px solid var(--border);padding-top:12px;margin-top:4px">
-        <div id="pt-plan-toggle" onclick="togglePtPlan()" style="display:flex;align-items:center;justify-content:space-between;cursor:pointer;user-select:none;padding:4px 0">
-          <label style="margin:0;cursor:pointer;display:flex;align-items:center;gap:8px">
-            <span style="color:#bc8cff;font-weight:600">NDIS plan &amp; rates</span>
-            <span style="font-size:10px;color:var(--text3);font-weight:400">— leave blank to use defaults</span>
-          </label>
-          <span id="pt-plan-caret" style="color:var(--text3);font-size:12px">▸</span>
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+          <label style="margin:0;color:#bc8cff;font-weight:600">NDIS budget lines</label>
+          <button class="btn btn-outline" style="font-size:11px;padding:4px 10px" onclick="addBudgetLine()">+ Add line</button>
         </div>
-        <div id="pt-plan-body" style="display:none;margin-top:10px;padding:12px;background:var(--bg4);border:1px solid var(--border);border-radius:var(--r)">
-          <div class="form-row">
-            <div class="field"><label>Plan start</label><input type="date" id="pt-plan-start" oninput="renderPtQuarterOverrides()"></div>
-            <div class="field"><label>Plan end</label><input type="date" id="pt-plan-end" oninput="renderPtQuarterOverrides()"></div>
-          </div>
-          <div class="form-row">
-            <div class="field"><label>Management</label>
-              <select id="pt-plan-mgmt">
-                <option value="">Use default (Agency-Managed)</option>
-                <option value="Agency-Managed">Agency-Managed</option>
-                <option value="Plan-Managed">Plan-Managed</option>
-                <option value="Self-Managed">Self-Managed</option>
-              </select>
+        <div id="pt-budget-lines"></div>
+
+        <!-- Budget tracker fields — remain for Reports tab compatibility -->
+        <details style="margin-top:10px">
+          <summary style="font-size:10px;font-weight:700;text-transform:uppercase;color:var(--text3);cursor:pointer;letter-spacing:.04em;user-select:none">Budget tracker (Reports tab)</summary>
+          <div style="margin-top:8px;padding:10px;background:var(--bg4);border:1px solid var(--border);border-radius:var(--r)">
+            <div style="font-size:10px;color:var(--text3);margin-bottom:8px">These fields are read by the Reports tab budget tracker. They are auto-populated from the first active budget line above, but can be overridden here.</div>
+            <div class="form-row">
+              <div class="field"><label>Plan start</label><input type="date" id="pt-plan-start" oninput="renderPtQuarterOverrides()"></div>
+              <div class="field"><label>Plan end</label><input type="date" id="pt-plan-end" oninput="renderPtQuarterOverrides()"></div>
             </div>
-            <div class="field"><label>Annual budget ($)</label><input type="number" id="pt-plan-budget" placeholder="0" step="0.01" min="0"></div>
-          </div>
-          <div class="field"><label>Budget type</label><input type="text" id="pt-plan-budget-type" placeholder="e.g. Core Flexible (Agency-Managed)"></div>
-
-          <div style="font-size:10px;font-weight:700;text-transform:uppercase;color:var(--text3);margin-top:14px;margin-bottom:6px">Budget tracker (Reports tab)</div>
-          <div style="font-size:10px;color:var(--text3);margin-bottom:8px">Set these to enable per-quarter tracking on the Reports tab. Leave blank to omit this participant from the budget tracker.</div>
-          <div class="form-row">
-            <div class="field"><label>Total plan funding ($)</label><input type="number" id="pt-plan-total-funding" placeholder="0" step="0.01" min="0" oninput="renderPtQuarterOverrides()"></div>
-            <div class="field"><label>Weekly hours target</label><input type="number" id="pt-plan-weekly-hours" placeholder="0" step="0.5" min="0"></div>
-          </div>
-          <div class="field"><label>Takeover start date <span style="color:var(--text3);font-weight:400;font-size:10px">(optional &mdash; for partial Q1)</span></label><input type="date" id="pt-plan-takeover" style="max-width:200px" oninput="renderPtQuarterOverrides()"></div>
-
-          <!-- Per-quarter funding overrides — populated dynamically by renderPtQuarterOverrides() -->
-          <div id="pt-quarter-overrides-block" style="display:none;margin-top:12px;padding:10px;background:rgba(188,140,255,.04);border:1px dashed rgba(188,140,255,.25);border-radius:var(--r)">
-            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
-              <div style="font-size:10px;font-weight:700;text-transform:uppercase;color:#bc8cff">Per-quarter funding overrides</div>
-              <div id="pt-quarter-overrides-sum" style="font-size:10px;color:var(--text3)"></div>
+            <div class="form-row">
+              <div class="field"><label>Management</label>
+                <select id="pt-plan-mgmt">
+                  <option value="">Use default (Agency-Managed)</option>
+                  <option value="Agency-Managed">Agency-Managed</option>
+                  <option value="Plan-Managed">Plan-Managed</option>
+                  <option value="Self-Managed">Self-Managed</option>
+                </select>
+              </div>
+              <div class="field"><label>Annual budget ($)</label><input type="number" id="pt-plan-budget" placeholder="0" step="0.01" min="0"></div>
             </div>
-            <div style="font-size:10px;color:var(--text3);margin-bottom:8px">Defaults shown as placeholders. Override any quarter (e.g. for Y2 anniversary boost or partial-quarter takeover). Blank = use default.</div>
-            <div id="pt-quarter-overrides-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:6px"></div>
-          </div>
-
-          <div style="font-size:10px;font-weight:700;text-transform:uppercase;color:var(--text3);margin-top:14px;margin-bottom:6px">Rate overrides ($/hour)</div>
-          <div class="form-row">
-            <div class="field"><label>Weekday code</label><input type="text" id="pt-rate-wd-code" placeholder="01_011_0107_1_1"></div>
-            <div class="field"><label>Weekday rate</label><input type="number" id="pt-rate-wd" placeholder="70.23" step="0.01" min="0"></div>
-          </div>
-          <div class="form-row">
-            <div class="field"><label>Saturday code</label><input type="text" id="pt-rate-sat-code" placeholder="01_013_0107_1_1"></div>
-            <div class="field"><label>Saturday rate</label><input type="number" id="pt-rate-sat" placeholder="98.83" step="0.01" min="0"></div>
-          </div>
-          <div class="form-row">
-            <div class="field"><label>Sunday code</label><input type="text" id="pt-rate-sun-code" placeholder="01_014_0107_1_1"></div>
-            <div class="field"><label>Sunday rate</label><input type="number" id="pt-rate-sun" placeholder="127.43" step="0.01" min="0"></div>
-          </div>
-          <div class="form-row">
-            <div class="field"><label>Public holiday code</label><input type="text" id="pt-rate-hol-code" placeholder="01_012_0107_1_1"></div>
-            <div class="field"><label>Public holiday rate</label><input type="number" id="pt-rate-hol" placeholder="156.03" step="0.01" min="0"></div>
-          </div>
-
-          <div style="font-size:10px;font-weight:700;text-transform:uppercase;color:var(--text3);margin-top:14px;margin-bottom:6px">Provider travel</div>
-          <div class="form-row">
-            <div class="field"><label>Travel km (round trip)</label><input type="number" id="pt-travel-km" placeholder="14" step="0.1" min="0"></div>
-            <div class="field"><label>Travel labour (min each way)</label><input type="number" id="pt-travel-min" placeholder="10" step="1" min="0"></div>
-          </div>
-          <div class="field">
-            <label>Claim travel on these days</label>
-            <div id="pt-travel-days" style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px">
-              <label style="display:flex;align-items:center;gap:8px;padding:6px 12px;background:var(--bg5);border:1px solid var(--border2);border-radius:var(--r);cursor:pointer;font-size:12px;user-select:none"><input type="checkbox" data-dow="0" class="cb-circle"> Sun</label>
-              <label style="display:flex;align-items:center;gap:8px;padding:6px 12px;background:var(--bg5);border:1px solid var(--border2);border-radius:var(--r);cursor:pointer;font-size:12px;user-select:none"><input type="checkbox" data-dow="1" class="cb-circle"> Mon</label>
-              <label style="display:flex;align-items:center;gap:8px;padding:6px 12px;background:var(--bg5);border:1px solid var(--border2);border-radius:var(--r);cursor:pointer;font-size:12px;user-select:none"><input type="checkbox" data-dow="2" class="cb-circle"> Tue</label>
-              <label style="display:flex;align-items:center;gap:8px;padding:6px 12px;background:var(--bg5);border:1px solid var(--border2);border-radius:var(--r);cursor:pointer;font-size:12px;user-select:none"><input type="checkbox" data-dow="3" class="cb-circle"> Wed</label>
-              <label style="display:flex;align-items:center;gap:8px;padding:6px 12px;background:var(--bg5);border:1px solid var(--border2);border-radius:var(--r);cursor:pointer;font-size:12px;user-select:none"><input type="checkbox" data-dow="4" class="cb-circle"> Thu</label>
-              <label style="display:flex;align-items:center;gap:8px;padding:6px 12px;background:var(--bg5);border:1px solid var(--border2);border-radius:var(--r);cursor:pointer;font-size:12px;user-select:none"><input type="checkbox" data-dow="5" class="cb-circle"> Fri</label>
-              <label style="display:flex;align-items:center;gap:8px;padding:6px 12px;background:var(--bg5);border:1px solid var(--border2);border-radius:var(--r);cursor:pointer;font-size:12px;user-select:none"><input type="checkbox" data-dow="6" class="cb-circle"> Sat</label>
+            <div class="field"><label>Budget type</label><input type="text" id="pt-plan-budget-type" placeholder="e.g. Core Flexible (Agency-Managed)"></div>
+            <div class="form-row" style="margin-top:8px">
+              <div class="field"><label>Total plan funding ($)</label><input type="number" id="pt-plan-total-funding" placeholder="0" step="0.01" min="0" oninput="renderPtQuarterOverrides()"></div>
+              <div class="field"><label>Weekly hours target</label><input type="number" id="pt-plan-weekly-hours" placeholder="0" step="0.5" min="0"></div>
             </div>
-            <div style="font-size:10px;color:var(--text3);margin-top:4px">Travel labour &amp; km lines only appear on these days.</div>
+            <div class="field"><label>Takeover start date <span style="color:var(--text3);font-weight:400;font-size:10px">(optional &mdash; for partial Q1)</span></label><input type="date" id="pt-plan-takeover" style="max-width:200px" oninput="renderPtQuarterOverrides()"></div>
+            <div id="pt-quarter-overrides-block" style="display:none;margin-top:12px;padding:10px;background:rgba(188,140,255,.04);border:1px dashed rgba(188,140,255,.25);border-radius:var(--r)">
+              <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+                <div style="font-size:10px;font-weight:700;text-transform:uppercase;color:#bc8cff">Per-quarter funding overrides</div>
+                <div id="pt-quarter-overrides-sum" style="font-size:10px;color:var(--text3)"></div>
+              </div>
+              <div style="font-size:10px;color:var(--text3);margin-bottom:8px">Defaults shown as placeholders. Override any quarter for partial-quarter or anniversary boost.</div>
+              <div id="pt-quarter-overrides-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:6px"></div>
+            </div>
           </div>
-          <div class="field"><label>Travel km rate ($/km)</label><input type="number" id="pt-travel-km-rate" placeholder="0.99" step="0.01" min="0" style="max-width:160px"><div style="font-size:10px;color:var(--text3);margin-top:4px">NDIA considers $0.99/km reasonable. The $1.00 price limit for 01_799_0107_1_1 is a notional cap.</div></div>
-        </div>
+        </details>
       </div>
     </div>
     <div class="modal-footer">
@@ -639,29 +600,25 @@ input[type=number]{text-align:right}
 </div></div>
 
 <!-- NDIS Invoice Modal -->
-<div id="m-ndis-inv" style="display:none"><div class="modal-bg" onclick="if(event.target===this)closeM('m-ndis-inv')"><div class="modal" style="width:480px">
+<div id="m-ndis-inv" style="display:none"><div class="modal-bg" onclick="if(event.target===this)closeM('m-ndis-inv')"><div class="modal" style="width:520px;max-height:90vh;overflow-y:auto">
   <div class="modal-title"><span style="color:#bc8cff">NDIS Tax Invoice</span><button class="btn-icon" onclick="closeM('m-ndis-inv')">&#x2715;</button></div>
   <div class="form-grid">
-    <div class="field"><label>Participant</label><select id="ndis-inv-pt"></select></div>
+    <div class="form-row">
+      <div class="field"><label>Participant</label><select id="ndis-inv-pt" onchange="ndisInvLoadBudgetLines()"></select></div>
+      <div class="field"><label>Budget line</label><select id="ndis-inv-bl" onchange="ndisInvApplyBudgetLineDefaults()"></select></div>
+    </div>
     <div class="form-row">
       <div class="field"><label>Service period start</label><input type="date" id="ndis-inv-start"></div>
       <div class="field"><label>Service period end</label><input type="date" id="ndis-inv-end"></div>
     </div>
-    <div class="form-row">
-      <div class="field"><label>Hours per day</label><input type="number" id="ndis-inv-hrs" value="8" min="0" step="0.5"></div>
+    <!-- Dynamic hour inputs — populated by ndisInvApplyBudgetLineDefaults() -->
+    <div id="ndis-inv-hrs-section"></div>
+    <div class="form-row" id="ndis-inv-travel-row">
       <div class="field"><label>Travel km (round trip)</label><input type="number" id="ndis-inv-km" value="14" min="0" step="1"></div>
-      <div class="field"><label>Travel time (min)</label><input type="number" id="ndis-inv-travelmin" value="10" min="0" step="1"></div>
+      <div class="field"><label>Travel time (min each way)</label><input type="number" id="ndis-inv-travelmin" value="10" min="0" step="1"></div>
     </div>
-    <div class="form-row">
-      <div class="field"><label>Cleaning hours (period total)</label><input type="number" id="ndis-inv-clean" value="0" min="0" step="0.5"></div>
-      <div class="field"><label>Yard maintenance hours (period total)</label><input type="number" id="ndis-inv-yard" value="0" min="0" step="0.5"></div>
-    </div>
-    <div style="background:rgba(107,45,123,0.1);border:1px solid rgba(107,45,123,0.3);border-radius:var(--r);padding:10px 12px;font-size:11px;color:var(--purple);line-height:1.6">
-      <b>NDIS Rates (PAPL 2025-26 v1.1)</b><br>
-      Self-care: Weekday $70.23/hr &nbsp;&#8226;&nbsp; Sat $98.83 &nbsp;&#8226;&nbsp; Sun $127.43 &nbsp;&#8226;&nbsp; PH $156.03<br>
-      Cleaning $58.03/hr (01_020_0120_1_1) &nbsp;&#8226;&nbsp; Yard $56.98/hr (01_019_0120_1_1)<br>
-      Travel labour at weekday rate &nbsp;&#8226;&nbsp; Travel km $0.99/km<br>
-      <span style="color:var(--gold)">&#9888; Leave any field at 0 to skip that line item</span>
+    <div id="ndis-inv-info" style="background:rgba(107,45,123,0.1);border:1px solid rgba(107,45,123,0.3);border-radius:var(--r);padding:10px 12px;font-size:11px;color:var(--purple);line-height:1.6">
+      Select a participant and budget line above.
     </div>
   </div>
   <div class="modal-footer"><button class="btn btn-outline" onclick="closeM('m-ndis-inv')">Cancel</button><button class="btn btn-outline" onclick="genMyPlaceCSV()" style="border-color:var(--in-dim);color:var(--in)">&#x2B07; myplace CSV</button><button class="btn btn-primary" onclick="genNDISInvoice()" style="background:#6B2D7B">&#x1F5A8; PDF Invoice</button></div>
@@ -724,7 +681,11 @@ var sb2 = supabase.createClient(SURL, SKEY);
 var MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
 var SHORT = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 var YEAR = new Date().getFullYear();
-var SUPER_RATE = 0.115;
+function getSuperRate(periodEnd){
+  // Superannuation Guarantee: 11.5% for periods ending before 1 Jul 2026, 12% from 1 Jul 2026.
+  return (periodEnd && periodEnd >= '2026-07-01') ? 0.12 : 0.115;
+}
+var SUPER_RATE = 0.115; // legacy constant — use getSuperRate(periodEnd) wherever period is known
 var pendingExportPlatform = null;
 var S = {tx:[],emps:[],runs:[],participants:[],dd:{description:[],type:[]},curMonth:new Date().getMonth(),editEmpId:null,ddField:null,ddTargetId:null,ch:{},wiseTransfers:[],invoiceLedger:[],_lastGenInvoice:null};
 
@@ -922,6 +883,7 @@ async function loadAll(){
     S.dd.type=ddT.length?ddT:['NDIS Transfer','Bank Transfer','Cash','Direct Credit','EFT','Direct Debit','Other'];
     var r5=await sb2.from('participants').select('*').order('name',{ascending:true});
     S.participants=r5.error?[]:r5.data||[];
+    S.participants.forEach(migrateLegacyPlan);
     setSync('ok');
     eid('errBox').style.display='none';
     renderDash();
@@ -1707,7 +1669,7 @@ function calcPay(){
   gross=+gross.toFixed(2);
   var annualEq=empType==='salary'?baseRate:gross*26;
   var periodTax=paygOn?+(paygCalc(annualEq)/26).toFixed(2):0;
-  var sup=superOn?+(gross*SUPER_RATE).toFixed(2):0;
+  var sup=superOn?+(gross*getSuperRate(periodEnd||tod())).toFixed(2):0;
   var net=+(gross-periodTax).toFixed(2);
 
   // Render day breakdown
@@ -2350,11 +2312,14 @@ function renderNDISBudget() {
   if(!sumHost || !cardsHost) return;
 
   // Find tracked participants. A participant is "tracked" when their
-  // ndis_plan has the three required fields for quarter generation.
+  // ndis_plan (or primary budget line) has plan_start, plan_end, total_funding.
   var tracked = (S.participants||[]).filter(function(p){
     var pl = p && p.ndis_plan;
-    if(!pl) return false;
-    return ndisDateToIso(pl.plan_start) && ndisDateToIso(pl.plan_end) && +pl.total_funding > 0;
+    if(pl && ndisDateToIso(pl.plan_start) && ndisDateToIso(pl.plan_end) && +pl.total_funding > 0) return true;
+    // Also accept participants whose primary active budget line has the required fields
+    var bls = p && p.budget_lines;
+    if(!Array.isArray(bls)) return false;
+    return bls.some(function(bl){ return bl.active!==false && bl.plan_start && bl.plan_end && +bl.funding_amount>0; });
   });
 
   // Empty state — render summary as zeros and a friendly empty card list
@@ -2364,7 +2329,7 @@ function renderNDISBudget() {
       + '<div class="kpi"><div class="kpi-label">Received to date</div><div class="kpi-val green">'+fmt(0)+'</div><div class="td-muted" style="font-size:10px">0 receipts</div></div>'
       + '<div class="kpi"><div class="kpi-label">Current quarter</div><div class="kpi-val">&mdash;</div><div class="td-muted" style="font-size:10px">no plans configured</div></div>'
       + '<div class="kpi"><div class="kpi-label">YTD progress</div><div class="kpi-val">&mdash;</div><div class="td-muted" style="font-size:10px">&mdash;</div></div>';
-    cardsHost.innerHTML = '<div class="card"><div class="empty" style="padding:20px;text-align:center">No participants are being tracked yet. Open a participant, expand <b>NDIS plan &amp; rates</b>, and fill in plan start, plan end, and total funding to enable budget tracking.</div></div>';
+    cardsHost.innerHTML = '<div class="card"><div class="empty" style="padding:20px;text-align:center">No participants are being tracked yet. Open a participant, add a budget line, and fill in plan start, plan end, and funding amount. Or expand <b>Budget tracker</b> inside the participant modal to set totals directly.</div></div>';
     return;
   }
 
@@ -2489,8 +2454,10 @@ function genPayslip(id) {
     }
   }
   var gross=parseFloat(run.gross_pay)||0,tax=parseFloat(run.tax_withheld)||0,sup=parseFloat(run.super_amount)||0,net=parseFloat(run.net_pay)||0;
+  var superPct=Math.round(getSuperRate(periodEnd)*1000)/10; // e.g. 11.5 or 12
+  var superLabel='Super ('+superPct+'%)';
   var dr=dayLines.map(function(d){var bg=d.hol?'rgba(248,81,73,0.06)':d.type==='Saturday'||d.type==='Sunday'?'rgba(210,153,34,0.06)':'transparent';if(d.salary){return '<tr style="background:'+bg+'"><td style="padding:6px 10px;border-bottom:1px solid #f0f0f0;font-size:12px">'+d.date+'</td><td style="padding:6px 10px;border-bottom:1px solid #f0f0f0;font-size:12px;font-weight:600">'+d.day+'</td><td style="padding:6px 10px;border-bottom:1px solid #f0f0f0;font-size:12px;color:'+(d.hol?'#dc2626':'#555')+'">'+d.type+(d.hol?' ('+d.hol+')':'')+'</td><td colspan="3" style="padding:6px 10px;border-bottom:1px solid #f0f0f0;font-size:12px;text-align:center;font-weight:600;color:#15803d">Worked</td></tr>';}return '<tr style="background:'+bg+'"><td style="padding:6px 10px;border-bottom:1px solid #f0f0f0;font-size:12px">'+d.date+'</td><td style="padding:6px 10px;border-bottom:1px solid #f0f0f0;font-size:12px;font-weight:600">'+d.day+'</td><td style="padding:6px 10px;border-bottom:1px solid #f0f0f0;font-size:12px;color:'+(d.hol?'#dc2626':'#555')+'">'+d.type+(d.hol?' ('+d.hol+')':'')+'</td><td style="padding:6px 10px;border-bottom:1px solid #f0f0f0;font-size:12px;text-align:right">'+d.hrs.toFixed(1)+'h</td><td style="padding:6px 10px;border-bottom:1px solid #f0f0f0;font-size:12px;text-align:right">$'+d.rate.toFixed(2)+'</td><td style="padding:6px 10px;border-bottom:1px solid #f0f0f0;font-size:12px;text-align:right;font-weight:600">$'+d.amt.toFixed(2)+'</td></tr>';}).join('');
-  var h='<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Payslip - '+emp.name+'</title><style>body{font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;margin:0;padding:0;background:#fff;color:#1a1a1a}.page{max-width:720px;margin:0 auto;padding:40px}@media print{.page{padding:20px}}</style></head><body><div class="page"><div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:28px;padding-bottom:20px;border-bottom:2px solid #1a1a1a"><div><div style="font-size:18px;font-weight:700;margin-bottom:4px">Northern Star Support Services</div><div style="font-size:12px;color:#555;line-height:1.6">Falaax Group Pty Ltd<br>ABN: 22 671 393 070<br>12 Dimboola Rd, Broadmeadows VIC 3064<br>Phone: 03 7057 1645</div></div><div style="text-align:right"><div style="font-size:11px;color:#888;text-transform:uppercase;letter-spacing:.05em">Payslip</div><div style="font-size:18px;font-weight:700">'+refNo+'</div><div style="font-size:12px;color:#888;margin-top:6px">Paid: '+paidDate+'</div></div></div><div style="background:#f8f9fa;border:1px solid #e5e5e5;border-radius:8px;padding:16px;margin-bottom:20px"><div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:13px"><div><span style="color:#888">Name:</span> <b>'+emp.name+'</b></div><div><span style="color:#888">Role:</span> '+(emp.role||'--')+'</div><div><span style="color:#888">Employment:</span> '+(emp.employment_type||'--')+'</div><div><span style="color:#888">Period:</span> '+periodStart+' to '+periodEnd+'</div></div></div><div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:#888;margin-bottom:8px">Days Worked</div><table style="width:100%;border-collapse:collapse;margin-bottom:20px"><thead><tr style="background:#f0f0f0"><th style="padding:8px 10px;text-align:left;font-size:10px;font-weight:700;text-transform:uppercase;color:#666">Date</th><th style="padding:8px 10px;text-align:left;font-size:10px;font-weight:700;text-transform:uppercase;color:#666">Day</th><th style="padding:8px 10px;text-align:left;font-size:10px;font-weight:700;text-transform:uppercase;color:#666">Type</th><th style="padding:8px 10px;text-align:right;font-size:10px;font-weight:700;text-transform:uppercase;color:#666">Hours</th><th style="padding:8px 10px;text-align:right;font-size:10px;font-weight:700;text-transform:uppercase;color:#666">Rate</th><th style="padding:8px 10px;text-align:right;font-size:10px;font-weight:700;text-transform:uppercase;color:#666">Amount</th></tr></thead><tbody>'+dr+'</tbody></table><div style="display:flex;justify-content:flex-end;margin-bottom:20px"><div style="width:280px"><div style="display:flex;justify-content:space-between;padding:6px 0;font-size:13px"><span>Gross pay</span><span style="font-weight:600">$'+gross.toFixed(2)+'</span></div>'+(tax>0?'<div style="display:flex;justify-content:space-between;padding:6px 0;font-size:13px;color:#dc2626"><span>PAYG tax withheld</span><span>-$'+tax.toFixed(2)+'</span></div>':'<div style="display:flex;justify-content:space-between;padding:6px 0;font-size:13px;color:#888"><span>PAYG tax</span><span>Not withheld</span></div>')+'<div style="display:flex;justify-content:space-between;padding:6px 0;font-size:13px;color:#d97706"><span>Super (11.5%)</span><span>$'+sup.toFixed(2)+'</span></div><div style="display:flex;justify-content:space-between;padding:10px 0;font-size:16px;font-weight:700;border-top:2px solid #1a1a1a;margin-top:4px;color:#15803d"><span>Net pay to bank</span><span>$'+net.toFixed(2)+'</span></div></div></div>'+(bsb?'<div style="background:#f0f9f4;border:2px solid #22c55e;border-radius:10px;padding:16px;text-align:center;margin-bottom:20px"><div style="font-size:11px;font-weight:700;text-transform:uppercase;color:#16a34a;margin-bottom:6px">Deposited to your account</div><div style="font-size:13px;color:#15803d">BSB: '+bsb+' | Account: '+acctMask+'</div><div style="font-size:24px;font-weight:700;color:#15803d;margin-top:8px">$'+net.toFixed(2)+'</div></div>':'')+'<div style="margin-top:30px;padding-top:16px;border-top:1px solid #e5e5e5;font-size:11px;color:#aaa;text-align:center;line-height:1.6">Northern Star Support Services - Falaax Group Pty Ltd - ABN 22 671 393 070</div></div></body></html>';
+  var h='<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Payslip - '+emp.name+'</title><style>body{font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;margin:0;padding:0;background:#fff;color:#1a1a1a}.page{max-width:720px;margin:0 auto;padding:40px}@media print{.page{padding:20px}}</style></head><body><div class="page"><div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:28px;padding-bottom:20px;border-bottom:2px solid #1a1a1a"><div><div style="font-size:18px;font-weight:700;margin-bottom:4px">Northern Star Support Services</div><div style="font-size:12px;color:#555;line-height:1.6">Falaax Group Pty Ltd<br>ABN: 22 671 393 070<br>12 Dimboola Rd, Broadmeadows VIC 3064<br>Phone: 03 7057 1645</div></div><div style="text-align:right"><div style="font-size:11px;color:#888;text-transform:uppercase;letter-spacing:.05em">Payslip</div><div style="font-size:18px;font-weight:700">'+refNo+'</div><div style="font-size:12px;color:#888;margin-top:6px">Paid: '+paidDate+'</div></div></div><div style="background:#f8f9fa;border:1px solid #e5e5e5;border-radius:8px;padding:16px;margin-bottom:20px"><div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:13px"><div><span style="color:#888">Name:</span> <b>'+emp.name+'</b></div><div><span style="color:#888">Role:</span> '+(emp.role||'--')+'</div><div><span style="color:#888">Employment:</span> '+(emp.employment_type||'--')+'</div><div><span style="color:#888">Period:</span> '+periodStart+' to '+periodEnd+'</div></div></div><div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:#888;margin-bottom:8px">Days Worked</div><table style="width:100%;border-collapse:collapse;margin-bottom:20px"><thead><tr style="background:#f0f0f0"><th style="padding:8px 10px;text-align:left;font-size:10px;font-weight:700;text-transform:uppercase;color:#666">Date</th><th style="padding:8px 10px;text-align:left;font-size:10px;font-weight:700;text-transform:uppercase;color:#666">Day</th><th style="padding:8px 10px;text-align:left;font-size:10px;font-weight:700;text-transform:uppercase;color:#666">Type</th><th style="padding:8px 10px;text-align:right;font-size:10px;font-weight:700;text-transform:uppercase;color:#666">Hours</th><th style="padding:8px 10px;text-align:right;font-size:10px;font-weight:700;text-transform:uppercase;color:#666">Rate</th><th style="padding:8px 10px;text-align:right;font-size:10px;font-weight:700;text-transform:uppercase;color:#666">Amount</th></tr></thead><tbody>'+dr+'</tbody></table><div style="display:flex;justify-content:flex-end;margin-bottom:20px"><div style="width:280px"><div style="display:flex;justify-content:space-between;padding:6px 0;font-size:13px"><span>Gross pay</span><span style="font-weight:600">$'+gross.toFixed(2)+'</span></div>'+(tax>0?'<div style="display:flex;justify-content:space-between;padding:6px 0;font-size:13px;color:#dc2626"><span>PAYG tax withheld</span><span>-$'+tax.toFixed(2)+'</span></div>':'<div style="display:flex;justify-content:space-between;padding:6px 0;font-size:13px;color:#888"><span>PAYG tax</span><span>Not withheld</span></div>')+'<div style="display:flex;justify-content:space-between;padding:6px 0;font-size:13px;color:#d97706"><span>'+superLabel+'</span><span>$'+sup.toFixed(2)+'</span></div><div style="display:flex;justify-content:space-between;padding:10px 0;font-size:16px;font-weight:700;border-top:2px solid #1a1a1a;margin-top:4px;color:#15803d"><span>Net pay to bank</span><span>$'+net.toFixed(2)+'</span></div></div></div>'+(bsb?'<div style="background:#f0f9f4;border:2px solid #22c55e;border-radius:10px;padding:16px;text-align:center;margin-bottom:20px"><div style="font-size:11px;font-weight:700;text-transform:uppercase;color:#16a34a;margin-bottom:6px">Deposited to your account</div><div style="font-size:13px;color:#15803d">BSB: '+bsb+' | Account: '+acctMask+'</div><div style="font-size:24px;font-weight:700;color:#15803d;margin-top:8px">$'+net.toFixed(2)+'</div></div>':'')+'<div style="margin-top:30px;padding-top:16px;border-top:1px solid #e5e5e5;font-size:11px;color:#aaa;text-align:center;line-height:1.6">Northern Star Support Services - Falaax Group Pty Ltd - ABN 22 671 393 070</div></div></body></html>';
   var w=window.open('','_blank');if(!w){showToast('Popup blocked — allow popups for this site','err');return;}w.document.write(h);w.document.close();w.focus();setTimeout(function(){w.print();},500);
 }
 
@@ -2771,7 +2738,7 @@ function doExportPaymentFile(platform, periodStartStr, periodEndStr) {
     });
     csv = wiseLines.join('\r\n') + '\r\n';
   } else {
-    csv = 'Employee Name,Bank BSB,Account Number,Amount (AUD),Currency,Payment Reference,Period Start,Period End,Employment Type,Hourly Rate,Hours Worked,Gross Pay,PAYG Withheld,Super (11.5%),Net Pay\n';
+    csv = 'Employee Name,Bank BSB,Account Number,Amount (AUD),Currency,Payment Reference,Period Start,Period End,Employment Type,Hourly Rate,Hours Worked,Gross Pay,PAYG Withheld,Super,Net Pay\n';
     runs.forEach(function(r){
       var emp = S.emps.find(function(e){ return e.id === r.employee_id; });
       if(!emp) return;
@@ -3123,25 +3090,11 @@ function openParticipantModal(id){
       if(v !== undefined && v !== null && v !== '') _ptQuarterOverridesScratch[String(k)] = String(v);
     });
   }
-  eid('pt-rate-wd-code').value     = (r.weekday  && r.weekday.code)  || '';
-  eid('pt-rate-wd').value          = (r.weekday  && r.weekday.rate  != null) ? r.weekday.rate  : '';
-  eid('pt-rate-sat-code').value    = (r.saturday && r.saturday.code) || '';
-  eid('pt-rate-sat').value         = (r.saturday && r.saturday.rate != null) ? r.saturday.rate : '';
-  eid('pt-rate-sun-code').value    = (r.sunday   && r.sunday.code)   || '';
-  eid('pt-rate-sun').value         = (r.sunday   && r.sunday.rate   != null) ? r.sunday.rate   : '';
-  eid('pt-rate-hol-code').value    = (r.holiday  && r.holiday.code)  || '';
-  eid('pt-rate-hol').value         = (r.holiday  && r.holiday.rate  != null) ? r.holiday.rate  : '';
-  eid('pt-travel-km').value        = plan.travel_km != null ? plan.travel_km : '';
-  eid('pt-travel-min').value       = plan.travel_labour_min != null ? plan.travel_labour_min : '';
-  eid('pt-travel-km-rate').value   = (r.travel_km && r.travel_km.rate != null) ? r.travel_km.rate : '';
-  var tdays = Array.isArray(plan.travel_days) ? plan.travel_days : null;
-  document.querySelectorAll('#pt-travel-days input[type=checkbox]').forEach(function(cb){
-    cb.checked = tdays ? tdays.indexOf(+cb.dataset.dow) !== -1 : false;
-  });
-  // Start collapsed unless the participant already has overrides set
-  var hasOverrides = p && p.ndis_plan && Object.keys(p.ndis_plan).length > 0;
-  eid('pt-plan-body').style.display = hasOverrides ? 'block' : 'none';
-  eid('pt-plan-caret').textContent = hasOverrides ? '▾' : '▸';
+  // Populate budget lines scratch array and render cards
+  _blScratch = JSON.parse(JSON.stringify(Array.isArray(p&&p.budget_lines)&&p.budget_lines.length?p.budget_lines:[]));
+  if(_blScratch.length===0 && p) migrateLegacyPlan(p); // ensure in-memory migration ran
+  _blScratch = JSON.parse(JSON.stringify(Array.isArray(p&&p.budget_lines)?p.budget_lines:[]));
+  renderBudgetLinesInModal();
 
   // Build worker checkboxes
   var assignedWorkers = p&&p.assigned_workers||[];
@@ -3286,39 +3239,8 @@ function collectPtNdisPlan(){
     if(isFinite(v) && v >= 0) qov[k] = v;
   });
   if(Object.keys(qov).length) plan.quarter_overrides = qov;
-  var tkm = eid('pt-travel-km').value;              if(tkm !== '') plan.travel_km = +tkm;
-  var tm = eid('pt-travel-min').value;              if(tm !== '') plan.travel_labour_min = +tm;
-  var tdays = [];
-  document.querySelectorAll('#pt-travel-days input[type=checkbox]').forEach(function(cb){
-    if(cb.checked) tdays.push(+cb.dataset.dow);
-  });
-  // Only persist travel_days if the user has opened the section and made a choice.
-  // We can't tell from checkbox state alone whether they intend to override, so
-  // persist whenever at least one other plan field is set OR the section was opened
-  // with non-default days. Keep it simple: always persist the array.
-  plan.travel_days = tdays;
-
-  var rates = {};
-  function band(key, codeEl, rateEl){
-    var c = eid(codeEl).value.trim();
-    var r = eid(rateEl).value;
-    var o = {};
-    if(c) o.code = c;
-    if(r !== '') o.rate = +r;
-    if(Object.keys(o).length) rates[key] = o;
-  }
-  band('weekday',  'pt-rate-wd-code',  'pt-rate-wd');
-  band('saturday', 'pt-rate-sat-code', 'pt-rate-sat');
-  band('sunday',   'pt-rate-sun-code', 'pt-rate-sun');
-  band('holiday',  'pt-rate-hol-code', 'pt-rate-hol');
-  var kmRate = eid('pt-travel-km-rate').value;
-  if(kmRate !== '') rates.travel_km = { rate: +kmRate };
-  // When weekday rate is set, mirror it onto travel_labour so the labour line
-  // claims at the same hourly rate as the primary support (per NDIA rules).
-  if(rates.weekday && rates.weekday.rate != null) {
-    rates.travel_labour = { rate: rates.weekday.rate };
-  }
-  if(Object.keys(rates).length) plan.rates = rates;
+  // Travel and rate-band overrides now live on individual budget lines.
+  // collectPtNdisPlan only saves budget-tracker fields for the Reports tab.
 
   return Object.keys(plan).length ? plan : null;
 }
@@ -3419,24 +3341,22 @@ async function saveParticipant(){
     assigned_workers: assigned,
     roster: roster,
     ndis_plan: collectPtNdisPlan(),
+    budget_lines: collectBudgetLines(),
     active: true
   };
   setSync('saving');
   var res;
   if(id){
     res = await sb2.from('participants').update(row).eq('id',id).select();
-    if(!res.error) S.participants = S.participants.map(function(p){ return p.id===id?res.data[0]:p; });
+    if(!res.error) { var updated=res.data[0]; migrateLegacyPlan(updated); S.participants=S.participants.map(function(p){return p.id===id?updated:p;}); }
   } else {
     res = await sb2.from('participants').insert(row).select();
-    if(!res.error){ if(!S.participants)S.participants=[];S.participants.push(res.data[0]); }
+    if(!res.error){ if(!S.participants)S.participants=[];var inserted=res.data[0];migrateLegacyPlan(inserted);S.participants.push(inserted); }
   }
-  // If the ndis_plan column doesn't exist yet in Supabase, retry without it so
-  // the participant still saves. The plan overrides just won't persist until
-  // the column is added:  ALTER TABLE participants ADD COLUMN ndis_plan JSONB;
-  if(res.error && /ndis_plan/i.test(res.error.message||'')) {
-    console.warn('[saveParticipant] ndis_plan column missing — saving without overrides. ' +
-                 'Run: ALTER TABLE participants ADD COLUMN ndis_plan JSONB;');
-    delete row.ndis_plan;
+  // Graceful fallback when ndis_plan or budget_lines column not yet added
+  if(res.error && (/ndis_plan/i.test(res.error.message||'')||/budget_lines/i.test(res.error.message||''))) {
+    console.warn('[saveParticipant] ndis_plan/budget_lines column missing — saving without them.');
+    delete row.ndis_plan; delete row.budget_lines;
     if(id){
       res = await sb2.from('participants').update(row).eq('id',id).select();
       if(!res.error) S.participants = S.participants.map(function(p){ return p.id===id?res.data[0]:p; });
@@ -3446,7 +3366,7 @@ async function saveParticipant(){
     }
     if(!res.error) {
       setSync('ok'); closeM('m-participant'); renderParticipants();
-      showToast('Saved — but NDIS plan overrides not persisted (add ndis_plan column to Supabase)','err');
+      showToast('Saved — add ndis_plan/budget_lines columns to Supabase to persist NDIS data','err');
       return;
     }
   }
@@ -3780,27 +3700,273 @@ var NDIS_PLAN = {
   }
 };
 
-// Merge a participant's ndis_plan overrides over the defaults. Deep-merges
-// the rates object so a participant can override e.g. just the weekday rate
-// without having to restate the entire rate table.
+// ── Rate Cards (PAPL 2025-26 v1.1) ─────────────────────────────────────────
+// SIL uses registration group 0138 (replaced 0115 from 1 Jul 2026).
+// Rates are editable per budget line in the participant modal.
+var RATE_CARDS = {
+  core: [
+    { day_type:'weekday',        code:'01_011_0107_1_1', desc:'Assistance with Self-Care – Standard – Weekday Daytime',  rate:70.23 },
+    { day_type:'evening',        code:'01_015_0107_1_1', desc:'Assistance with Self-Care – Standard – Weekday Evening', rate:77.38 },
+    { day_type:'night',          code:'01_002_0107_1_1', desc:'Assistance with Self-Care – Standard – Weekday Night',   rate:78.81 },
+    { day_type:'saturday',       code:'01_013_0107_1_1', desc:'Assistance with Self-Care – Standard – Saturday',        rate:98.83 },
+    { day_type:'sunday',         code:'01_014_0107_1_1', desc:'Assistance with Self-Care – Standard – Sunday',          rate:127.43 },
+    { day_type:'public_holiday', code:'01_012_0107_1_1', desc:'Assistance with Self-Care – Standard – Public Holiday',  rate:156.03 },
+    { day_type:'travel_km',      code:'01_799_0107_1_1', desc:'Provider Travel – Non-labour ({km}km)',                       rate:0.99 }
+  ],
+  sil: [
+    { day_type:'weekday',        code:'01_801_0138_1_1', desc:'Supported Independent Living – Weekday Daytime',  rate:70.23 },
+    { day_type:'evening',        code:'01_802_0138_1_1', desc:'Supported Independent Living – Weekday Evening',  rate:77.38 },
+    { day_type:'night',          code:'01_803_0138_1_1', desc:'Supported Independent Living – Weekday Night',    rate:78.81 },
+    { day_type:'saturday',       code:'01_804_0138_1_1', desc:'Supported Independent Living – Saturday',         rate:98.83 },
+    { day_type:'sunday',         code:'01_805_0138_1_1', desc:'Supported Independent Living – Sunday',           rate:127.43 },
+    { day_type:'public_holiday', code:'01_806_0138_1_1', desc:'Supported Independent Living – Public Holiday',   rate:156.03 },
+    { day_type:'travel_km',      code:'01_799_0138_1_1', desc:'Provider Travel – Non-labour ({km}km)',           rate:1.00 }
+  ],
+  employment: [
+    { day_type:'any_day',   code:'10_016_0102_5_3', desc:'Finding and Keeping a Job',          rate:80.06 },
+    { day_type:'travel_km', code:'10_799_0102_5_3', desc:'Provider Travel – Non-labour ({km}km)', rate:0.99 }
+  ],
+  community: [
+    { day_type:'weekday',        code:'04_104_0125_6_1', desc:'Community Participation – Weekday',        rate:70.23 },
+    { day_type:'saturday',       code:'04_103_0125_6_1', desc:'Community Participation – Saturday',       rate:98.83 },
+    { day_type:'sunday',         code:'04_105_0125_6_1', desc:'Community Participation – Sunday',         rate:127.43 },
+    { day_type:'public_holiday', code:'04_102_0125_6_1', desc:'Community Participation – Public Holiday', rate:156.03 },
+    { day_type:'travel_km',      code:'04_210_0125_6_1', desc:'Provider Travel – Non-labour ({km}km)',    rate:0.99 }
+  ],
+  custom: []
+};
+var BL_CARD_LABELS = {core:'Core (0107)',sil:'SIL (0138)',employment:'Employment (0102)',community:'Community (0125)',custom:'Custom'};
+var BL_INV_PREFIXES = {sil:'INV-SIL-',core:'INV-CF-',employment:'INV-EMP-',community:'INV-COM-',custom:'INV-'};
+
+// ── Budget-line migration ────────────────────────────────────────────────────
+// On load, synthesise one Core Flexible budget line from legacy ndis_plan data
+// so existing participants keep working. Runs in-memory; persisted on next save.
+function migrateLegacyPlan(pt) {
+  if(Array.isArray(pt.budget_lines) && pt.budget_lines.length > 0) return;
+  var plan = pt.ndis_plan;
+  if(!plan || typeof plan !== 'object') { pt.budget_lines = pt.budget_lines || []; return; }
+  var rates = JSON.parse(JSON.stringify(RATE_CARDS.core));
+  if(plan.rates && typeof plan.rates === 'object') {
+    var legMap = {weekday:'weekday',saturday:'saturday',sunday:'sunday',holiday:'public_holiday'};
+    rates.forEach(function(r){
+      var lk = Object.keys(legMap).find(function(k){ return legMap[k]===r.day_type; });
+      if(lk && plan.rates[lk]) {
+        if(plan.rates[lk].code) r.code = plan.rates[lk].code;
+        if(plan.rates[lk].rate != null) r.rate = +plan.rates[lk].rate;
+      }
+    });
+  }
+  var mgmt = (plan.management||'Agency-Managed').toLowerCase();
+  pt.budget_lines = [{
+    id: 'bl-legacy',
+    name: plan.budget_type || 'Core Flexible',
+    management: mgmt.indexOf('plan') !== -1 ? 'plan' : mgmt.indexOf('self') !== -1 ? 'self' : 'agency',
+    bill_to: { name:'', email:'' },
+    rate_card: 'core',
+    rates: rates,
+    travel: {
+      enabled: true,
+      km: plan.travel_km != null ? plan.travel_km : 14,
+      labour_min: plan.travel_labour_min != null ? plan.travel_labour_min : 10,
+      km_rate: (plan.rates && plan.rates.travel_km && plan.rates.travel_km.rate != null) ? plan.rates.travel_km.rate : 0.99,
+      days: Array.isArray(plan.travel_days) ? plan.travel_days : [1,2]
+    },
+    funding_amount: plan.annual_budget || plan.total_funding || null,
+    plan_start: plan.plan_start || '',
+    plan_end: plan.plan_end || '',
+    active: true
+  }];
+}
+
+// ── Budget-line modal helpers ────────────────────────────────────────────────
+function blRatesForCard(cardKey) {
+  return RATE_CARDS[cardKey] ? JSON.parse(JSON.stringify(RATE_CARDS[cardKey])) : [];
+}
+
+function buildBlRateRowsHtml(rates) {
+  return (rates||[]).map(function(r) {
+    return '<div class="bl-rate-row" data-daytype="'+r.day_type+'">'
+      +'<div class="form-row" style="align-items:flex-end;gap:6px">'
+      +'<div class="field" style="flex:2"><label style="font-size:9px">Code</label>'
+      +'<input type="text" class="bl-rate-code" value="'+(r.code||'')+'" style="font-size:11px;padding:4px 6px;font-family:monospace"></div>'
+      +'<div class="field" style="flex:2"><label style="font-size:9px">'+r.day_type+'</label>'
+      +'<input type="text" class="bl-rate-desc" value="'+(r.desc||'')+'" style="font-size:11px;padding:4px 6px"></div>'
+      +'<div class="field" style="flex:1"><label style="font-size:9px">$/unit</label>'
+      +'<input type="number" class="bl-rate-amt" value="'+(r.rate!=null?r.rate:'')+'" step="0.01" min="0" style="font-size:11px;padding:4px 6px"></div>'
+      +'</div></div>';
+  }).join('');
+}
+
+var _blScratch = [];
+
+function buildBudgetLineCardHtml(bl, idx) {
+  var mgmtOpts = [{v:'agency',l:'Agency-managed'},{v:'plan',l:'Plan-managed'},{v:'self',l:'Self-managed'}]
+    .map(function(o){ return '<option value="'+o.v+'"'+(bl.management===o.v?' selected':'')+'>'+o.l+'</option>'; }).join('');
+  var cardOpts = Object.keys(BL_CARD_LABELS)
+    .map(function(k){ return '<option value="'+k+'"'+(bl.rate_card===k?' selected':'')+'>'+BL_CARD_LABELS[k]+'</option>'; }).join('');
+  var isPM = bl.management==='plan'||bl.management==='self';
+  var tDays = bl.travel ? (bl.travel.days||[]) : [];
+  var dayCbs = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'].map(function(d,di){
+    return '<label style="display:flex;align-items:center;gap:4px;font-size:11px;cursor:pointer;background:var(--bg5);border:1px solid var(--border2);border-radius:var(--r);padding:4px 8px">'
+      +'<input type="checkbox" class="bl-travel-day-cb" data-dow="'+di+'"'+(tDays.indexOf(di)!==-1?' checked':'')+'>'+d+'</label>';
+  }).join('');
+  return '<div class="bl-card" data-blid="'+(bl.id||'bl-'+idx)+'" style="background:var(--bg4);border:1px solid var(--border);border-radius:var(--r);padding:12px;margin-bottom:10px">'
+    +'<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">'
+    +'<div style="display:flex;align-items:center;gap:8px">'
+    +'<input class="bl-name" type="text" value="'+(bl.name||'')+'" placeholder="Line name (e.g. SIL)" '
+    +'style="font-size:13px;font-weight:600;background:transparent;border:none;border-bottom:1px solid var(--border2);border-radius:0;padding:2px 4px;width:180px;color:var(--text)">'
+    +'<label style="display:flex;align-items:center;gap:4px;font-size:11px;cursor:pointer">'
+    +'<input type="checkbox" class="bl-active-cb cb-circle"'+(bl.active!==false?' checked':'')+'> Active</label>'
+    +'</div>'
+    +'<button class="btn-icon" onclick="removeBudgetLine('+idx+')">&times;</button>'
+    +'</div>'
+    +'<div class="form-row">'
+    +'<div class="field"><label>Rate card</label><select class="bl-rate-card" onchange="onBlRateCardChange(this)">'+cardOpts+'</select></div>'
+    +'<div class="field"><label>Management</label><select class="bl-mgmt" onchange="onBlMgmtChange(this)">'+mgmtOpts+'</select></div>'
+    +'</div>'
+    +'<div class="form-row">'
+    +'<div class="field"><label>Plan start</label><input class="bl-plan-start" type="date" value="'+(bl.plan_start||'')+'"></div>'
+    +'<div class="field"><label>Plan end</label><input class="bl-plan-end" type="date" value="'+(bl.plan_end||'')+'"></div>'
+    +'<div class="field"><label>Funding ($)</label><input class="bl-funding" type="number" step="0.01" min="0" value="'+(bl.funding_amount!=null&&bl.funding_amount!==''?bl.funding_amount:'')+'" placeholder="0"></div>'
+    +'</div>'
+    +'<div class="bl-billto-row form-row" style="display:'+(isPM?'grid':'none')+'">'
+    +'<div class="field"><label>Bill to (name)</label><input class="bl-billt-name" type="text" value="'+((bl.bill_to&&bl.bill_to.name)||'')+'"></div>'
+    +'<div class="field"><label>Bill to (email)</label><input class="bl-billt-email" type="email" value="'+((bl.bill_to&&bl.bill_to.email)||'')+'"></div>'
+    +'</div>'
+    +'<details style="margin-top:8px"><summary style="font-size:10px;font-weight:700;text-transform:uppercase;color:var(--text3);cursor:pointer;letter-spacing:.04em;user-select:none">Rate overrides (editable)</summary>'
+    +'<div class="bl-rates-container" style="margin-top:8px">'+buildBlRateRowsHtml(bl.rates)+'</div>'
+    +'</details>'
+    +'<details style="margin-top:6px"><summary style="font-size:10px;font-weight:700;text-transform:uppercase;color:var(--text3);cursor:pointer;letter-spacing:.04em;user-select:none">Provider travel</summary>'
+    +'<div style="margin-top:8px">'
+    +'<div class="form-row">'
+    +'<div class="field"><label>Travel km (round trip)</label><input class="bl-travel-km" type="number" step="0.1" min="0" value="'+(bl.travel&&bl.travel.km!=null?bl.travel.km:14)+'"></div>'
+    +'<div class="field"><label>Labour (min each way)</label><input class="bl-travel-min" type="number" step="1" min="0" value="'+(bl.travel&&bl.travel.labour_min!=null?bl.travel.labour_min:10)+'"></div>'
+    +'<div class="field"><label>km rate ($/km)</label><input class="bl-travel-km-rate" type="number" step="0.01" min="0" value="'+(bl.travel&&bl.travel.km_rate!=null?bl.travel.km_rate:0.99)+'"></div>'
+    +'</div>'
+    +'<div style="margin-top:6px"><label style="font-size:10px;color:var(--text3);text-transform:uppercase;font-weight:600;display:block;margin-bottom:4px">Claim travel on these days</label>'
+    +'<div style="display:flex;gap:6px;flex-wrap:wrap">'+dayCbs+'</div></div>'
+    +'</div></details>'
+    +'</div>';
+}
+
+function renderBudgetLinesInModal() {
+  var container = eid('pt-budget-lines');
+  if(!container) return;
+  if(!_blScratch||_blScratch.length===0){
+    container.innerHTML='<div style="font-size:12px;color:var(--text3);font-style:italic;padding:8px 0">No budget lines — click “+ Add line” above</div>';
+    return;
+  }
+  container.innerHTML = _blScratch.map(buildBudgetLineCardHtml).join('');
+}
+
+function addBudgetLine() {
+  _blScratch.push({
+    id:'bl-'+Date.now(),name:'',management:'agency',bill_to:{name:'',email:''},
+    rate_card:'core',rates:blRatesForCard('core'),
+    travel:{enabled:true,km:14,labour_min:10,km_rate:0.99,days:[1,2]},
+    funding_amount:null,plan_start:'',plan_end:'',active:true
+  });
+  renderBudgetLinesInModal();
+}
+
+function removeBudgetLine(idx) {
+  _blScratch.splice(idx,1);
+  renderBudgetLinesInModal();
+}
+
+function onBlRateCardChange(sel) {
+  var card = sel.closest('.bl-card');
+  if(!card) return;
+  var container = card.querySelector('.bl-rates-container');
+  if(container) container.innerHTML = buildBlRateRowsHtml(blRatesForCard(sel.value));
+}
+
+function onBlMgmtChange(sel) {
+  var card = sel.closest('.bl-card');
+  if(!card) return;
+  var isPM = sel.value==='plan'||sel.value==='self';
+  var btRow = card.querySelector('.bl-billto-row');
+  if(btRow) btRow.style.display = isPM ? 'grid' : 'none';
+}
+
+function collectBudgetLines() {
+  var lines = [];
+  document.querySelectorAll('#pt-budget-lines .bl-card').forEach(function(card, idx) {
+    var rates = [];
+    card.querySelectorAll('.bl-rate-row').forEach(function(row) {
+      rates.push({
+        code: (row.querySelector('.bl-rate-code')||{value:''}).value.trim(),
+        desc: (row.querySelector('.bl-rate-desc')||{value:''}).value.trim(),
+        day_type: row.dataset.daytype||'',
+        rate: parseFloat((row.querySelector('.bl-rate-amt')||{value:0}).value)||0
+      });
+    });
+    var tdays = [];
+    card.querySelectorAll('.bl-travel-day-cb:checked').forEach(function(cb){ tdays.push(+cb.dataset.dow); });
+    lines.push({
+      id: card.dataset.blid||('bl-'+idx),
+      name: (card.querySelector('.bl-name')||{value:''}).value.trim(),
+      management: (card.querySelector('.bl-mgmt')||{value:'agency'}).value,
+      bill_to: {
+        name: (card.querySelector('.bl-billt-name')||{value:''}).value.trim(),
+        email: (card.querySelector('.bl-billt-email')||{value:''}).value.trim()
+      },
+      rate_card: (card.querySelector('.bl-rate-card')||{value:'core'}).value,
+      rates: rates,
+      travel: {
+        enabled: true,
+        km: parseFloat((card.querySelector('.bl-travel-km')||{value:14}).value)||14,
+        labour_min: parseFloat((card.querySelector('.bl-travel-min')||{value:10}).value)||10,
+        km_rate: parseFloat((card.querySelector('.bl-travel-km-rate')||{value:0.99}).value)||0.99,
+        days: tdays
+      },
+      funding_amount: parseFloat((card.querySelector('.bl-funding')||{value:''}).value)||null,
+      plan_start: (card.querySelector('.bl-plan-start')||{value:''}).value||'',
+      plan_end: (card.querySelector('.bl-plan-end')||{value:''}).value||'',
+      active: !!(card.querySelector('.bl-active-cb')||{checked:true}).checked
+    });
+  });
+  return lines;
+}
+
+// ── Rate lookup from a budget line's rates array ─────────────────────────────
+function blRate(bl, dayType) {
+  var rates = bl && bl.rates;
+  if(!Array.isArray(rates)) return null;
+  return rates.find(function(r){ return r.day_type===dayType; }) || null;
+}
+
+// ── Merge a participant's ndis_plan overrides over the defaults. ─────────────
+// Also supplements from first active budget line for budget-tracker fields.
 function getPlanForParticipant(pt) {
   var plan = JSON.parse(JSON.stringify(NDIS_PLAN)); // deep clone
   var ov = pt && pt.ndis_plan;
-  if(!ov || typeof ov !== 'object') return plan;
-  ['plan_start','plan_end','takeover_date','management','budget_type','annual_budget',
-   'total_funding','weekly_hours_target','quarter_overrides',
-   'travel_days','travel_km','travel_labour_min'].forEach(function(k){
-    if(ov[k] !== undefined && ov[k] !== null && ov[k] !== '') plan[k] = ov[k];
-  });
-  if(ov.rates && typeof ov.rates === 'object') {
-    ['weekday','saturday','sunday','holiday','travel_labour','travel_km','cleaning','yard'].forEach(function(band){
-      if(ov.rates[band] && typeof ov.rates[band] === 'object') {
-        if(ov.rates[band].code)  plan.rates[band].code  = ov.rates[band].code;
-        if(ov.rates[band].desc)  plan.rates[band].desc  = ov.rates[band].desc;
-        if(ov.rates[band].rate !== undefined && ov.rates[band].rate !== null && ov.rates[band].rate !== '')
-          plan.rates[band].rate = +ov.rates[band].rate;
-      }
+  if(ov && typeof ov === 'object') {
+    ['plan_start','plan_end','takeover_date','management','budget_type','annual_budget',
+     'total_funding','weekly_hours_target','quarter_overrides',
+     'travel_days','travel_km','travel_labour_min'].forEach(function(k){
+      if(ov[k] !== undefined && ov[k] !== null && ov[k] !== '') plan[k] = ov[k];
     });
+    if(ov.rates && typeof ov.rates === 'object') {
+      ['weekday','saturday','sunday','holiday','travel_labour','travel_km','cleaning','yard'].forEach(function(band){
+        if(ov.rates[band] && typeof ov.rates[band] === 'object') {
+          if(ov.rates[band].code)  plan.rates[band].code  = ov.rates[band].code;
+          if(ov.rates[band].desc)  plan.rates[band].desc  = ov.rates[band].desc;
+          if(ov.rates[band].rate !== undefined && ov.rates[band].rate !== null && ov.rates[band].rate !== '')
+            plan.rates[band].rate = +ov.rates[band].rate;
+        }
+      });
+    }
+  }
+  // Supplement from first active budget line for budget-tracker fields
+  var bls = pt && pt.budget_lines;
+  if(Array.isArray(bls)) {
+    var primary = bls.find(function(bl){ return bl.active!==false && bl.plan_start && bl.plan_end; });
+    if(primary) {
+      if(!plan.plan_start) plan.plan_start = primary.plan_start;
+      if(!plan.plan_end)   plan.plan_end   = primary.plan_end;
+      if(!plan.total_funding && primary.funding_amount) plan.total_funding = +primary.funding_amount;
+    }
   }
   return plan;
 }
@@ -3809,155 +3975,231 @@ function openNDISInvoiceModal() {
   var pts = S.participants||[];
   if(pts.length===0){ showToast('Add participants first','err'); return; }
   var ptHtml = pts.map(function(p){
-    return '<option value="'+p.id+'" data-ndis="'+(p.ndis_number||'')+'">'+p.name+(p.ndis_number?' ('+p.ndis_number+')':'')+'</option>';
+    return '<option value="'+p.id+'">'+p.name+(p.ndis_number?' ('+p.ndis_number+')':'')+'</option>';
   }).join('');
   eid('ndis-inv-pt').innerHTML = ptHtml;
-  eid('ndis-inv-pt').onchange = ndisInvApplyParticipantDefaults;
-  // Seed hours ONCE when the modal opens. After this it's user-editable and
-  // never touched again (changing the participant must not clobber this).
-  eid('ndis-inv-hrs').value = '8';
-  eid('ndis-inv-clean').value = '0';
-  eid('ndis-inv-yard').value = '0';
-  ndisInvApplyParticipantDefaults();
   var today2 = new Date();
   var dayOff = (today2.getDay()+6)%7;
-  var lastMon = new Date(today2); lastMon.setDate(today2.getDate() - dayOff - 7);
+  var lastMon = new Date(today2); lastMon.setDate(today2.getDate()-dayOff-7);
   var lastSun = new Date(lastMon); lastSun.setDate(lastMon.getDate()+6);
   eid('ndis-inv-start').value = fmtDate(lastMon);
   eid('ndis-inv-end').value = fmtDate(lastSun);
+  ndisInvLoadBudgetLines();
   eid('m-ndis-inv').style.display = 'block';
 }
 
-// Apply selected participant's plan defaults into the invoice modal's
-// participant-specific fields (travel km + travel labour min). Hours per day
-// is deliberately NOT touched here — it's an invoice-run decision, not a
-// participant attribute, so switching participant must not reset the hours
-// the user already entered.
-function ndisInvApplyParticipantDefaults() {
+function ndisInvLoadBudgetLines() {
   var ptId = eid('ndis-inv-pt').value;
   var pt = (S.participants||[]).find(function(p){ return p.id===ptId; });
-  var plan = getPlanForParticipant(pt);
-  eid('ndis-inv-km').value = plan.travel_km != null ? plan.travel_km : 14;
-  eid('ndis-inv-travelmin').value = plan.travel_labour_min != null ? plan.travel_labour_min : 10;
+  var bls = (pt && pt.budget_lines)||[];
+  var active = bls.filter(function(bl){ return bl.active!==false; });
+  eid('ndis-inv-bl').innerHTML = active.length
+    ? active.map(function(bl,i){ return '<option value="'+i+'">'+bl.name+' ('+BL_CARD_LABELS[bl.rate_card||'core']+')'+'</option>'; }).join('')
+    : '<option value="">No budget lines — add one on the participant card</option>';
+  ndisInvApplyBudgetLineDefaults();
+}
+
+function ndisInvApplyBudgetLineDefaults() {
+  var ptId = eid('ndis-inv-pt').value;
+  var pt = (S.participants||[]).find(function(p){ return p.id===ptId; });
+  var bls = (pt && pt.budget_lines)||[];
+  var active = bls.filter(function(bl){ return bl.active!==false; });
+  var blIdx = parseInt(eid('ndis-inv-bl').value);
+  var bl = isNaN(blIdx) ? null : active[blIdx];
+  if(!bl){ eid('ndis-inv-hrs-section').innerHTML=''; eid('ndis-inv-info').innerHTML='Select a budget line above.'; return; }
+  eid('ndis-inv-km').value = (bl.travel&&bl.travel.km!=null)?bl.travel.km:14;
+  eid('ndis-inv-travelmin').value = (bl.travel&&bl.travel.labour_min!=null)?bl.travel.labour_min:10;
+  var card = bl.rate_card||'core';
+  var sec = '';
+  if(card==='sil') {
+    sec = '<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">'
+      +'<div class="field"><label>Weekday hrs (total)</label><input type="number" id="ii-wkd" value="0" min="0" step="0.5"></div>'
+      +'<div class="field"><label>Evening hrs (total)</label><input type="number" id="ii-eve" value="0" min="0" step="0.5"></div>'
+      +'<div class="field"><label>Night hrs (total)</label><input type="number" id="ii-ngt" value="0" min="0" step="0.5"></div>'
+      +'<div class="field"><label>Saturday hrs (total)</label><input type="number" id="ii-sat" value="0" min="0" step="0.5"></div>'
+      +'<div class="field"><label>Sunday hrs (total)</label><input type="number" id="ii-sun" value="0" min="0" step="0.5"></div>'
+      +'<div class="field"><label>Public holiday hrs (total)</label><input type="number" id="ii-ph" value="0" min="0" step="0.5"></div>'
+      +'</div>';
+  } else if(card==='employment') {
+    sec = '<div class="field"><label>Total hours (period)</label><input type="number" id="ii-hrs" value="0" min="0" step="0.5"></div>';
+  } else {
+    sec = '<div class="field"><label>Hours per day</label><input type="number" id="ii-hrs" value="8" min="0" step="0.5"></div>';
+  }
+  eid('ndis-inv-hrs-section').innerHTML = sec;
+  var rates = bl.rates||[];
+  var rateLines = rates.filter(function(r){return r.day_type!=='travel_km';}).map(function(r){
+    return r.day_type+' $'+Number(r.rate).toFixed(2)+'/hr';
+  }).join(' &nbsp;&#8226;&nbsp; ');
+  var mgmtLabel = bl.management==='plan'?'Plan-managed':bl.management==='self'?'Self-managed':'Agency-managed';
+  eid('ndis-inv-info').innerHTML = '<b>'+bl.name+' &mdash; '+BL_CARD_LABELS[card]+'</b> &nbsp;|&nbsp; '+mgmtLabel+'<br><span style="font-size:10px">'+rateLines+'</span><br><span style="color:var(--gold)">&#9888; Leave fields at 0 to skip those line items</span>';
+}
+
+// ── Build invoice line items from budget line + user inputs ──────────────────
+function _buildInvLines(bl, periodStart, periodEnd, travelKm, travelMin) {
+  var lines = [];
+  var card = bl.rate_card||'core';
+  var travel = bl.travel||{};
+  var travelDays = travel.days||[];
+  var DNShort = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+  var ps=periodStart.split('-'), pe=periodEnd.split('-');
+  var end4=new Date(parseInt(pe[0]),parseInt(pe[1])-1,parseInt(pe[2]));
+  var svcRangeStr = periodStart.split('-').reverse().join('/')+'–'+periodEnd.split('-').reverse().join('/');
+
+  if(card==='sil') {
+    var silBands = [
+      {id:'ii-wkd',dt:'weekday'},{id:'ii-eve',dt:'evening'},{id:'ii-ngt',dt:'night'},
+      {id:'ii-sat',dt:'saturday'},{id:'ii-sun',dt:'sunday'},{id:'ii-ph',dt:'public_holiday'}
+    ];
+    silBands.forEach(function(b){
+      var hrs = parseFloat((eid(b.id)||{value:'0'}).value)||0;
+      if(hrs<=0) return;
+      var ri = blRate(bl, b.dt);
+      if(!ri) return;
+      lines.push({ date:svcRangeStr, day:'—', desc:ri.desc, code:ri.code, qty:hrs, rate:ri.rate, amt:+(hrs*ri.rate).toFixed(2) });
+    });
+    var cur4=new Date(parseInt(ps[0]),parseInt(ps[1])-1,parseInt(ps[2]));
+    while(cur4<=end4){
+      var ds4=fmtDate(cur4); var dow4=cur4.getDay(); var isHol=!!VIC_HOLIDAYS[ds4];
+      if(travelDays.indexOf(dow4)!==-1){
+        var dateStr4=String(cur4.getDate()).padStart(2,'0')+'/'+String(cur4.getMonth()+1).padStart(2,'0')+'/'+cur4.getFullYear();
+        if(travelMin>0){
+          var labHrs=+(travelMin/60).toFixed(2);
+          var labRi=blRate(bl,isHol?'public_holiday':dow4===6?'saturday':dow4===0?'sunday':'weekday')||blRate(bl,'weekday');
+          if(labRi) lines.push({ date:dateStr4, day:DNShort[dow4], desc:'Provider Travel – Labour ('+travelMin+' min)', code:labRi.code, qty:labHrs, rate:labRi.rate, amt:+(labHrs*labRi.rate).toFixed(2) });
+        }
+        if(travelKm>0){
+          var kmRi=blRate(bl,'travel_km');
+          if(kmRi) lines.push({ date:dateStr4, day:DNShort[dow4], desc:kmRi.desc.replace('{km}',travelKm), code:kmRi.code, qty:travelKm, rate:kmRi.rate, amt:+(travelKm*kmRi.rate).toFixed(2) });
+        }
+      }
+      cur4.setDate(cur4.getDate()+1);
+    }
+  } else if(card==='employment') {
+    var empHrs = parseFloat((eid('ii-hrs')||{value:'0'}).value)||0;
+    if(empHrs>0){
+      var empRi = blRate(bl,'any_day');
+      if(empRi) lines.push({ date:svcRangeStr, day:'—', desc:empRi.desc+' — period total', code:empRi.code, qty:empHrs, rate:empRi.rate, amt:+(empHrs*empRi.rate).toFixed(2) });
+    }
+    var cur5=new Date(parseInt(ps[0]),parseInt(ps[1])-1,parseInt(ps[2]));
+    while(cur5<=end4){
+      var ds5=fmtDate(cur5); var dow5=cur5.getDay(); var isHol5=!!VIC_HOLIDAYS[ds5];
+      if(travelDays.indexOf(dow5)!==-1){
+        var ds5Str=String(cur5.getDate()).padStart(2,'0')+'/'+String(cur5.getMonth()+1).padStart(2,'0')+'/'+cur5.getFullYear();
+        if(travelMin>0){
+          var lh5=+(travelMin/60).toFixed(2);
+          var lr5=blRate(bl,isHol5?'public_holiday':dow5===6?'saturday':dow5===0?'sunday':'any_day')||blRate(bl,'any_day');
+          if(lr5) lines.push({ date:ds5Str, day:DNShort[dow5], desc:'Provider Travel – Labour ('+travelMin+' min)', code:lr5.code, qty:lh5, rate:lr5.rate, amt:+(lh5*lr5.rate).toFixed(2) });
+        }
+        if(travelKm>0){
+          var kr5=blRate(bl,'travel_km');
+          if(kr5) lines.push({ date:ds5Str, day:DNShort[dow5], desc:kr5.desc.replace('{km}',travelKm), code:kr5.code, qty:travelKm, rate:kr5.rate, amt:+(travelKm*kr5.rate).toFixed(2) });
+        }
+      }
+      cur5.setDate(cur5.getDate()+1);
+    }
+  } else {
+    var hrsPerDay = parseFloat((eid('ii-hrs')||{value:'0'}).value)||0;
+    var cur6=new Date(parseInt(ps[0]),parseInt(ps[1])-1,parseInt(ps[2]));
+    while(cur6<=end4){
+      var ds6=fmtDate(cur6); var dow6=cur6.getDay(); var isHol6=!!VIC_HOLIDAYS[ds6];
+      var dt6=isHol6?'public_holiday':dow6===6?'saturday':dow6===0?'sunday':'weekday';
+      var dateStr6=String(cur6.getDate()).padStart(2,'0')+'/'+String(cur6.getMonth()+1).padStart(2,'0')+'/'+cur6.getFullYear();
+      if(hrsPerDay>0){
+        var ri6=blRate(bl,dt6)||blRate(bl,'weekday');
+        if(ri6) lines.push({ date:dateStr6, day:DNShort[dow6], desc:ri6.desc+(isHol6?' ('+VIC_HOLIDAYS[ds6]+')':''), code:ri6.code, qty:hrsPerDay, rate:ri6.rate, amt:+(hrsPerDay*ri6.rate).toFixed(2) });
+      }
+      if(travelDays.indexOf(dow6)!==-1){
+        if(travelMin>0){
+          var labHrs6=+(travelMin/60).toFixed(2);
+          var labRi6=blRate(bl,dt6)||blRate(bl,'weekday');
+          if(labRi6) lines.push({ date:dateStr6, day:DNShort[dow6], desc:'Provider Travel – Labour ('+travelMin+' min)', code:labRi6.code, qty:labHrs6, rate:labRi6.rate, amt:+(labHrs6*labRi6.rate).toFixed(2) });
+        }
+        if(travelKm>0){
+          var kmRi6=blRate(bl,'travel_km');
+          if(kmRi6) lines.push({ date:dateStr6, day:DNShort[dow6], desc:kmRi6.desc.replace('{km}',travelKm), code:kmRi6.code, qty:travelKm, rate:kmRi6.rate, amt:+(travelKm*kmRi6.rate).toFixed(2) });
+        }
+      }
+      cur6.setDate(cur6.getDate()+1);
+    }
+  }
+  return lines;
 }
 
 function genNDISInvoice() {
   var ptId = eid('ndis-inv-pt').value;
   var pt = (S.participants||[]).find(function(p){ return p.id===ptId; });
   if(!pt){ showToast('Select a participant','err'); return; }
+  var bls = (pt.budget_lines||[]).filter(function(bl){ return bl.active!==false; });
+  var blIdx = parseInt(eid('ndis-inv-bl').value);
+  var bl = isNaN(blIdx) ? null : bls[blIdx];
+  if(!bl){ showToast('Select a budget line','err'); return; }
   var periodStart = eid('ndis-inv-start').value;
   var periodEnd = eid('ndis-inv-end').value;
   if(!periodStart||!periodEnd){ showToast('Select service period','err'); return; }
-  var hrsPerDay = parseFloat(eid('ndis-inv-hrs').value)||0;
   var travelKm = parseFloat(eid('ndis-inv-km').value)||0;
   var travelMin = parseFloat(eid('ndis-inv-travelmin').value)||0;
-  var cleanHrs = parseFloat(eid('ndis-inv-clean').value)||0;
-  var yardHrs  = parseFloat(eid('ndis-inv-yard').value)||0;
-  var plan = getPlanForParticipant(pt);
-  var rates = plan.rates;
-  // Guard: refuse to generate a $0 invoice. Every line item must be opt-in,
-  // but at least one item must have hours > 0 or there's nothing to bill.
-  if(hrsPerDay<=0 && cleanHrs<=0 && yardHrs<=0 && travelKm<=0 && travelMin<=0){
-    showToast('Nothing to invoice — enter hours for at least one service','err');
-    return;
-  }
-  var DNShort = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
-  var lines = [];
-  var ps4=periodStart.split('-'), pe4=periodEnd.split('-');
-  var cur4=new Date(parseInt(ps4[0]),parseInt(ps4[1])-1,parseInt(ps4[2]));
-  var end4=new Date(parseInt(pe4[0]),parseInt(pe4[1])-1,parseInt(pe4[2]));
-  while(cur4<=end4){
-    var ds4 = fmtDate(cur4);
-    var dow4 = cur4.getDay();
-    var dayName = DNShort[dow4];
-    var dateStr4 = String(cur4.getDate()).padStart(2,'0')+'/'+String(cur4.getMonth()+1).padStart(2,'0')+'/'+cur4.getFullYear();
-    var isHol = !!VIC_HOLIDAYS[ds4];
-    // Personal care lines — only generate if user entered hours/day.
-    // Lets the user produce a cleaning-only or yard-only invoice with no
-    // personal care attendance at all by leaving "Hours per day" at 0.
-    if(hrsPerDay>0){
-      var rateInfo;
-      if(isHol) rateInfo = rates.holiday;
-      else if(dow4===6) rateInfo = rates.saturday;
-      else if(dow4===0) rateInfo = rates.sunday;
-      else rateInfo = rates.weekday;
-      lines.push({ date:dateStr4, day:dayName, desc:rateInfo.desc+(isHol?' ('+VIC_HOLIDAYS[ds4]+')':''), code:rateInfo.code, qty:hrsPerDay, rate:rateInfo.rate, amt:+(hrsPerDay*rateInfo.rate).toFixed(2) });
-    }
-    if((plan.travel_days||[]).indexOf(dow4)!==-1 && travelMin>0){
-      // Travel labour is claimed at the same rate as the primary support that day.
-      // On a public holiday, that means the PH rate — so we match it here.
-      var travelLabourHrs = +(travelMin/60).toFixed(2);
-      var labourRate, labourCode;
-      if(isHol)        { labourRate=rates.holiday.rate;  labourCode=rates.holiday.code; }
-      else if(dow4===6){ labourRate=rates.saturday.rate; labourCode=rates.saturday.code; }
-      else if(dow4===0){ labourRate=rates.sunday.rate;   labourCode=rates.sunday.code; }
-      else             { labourRate=rates.travel_labour.rate; labourCode=rates.travel_labour.code; }
-      lines.push({ date:dateStr4, day:dayName, desc:rates.travel_labour.desc.replace('{min}',travelMin), code:labourCode, qty:travelLabourHrs, rate:labourRate, amt:+(travelLabourHrs*labourRate).toFixed(2) });
-    }
-    if((plan.travel_days||[]).indexOf(dow4)!==-1 && travelKm>0){
-      lines.push({ date:dateStr4, day:dayName, desc:rates.travel_km.desc.replace('{km}',travelKm), code:rates.travel_km.code, qty:travelKm, rate:rates.travel_km.rate, amt:+(travelKm*rates.travel_km.rate).toFixed(2) });
-    }
-    cur4.setDate(cur4.getDate()+1);
-  }
-  // Cleaning + yard maintenance: PAPL household-task items are flat hourly
-  // rates with no day-type variant, so we bill them as a single period-total
-  // line each rather than splitting per-day like personal care. The "date"
-  // shown on the line is the service period end so the line still groups
-  // sensibly in the daily-zebra-striped table below.
-  if(cleanHrs>0){
-    var endStr = String(end4.getDate()).padStart(2,'0')+'/'+String(end4.getMonth()+1).padStart(2,'0')+'/'+end4.getFullYear();
-    lines.push({ date:endStr, day:'\u2014', desc:rates.cleaning.desc+' \u2014 period total', code:rates.cleaning.code, qty:cleanHrs, rate:rates.cleaning.rate, amt:+(cleanHrs*rates.cleaning.rate).toFixed(2) });
-  }
-  if(yardHrs>0){
-    var endStr2 = String(end4.getDate()).padStart(2,'0')+'/'+String(end4.getMonth()+1).padStart(2,'0')+'/'+end4.getFullYear();
-    lines.push({ date:endStr2, day:'\u2014', desc:rates.yard.desc+' \u2014 period total', code:rates.yard.code, qty:yardHrs, rate:rates.yard.rate, amt:+(yardHrs*rates.yard.rate).toFixed(2) });
-  }
+  var lines = _buildInvLines(bl, periodStart, periodEnd, travelKm, travelMin);
+  if(lines.length===0){ showToast('Nothing to invoice — enter hours for at least one service','err'); return; }
   var subtotal = lines.reduce(function(s,l){return s+l.amt;},0);
-  var invNum2 = 'INV-'+periodEnd.replace(/-/g,'').slice(0,8);
-  // Store pending invoice data on participant record for the upload flow
-  var pendingInv = {
-    invoice_ref: invNum2,
-    amount: +subtotal.toFixed(2),
-    period_start: periodStart,
-    period_end: periodEnd,
-    generated_at: new Date().toISOString(),
-    participant_name: pt.name
-  };
-  S._lastGenInvoice = Object.assign({participantId: ptId}, pendingInv);
-  // Persist to participant record so it survives page reloads
-  sb2.from('participants').update({ pending_invoice: pendingInv }).eq('id', ptId).then(function(r){
-    if(!r.error) {
-      pt.pending_invoice = pendingInv;
-      S.participants = S.participants.map(function(p){ return p.id===ptId ? Object.assign(p, {pending_invoice:pendingInv}) : p; });
-    }
+  var prefix = BL_INV_PREFIXES[bl.rate_card||'core'];
+  var invNum = prefix+periodEnd.replace(/-/g,'').slice(0,8);
+  var pendingInv = { invoice_ref:invNum, amount:+subtotal.toFixed(2), period_start:periodStart, period_end:periodEnd, generated_at:new Date().toISOString(), participant_name:pt.name };
+  S._lastGenInvoice = Object.assign({participantId:ptId},pendingInv);
+  sb2.from('participants').update({pending_invoice:pendingInv}).eq('id',ptId).then(function(r){
+    if(!r.error){ pt.pending_invoice=pendingInv; S.participants=S.participants.map(function(p){ return p.id===ptId?Object.assign(p,{pending_invoice:pendingInv}):p; }); }
   });
-  var invDate = new Date();
-  var invDateStr = String(invDate.getDate()).padStart(2,'0')+'/'+String(invDate.getMonth()+1).padStart(2,'0')+'/'+invDate.getFullYear();
-  var dueDate = new Date(invDate); dueDate.setDate(dueDate.getDate()+14);
-  var dueDateStr = String(dueDate.getDate()).padStart(2,'0')+'/'+String(dueDate.getMonth()+1).padStart(2,'0')+'/'+dueDate.getFullYear();
-  var invNum = 'INV-'+periodEnd.replace(/-/g,'').slice(0,8);
-  var svcPeriod = periodStart.split('-').reverse().join('/')+' \u2013 '+periodEnd.split('-').reverse().join('/');
-  // Travel-days human label for the footer notes
+  var invDate=new Date();
+  var invDateStr=String(invDate.getDate()).padStart(2,'0')+'/'+String(invDate.getMonth()+1).padStart(2,'0')+'/'+invDate.getFullYear();
+  var dueDate=new Date(invDate); dueDate.setDate(dueDate.getDate()+14);
+  var dueDateStr=String(dueDate.getDate()).padStart(2,'0')+'/'+String(dueDate.getMonth()+1).padStart(2,'0')+'/'+dueDate.getFullYear();
+  var svcPeriod=periodStart.split('-').reverse().join('/')+' – '+periodEnd.split('-').reverse().join('/');
+  var mgmtStr=bl.management==='plan'?'Plan-Managed':bl.management==='self'?'Self-Managed':'Agency-Managed';
   var dayLabels=['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
-  var travelDaysLabel = (plan.travel_days||[]).map(function(d){ return dayLabels[d]; }).join(', ') || 'none';
+  var travelDaysLabel=(bl.travel&&bl.travel.days||[]).map(function(d){return dayLabels[d];}).join(', ')||'none';
   var prevDate='', rowIdx=0;
-  var lineRows = lines.map(function(l){
+  var lineRows=lines.map(function(l){
     if(l.date!==prevDate){rowIdx++;prevDate=l.date;}
     var bg=(rowIdx%2===1)?'#f5f5f5':'#ffffff';
     return '<tr style="background:'+bg+'"><td style="padding:5px 8px;border:1px solid #e0e0e0;font-size:8.5pt">'+l.date+'</td><td style="padding:5px 8px;border:1px solid #e0e0e0;font-size:8.5pt">'+l.day+'</td><td style="padding:5px 8px;border:1px solid #e0e0e0;font-size:8.5pt">'+l.desc+'</td><td style="padding:5px 8px;border:1px solid #e0e0e0;font-size:8pt;font-family:monospace;color:#444">'+l.code+'</td><td style="padding:5px 8px;border:1px solid #e0e0e0;font-size:8.5pt;text-align:right">'+l.qty.toFixed(2)+'</td><td style="padding:5px 8px;border:1px solid #e0e0e0;font-size:8.5pt;text-align:right">$'+l.rate.toFixed(2)+'</td><td style="padding:5px 8px;border:1px solid #e0e0e0;font-size:8.5pt;text-align:right;font-weight:600">$'+l.amt.toFixed(2)+'</td></tr>';
   }).join('');
+  var paySection;
+  if(bl.management==='plan'||bl.management==='self'){
+    var billName=(bl.bill_to&&bl.bill_to.name)||'';
+    var billEmail=(bl.bill_to&&bl.bill_to.email)||'';
+    var payNote=bl.management==='self'?'Self-managed participant — claim via the NDIS myplace portal.':'Invoice to plan manager below.';
+    paySection='<div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:6px;padding:12px 20px;margin-top:12px">'
+      +'<div style="font-size:9pt;font-weight:700;color:#1d4ed8;margin-bottom:6px">PAYMENT DETAILS</div>'
+      +'<div style="font-size:9pt;color:#333">'+payNote+'</div>'
+      +(billName?'<div style="font-size:9pt;margin-top:6px"><b>Bill to:</b> '+billName+(billEmail?' &lt;'+billEmail+'&gt;':'')+'</div>':'')
+      +'<div style="font-size:9pt;margin-top:4px"><b>Invoice ref:</b> '+invNum+'</div>'
+      +'</div>';
+  } else {
+    paySection='<div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:6px;padding:12px 20px;margin-top:12px">'
+      +'<div style="font-size:9pt;font-weight:700;color:#15803d;margin-bottom:6px">PAYMENT DETAILS</div>'
+      +'<table style="font-size:9pt;line-height:1.7"><tbody>'
+      +'<tr><td style="padding:1px 14px 1px 0;font-weight:600;color:#333">Account Name:</td><td>Falaax Group Pty Ltd</td></tr>'
+      +'<tr><td style="padding:1px 14px 1px 0;font-weight:600;color:#333">BSB:</td><td>774-001</td></tr>'
+      +'<tr><td style="padding:1px 14px 1px 0;font-weight:600;color:#333">Account Number:</td><td>243610957</td></tr>'
+      +'<tr><td style="padding:1px 14px 1px 0;font-weight:600;color:#333">Reference:</td><td>'+invNum+'</td></tr>'
+      +'</tbody></table></div>';
+  }
   var purple='#6B2D7B';
-  var h3='<!DOCTYPE html><html><head><meta charset="UTF-8"><title>NSSS-'+invNum+'-'+(pt.name||'').replace(/\s+/g,'_')+'</title><style>body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;margin:0;padding:0;background:#fff;color:#1a1a1a;-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important;color-adjust:exact!important}.page{max-width:820px;margin:0 auto;padding:24px}@media print{.page{padding:12px 20px}.no-print{display:none!important}@page{size:A4;margin:10mm 12mm}}table{border-collapse:collapse;width:100%}*{-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important}</style></head><body><div class="page">'
+  var h3='<!DOCTYPE html><html><head><meta charset="UTF-8"><title>NSSS-'+invNum+'-'+(pt.name||'').replace(/\s+/g,'_')+'</title>'
+    +'<style>body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;margin:0;padding:0;background:#fff;color:#1a1a1a;-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important;color-adjust:exact!important}'
+    +'.page{max-width:820px;margin:0 auto;padding:24px}@media print{.page{padding:12px 20px}.no-print{display:none!important}@page{size:A4;margin:10mm 12mm}}table{border-collapse:collapse;width:100%}*{-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important}</style></head><body><div class="page">'
     +'<div style="background:'+purple+';color:#fff;padding:10px 20px;border-radius:4px 4px 0 0;font-size:18pt;font-weight:700;letter-spacing:.5px">TAX INVOICE</div>'
-    +'<div style="display:flex;justify-content:space-between;padding:10px 20px;border:1px solid #e0e0e0;border-top:none"><div><div style="font-size:11pt;font-weight:700;color:#333;margin-bottom:2px">Northern Star Support Services</div><div style="font-size:8.5pt;color:#666;line-height:1.5">Falaax Group Pty Ltd<br>ABN: 22 671 393 070<br>12 Dimboola Rd, Broadmeadows VIC 3064<br>Phone: 03 7057 1645 &nbsp;|&nbsp; Email: Admin@NorthernStarSupport.com</div></div><div style="text-align:right;font-size:9pt;line-height:1.7"><div><b>Invoice No:</b> '+invNum+'</div><div><b>Invoice Date:</b> '+invDateStr+'</div><div><b>Due Date:</b> '+dueDateStr+'</div></div></div>'
+    +'<div style="display:flex;justify-content:space-between;padding:10px 20px;border:1px solid #e0e0e0;border-top:none">'
+    +'<div><div style="font-size:11pt;font-weight:700;color:#333;margin-bottom:2px">Northern Star Support Services</div>'
+    +'<div style="font-size:8.5pt;color:#666;line-height:1.5">Falaax Group Pty Ltd<br>ABN: 22 671 393 070<br>12 Dimboola Rd, Broadmeadows VIC 3064<br>Phone: 03 7057 1645 &nbsp;|&nbsp; Email: Admin@NorthernStarSupport.com</div></div>'
+    +'<div style="text-align:right;font-size:9pt;line-height:1.7"><div><b>Invoice No:</b> '+invNum+'</div><div><b>Invoice Date:</b> '+invDateStr+'</div><div><b>Due Date:</b> '+dueDateStr+'</div></div></div>'
     +'<div style="background:'+purple+';color:#fff;padding:6px 20px;font-size:10pt;font-weight:700;margin-top:10px;border-radius:4px 4px 0 0">PARTICIPANT DETAILS</div>'
     +'<div style="border:1px solid #e0e0e0;border-top:none;padding:8px 20px"><table style="font-size:9pt;line-height:1.6"><tbody>'
     +'<tr><td style="padding:2px 12px 2px 0;font-weight:700;width:130px">Participant Name:</td><td style="padding:2px 30px 2px 0">'+(pt.name||'')+'</td><td style="padding:2px 12px 2px 0;font-weight:700">NDIS Number:</td><td>'+(pt.ndis_number||'')+'</td></tr>'
-    +'<tr><td style="padding:2px 12px 2px 0;font-weight:700">Plan Dates:</td><td>'+(plan.plan_start||'--')+(plan.plan_start&&plan.plan_end?' to ':'')+(plan.plan_end||'')+'</td><td style="padding:2px 12px 2px 0;font-weight:700">Management:</td><td>'+(plan.management||'--')+'</td></tr>'
-    +'<tr><td style="padding:2px 12px 2px 0;font-weight:700">Service Period:</td><td>'+svcPeriod+'</td><td style="padding:2px 12px 2px 0;font-weight:700">Budget:</td><td>'+(plan.budget_type||'--')+'</td></tr>'
+    +'<tr><td style="padding:2px 12px 2px 0;font-weight:700">Budget Line:</td><td>'+bl.name+'</td><td style="padding:2px 12px 2px 0;font-weight:700">Management:</td><td>'+mgmtStr+'</td></tr>'
+    +'<tr><td style="padding:2px 12px 2px 0;font-weight:700">Plan Dates:</td><td>'+(bl.plan_start||'--')+(bl.plan_start&&bl.plan_end?' to ':' ')+(bl.plan_end||'')+'</td><td style="padding:2px 12px 2px 0;font-weight:700">Service Period:</td><td>'+svcPeriod+'</td></tr>'
     +'</tbody></table></div>'
     +'<table style="margin-top:10px"><thead><tr style="background:'+purple+';color:#fff">'
-    +'<th style="padding:6px 8px;text-align:left;font-size:8.5pt;font-weight:700;border:1px solid '+purple+'">Date</th>'
+    +'<th style="padding:6px 8px;text-align:left;font-size:8.5pt;font-weight:700;border:1px solid '+purple+'">Date / Period</th>'
     +'<th style="padding:6px 8px;text-align:left;font-size:8.5pt;font-weight:700;border:1px solid '+purple+'">Day</th>'
     +'<th style="padding:6px 8px;text-align:left;font-size:8.5pt;font-weight:700;border:1px solid '+purple+'">Description</th>'
     +'<th style="padding:6px 8px;text-align:left;font-size:8.5pt;font-weight:700;border:1px solid '+purple+'">Line Item Code</th>'
@@ -3968,20 +4210,16 @@ function genNDISInvoice() {
     +'<div style="margin-top:8px"><div style="display:flex;justify-content:space-between;padding:7px 20px;font-size:10pt;font-weight:700;color:#333;border:1px solid #e0e0e0"><span>SUBTOTAL (excl. GST)</span><span>$'+subtotal.toFixed(2)+'</span></div>'
     +'<div style="display:flex;justify-content:space-between;padding:5px 20px;font-size:9pt;color:#666;border:1px solid #e0e0e0;border-top:none"><span>GST (NDIS supports are GST-free)</span><span>$0.00</span></div>'
     +'<div style="display:flex;justify-content:space-between;padding:8px 20px;font-size:12pt;font-weight:700;background:'+purple+';color:#fff;border-radius:0 0 4px 4px"><span>TOTAL AMOUNT</span><span>$'+subtotal.toFixed(2)+'</span></div></div>'
-    +'<div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:6px;padding:12px 20px;margin-top:12px"><div style="font-size:9pt;font-weight:700;color:#15803d;margin-bottom:6px">PAYMENT DETAILS</div><table style="font-size:9pt;line-height:1.7"><tbody><tr><td style="padding:1px 14px 1px 0;font-weight:600;color:#333">Account Name:</td><td>Falaax Group Pty Ltd</td></tr><tr><td style="padding:1px 14px 1px 0;font-weight:600;color:#333">BSB:</td><td>774-001</td></tr><tr><td style="padding:1px 14px 1px 0;font-weight:600;color:#333">Account Number:</td><td>243610957</td></tr><tr><td style="padding:1px 14px 1px 0;font-weight:600;color:#333">Reference:</td><td>'+invNum+'</td></tr></tbody></table></div>'
+    +paySection
     +'<div style="margin-top:12px"><div style="font-size:9pt;font-weight:700;color:'+purple+';margin-bottom:4px">NOTES</div>'
     +'<div style="font-size:7.5pt;color:#666;line-height:1.6">'
-    +'\u2022 NDIS supports are GST-free under Division 38 of the GST Act.<br>'
-    +'\u2022 All rates at or below NDIS Price Limit (PAPL 2025-26 v1.1).<br>'
-    +((travelKm>0||travelMin>0)
-      ? '\u2022 Provider travel claimed '+travelDaysLabel+' only ('+travelKm+'km round trip, '+travelMin+' min each way).<br>'
-        +'\u2022 Other travel costs absorbed by provider.<br>'
-        +'\u2022 All travel costs agreed in advance per Service Agreement.<br>'
-      : '')
-    +'\u2022 Support delivered in accordance with participant\u2019s NDIS plan goals.</div></div>'
+    +'• NDIS supports are GST-free under Division 38 of the GST Act.<br>'
+    +'• All rates at or below NDIS Price Limit (PAPL 2025-26 v1.1 / 2026-27).<br>'
+    +((travelKm>0||travelMin>0)?'• Provider travel claimed on '+travelDaysLabel+' only ('+travelKm+'km round trip, '+travelMin+' min each way). All travel costs agreed in advance per Service Agreement.<br>':'')
+    +'• Support delivered in accordance with participant’s NDIS plan goals.</div></div>'
     +'</div></body></html>';
   closeM('m-ndis-inv');
-  var w3=window.open('','_blank');if(!w3){showToast('Popup blocked \u2014 allow popups for this site','err');return;}w3.document.write(h3);w3.document.close();w3.focus();setTimeout(function(){w3.print();},500);
+  var w3=window.open('','_blank');if(!w3){showToast('Popup blocked — allow popups for this site','err');return;}w3.document.write(h3);w3.document.close();w3.focus();setTimeout(function(){w3.print();},500);
 }
 
 // ── NDIS myplace Portal Bulk Upload CSV Export ──
@@ -3996,84 +4234,39 @@ function genMyPlaceCSV() {
   var ptId = eid('ndis-inv-pt').value;
   var pt = (S.participants||[]).find(function(p){ return p.id===ptId; });
   if(!pt){ showToast('Select a participant','err'); return; }
+  var bls = (pt.budget_lines||[]).filter(function(bl){ return bl.active!==false; });
+  var blIdx = parseInt(eid('ndis-inv-bl').value);
+  var bl = isNaN(blIdx) ? null : bls[blIdx];
+  if(!bl){ showToast('Select a budget line','err'); return; }
   var periodStart = eid('ndis-inv-start').value;
   var periodEnd = eid('ndis-inv-end').value;
   if(!periodStart||!periodEnd){ showToast('Select service period','err'); return; }
-  var hrsPerDay = parseFloat(eid('ndis-inv-hrs').value)||0;
   var travelKm = parseFloat(eid('ndis-inv-km').value)||0;
   var travelMin = parseFloat(eid('ndis-inv-travelmin').value)||0;
-  var cleanHrs = parseFloat(eid('ndis-inv-clean').value)||0;
-  var yardHrs  = parseFloat(eid('ndis-inv-yard').value)||0;
-  var plan = getPlanForParticipant(pt);
-  var rates = plan.rates;
-  if(hrsPerDay<=0 && cleanHrs<=0 && yardHrs<=0 && travelKm<=0 && travelMin<=0){
-    showToast('Nothing to export — enter hours for at least one service','err');
-    return;
-  }
-  // Sanitize then strip all whitespace. Validate it's a 9-digit numeric ID
-  // — if anything non-numeric remains, the portal will reject the upload.
-  var ndisNum = stripInvisibles(pt.ndis_number || '').replace(/\s+/g, '');
+  var lines = _buildInvLines(bl, periodStart, periodEnd, travelKm, travelMin);
+  if(lines.length===0){ showToast('Nothing to export — enter hours for at least one service','err'); return; }
+  var ndisNum = stripInvisibles(pt.ndis_number||'').replace(/\s+/g,'');
   if(!ndisNum){ showToast('Participant has no NDIS number','err'); return; }
   if(!/^\d{9,10}$/.test(ndisNum)){
-    showToast('NDIS number "' + ndisNum + '" doesn\'t look right (need 9-10 digits) — fix the participant record before export', 'err');
+    showToast('NDIS number "'+ndisNum+'" doesn\'t look right (need 9-10 digits)','err');
     return;
   }
   if(!NDIS_PROVIDER_REG){ showToast('Provider Registration Number not configured','err'); return; }
-
-  var invNum = 'INV'+periodEnd.replace(/-/g,'').slice(0,8);
-
-  var rows = [];
-  var ps = periodStart.split('-'), pe = periodEnd.split('-');
-  var cur = new Date(parseInt(ps[0]),parseInt(ps[1])-1,parseInt(ps[2]));
-  var end = new Date(parseInt(pe[0]),parseInt(pe[1])-1,parseInt(pe[2]));
-
-  while(cur<=end) {
-    var ds = fmtDate(cur);
-    var dow = cur.getDay();
-    var isHol = !!VIC_HOLIDAYS[ds];
-
-    // Personal care row — only emitted if hrsPerDay > 0. Lets the user export
-    // a cleaning-only CSV without a phantom 0-hour personal care row.
-    if(hrsPerDay>0){
-      var rateInfo;
-      if(isHol) rateInfo = rates.holiday;
-      else if(dow===6) rateInfo = rates.saturday;
-      else if(dow===0) rateInfo = rates.sunday;
-      else rateInfo = rates.weekday;
-      rows.push({ from:ds, to:ds, code:rateInfo.code, qty:hrsPerDay, price:rateInfo.rate, ref:invNum });
+  var prefix = BL_INV_PREFIXES[bl.rate_card||'core'];
+  var invNum = prefix.replace(/-/g,'')+periodEnd.replace(/-/g,'').slice(0,8);
+  var rows = lines.map(function(l){
+    // Convert display date back to ISO: "DD/MM/YYYY" or range "DD/MM/YYYY–DD/MM/YYYY"
+    var fromStr, toStr;
+    if(l.date.indexOf('–')!==-1){
+      var parts=l.date.split('–');
+      fromStr=parts[0].split('/').reverse().join('-');
+      toStr=parts[1].split('/').reverse().join('-');
+    } else {
+      fromStr=l.date.split('/').reverse().join('-');
+      toStr=fromStr;
     }
-
-    if((plan.travel_days||[]).indexOf(dow)!==-1) {
-      if(travelMin>0) {
-        var travelLabourHrs = +(travelMin/60).toFixed(2);
-        var lRate, lCode;
-        if(isHol)        { lRate=rates.holiday.rate;  lCode=rates.holiday.code; }
-        else if(dow===6) { lRate=rates.saturday.rate; lCode=rates.saturday.code; }
-        else if(dow===0) { lRate=rates.sunday.rate;   lCode=rates.sunday.code; }
-        else             { lRate=rates.travel_labour.rate; lCode=rates.travel_labour.code; }
-        rows.push({ from:ds, to:ds, code:lCode, qty:travelLabourHrs, price:lRate, ref:invNum });
-      }
-      if(travelKm>0) {
-        rows.push({ from:ds, to:ds, code:rates.travel_km.code, qty:travelKm, price:rates.travel_km.rate, ref:invNum });
-      }
-    }
-    cur.setDate(cur.getDate()+1);
-  }
-  // Cleaning + yard maintenance — billed as a single period-total row each.
-  // Uses period start → end as the from/to range, matching how these flat
-  // hourly household-task items are typically claimed via the bulk portal.
-  if(cleanHrs>0){
-    rows.push({ from:periodStart, to:periodEnd, code:rates.cleaning.code, qty:cleanHrs, price:rates.cleaning.rate, ref:invNum });
-  }
-  if(yardHrs>0){
-    rows.push({ from:periodStart, to:periodEnd, code:rates.yard.code, qty:yardHrs, price:rates.yard.rate, ref:invNum });
-  }
-
-  // CSV escape: wrap in quotes if value contains comma, quote, or newline.
-  // Embedded quotes are doubled per RFC 4180.
-  // ALSO scrubs invisible Unicode (bidi marks, ZWSP, BOM) that can ride
-  // along from PDF/Word paste and cause portal rejections like "Invalid
-  // NDIS No". This is the hard floor: nothing reaches the CSV uncleaned.
+    return { from:fromStr, to:toStr, code:l.code, qty:l.qty, price:l.rate, ref:invNum };
+  });
   var _csvDirtyCount = 0;
   function csvCell(v) {
     var raw = v == null ? '' : String(v);
@@ -4082,7 +4275,6 @@ function genMyPlaceCSV() {
     if(/[",\n\r]/.test(s)) return '"' + s.replace(/"/g,'""') + '"';
     return s;
   }
-
   var header = 'RegistrationNumber,NDISNumber,SupportsDeliveredFrom,SupportsDeliveredTo,SupportNumber,ClaimReference,Quantity,Hours,UnitPrice,GSTCode,AuthorisedBy,ParticipantApproved,InKindFundingProgram';
   var csvLines = [header];
   rows.forEach(function(r) {
@@ -4094,28 +4286,26 @@ function genMyPlaceCSV() {
       csvCell(r.code),
       csvCell(r.ref),
       csvCell(r.qty.toFixed(2)),
-      '',          // Hours — leave blank, we use Quantity
+      '',
       csvCell(r.price.toFixed(2)),
-      'P2',        // GST-free (NDIS supports)
-      '',          // AuthorisedBy — legacy
-      '',          // ParticipantApproved — legacy
-      ''           // InKindFundingProgram — do not use
+      'P2',
+      '',
+      '',
+      ''
     ].join(','));
   });
-
-  // Portal prefers CRLF line endings; keep filename <=20 chars including .csv
   var csv = csvLines.join('\r\n');
-  var fname = invNum.slice(0,16) + '.csv';
-  if(fname.length > 20) fname = fname.slice(0, 20-4) + '.csv';
+  var fname = invNum.slice(0,16)+'.csv';
+  if(fname.length>20) fname=fname.slice(0,16)+'.csv';
   var a = document.createElement('a');
   a.href = URL.createObjectURL(new Blob([csv],{type:'text/csv'}));
   a.download = fname;
   a.click();
   closeM('m-ndis-inv');
-  if(_csvDirtyCount > 0) {
-    showToast('myplace CSV downloaded (' + rows.length + ' rows). Cleaned ' + _csvDirtyCount + ' field(s) of invisible characters before export — recommend re-saving the participant to scrub the source data too.', 'err');
+  if(_csvDirtyCount>0){
+    showToast('myplace CSV downloaded ('+rows.length+' rows). Cleaned '+_csvDirtyCount+' field(s) of invisible characters — re-save participant to fix source.','err');
   } else {
-    showToast('myplace CSV downloaded (' + rows.length + ' rows) — upload to Bulk Payment Request','ok');
+    showToast('myplace CSV downloaded ('+rows.length+' rows) — upload to Bulk Payment Request','ok');
   }
 }
 
