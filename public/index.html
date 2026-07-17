@@ -91,6 +91,9 @@ tr:hover td{background:var(--bg4)}
 .match-link:hover{color:var(--text)}
 .form-grid{display:grid;gap:12px}
 .form-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px}
+.pt-top-grid{display:grid;gap:12px;grid-template-columns:repeat(3,1fr)}
+@media(max-width:900px){.pt-top-grid{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:560px){.pt-top-grid{grid-template-columns:1fr}}
 .field{display:flex;flex-direction:column;gap:5px}
 .field label{font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;font-weight:600}
 .field label.in{color:var(--in)}
@@ -511,18 +514,14 @@ input[type=number]{text-align:right}
 
 <!-- Participant Modal -->
 <div id="m-participant" style="display:none"><div class="modal-bg" onclick="if(event.target===this)closeM('m-participant')">
-  <div class="modal" style="width:620px;max-width:calc(100vw - 40px)">
+  <div class="modal" style="width:min(1100px,calc(100vw - 40px))">
     <div class="modal-title"><span id="pt-modal-title">Add participant</span><button class="btn-icon" onclick="closeM('m-participant')">&#x2715;</button></div>
     <div class="form-grid">
-      <div class="form-row">
+      <div class="pt-top-grid">
         <div class="field"><label>Full name</label><input type="text" id="pt-name" placeholder="Jane Smith"></div>
         <div class="field"><label>NDIS number</label><input type="text" id="pt-ndis" placeholder="43XXXXXXXXX"></div>
-      </div>
-      <div class="form-row">
         <div class="field"><label>Date of birth</label><input type="date" id="pt-dob"></div>
         <div class="field"><label>Phone / guardian</label><input type="text" id="pt-phone" placeholder="04xx xxx xxx"></div>
-      </div>
-      <div class="form-row">
         <div class="field"><label>Address</label><input type="text" id="pt-address" placeholder="123 Main St, Suburb VIC 3000"></div>
         <div class="field"><label>Total weekly support hours</label><input type="number" id="pt-hours" placeholder="10" step="0.5" min="0"></div>
       </div>
@@ -534,7 +533,10 @@ input[type=number]{text-align:right}
       </div>
 
       <!-- Weekly schedule blocks Mon-Sun -->
-      <div class="field">
+      <!-- min-width:0 lets this grid item shrink below the 980px schedule grid
+           so the wrap scrolls internally on narrow screens instead of blowing
+           out the modal -->
+      <div class="field" style="min-width:0">
         <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:6px">
           <label style="margin:0">Weekly support schedule</label>
           <button class="btn btn-outline" onclick="openScheduleBlockForm()">+ Add shift</button>
