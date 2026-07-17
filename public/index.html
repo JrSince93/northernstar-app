@@ -3877,6 +3877,267 @@ function ctValidatePeriods(results){
   return null;
 }
 
+// ── Step 3: Merge + Matching logic ──────────────────────────────────────────
+
+// ---- 3a. Midnight merge ----
+
+function ctNormName(name){
+  return String(name||'').toLowerCase().replace(/\s+/g,' ').trim();
+}
+
+// Local-time date arithmetic — adds n days to 'YYYY-MM-DD', no UTC parsing.
+function ctAddDay(dateStr,n){
+  var p=dateStr.split('-');
+  var d=new Date(parseInt(p[0]),parseInt(p[1])-1,parseInt(p[2])+n);
+  return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+}
+
+// Duration in decimal hours; handles overnight (out ≤ in after midnight).
+function ctShiftDuration(inTime,outTime,crossesMidnight){
+  var ip=inTime.split(':').map(Number);
+  var op=outTime.split(':').map(Number);
+  var inM=ip[0]*60+ip[1];
+  var outM=op[0]*60+op[1];
+  if(crossesMidnight||outM<=inM)outM+=1440;
+  return(outM-inM)/60;
+}
+
+// Re-merge a single employee's raw shifts: a shift ending exactly 00:00 on date D
+// followed immediately (same job) by one starting 00:00 on D+1 → merged overnight shift.
+// Applied iteratively left-to-right on a date+time sorted array.
+function ctMidnightMerge(rawShifts){
+  var sorted=rawShifts.slice().sort(function(a,b){
+    var ak=a.date+'T'+a['in'],bk=b.date+'T'+b['in'];
+    return ak<bk?-1:ak>bk?1:0;
+  });
+  var out=[];
+  var i=0;
+  while(i<sorted.length){
+    var s=sorted[i];
+    // Try to merge: current ends at 00:00 AND next starts at 00:00 on D+1, same job
+    if(s.out==='00:00'&&i+1<sorted.length){
+      var nxt=sorted[i+1];
+      if(nxt['in']==='00:00'&&nxt.date===ctAddDay(s.date,1)&&nxt.job===s.job){
+        var merged={date:s.date,job:s.job,'in':s['in'],out:nxt.out,crossesMidnight:true};
+        out.push(merged);
+        i+=2;
+        continue;
+      }
+    }
+    out.push({date:s.date,job:s.job,'in':s['in'],out:s.out,crossesMidnight:false});
+    i++;
+  }
+  return out;
+}
+
+// ---- 3b. Employee matching ----
+
+// Returns {status:'mapped'|'ignored'|'auto'|'unknown', employee_id, candidate, candidates}
+function ctMatchEmployee(normalizedName){
+  // 1. Check saved name map
+  var saved=(S.tsNameMap||[]).find(function(m){return m.connecteam_name===normalizedName;});
+  if(saved){
+    if(saved.ignored)return{status:'ignored',employee_id:null};
+    return{status:'mapped',employee_id:saved.employee_id};
+  }
+  // 2. Auto-match against active employees
+  var nameToks=normalizedName.split(' ').filter(function(t){return t.length>0;});
+  var candidates=(S.emps||[]).filter(function(e){
+    var en=ctNormName(e.name);
+    if(en===normalizedName)return true;
+    // First + last token match (middle initials in filename or employee record)
+    var et=en.split(' ').filter(function(t){return t.length>0;});
+    if(nameToks.length>=2&&et.length>=2){
+      if(nameToks[0]===et[0]&&nameToks[nameToks.length-1]===et[et.length-1])return true;
+    }
+    return false;
+  });
+  if(candidates.length===1)return{status:'auto',employee_id:candidates[0].id,candidate:candidates[0]};
+  return{status:'unknown',employee_id:null,candidates:candidates};
+}
+
+// Upsert a resolved employee-name mapping into Supabase + S.tsNameMap.
+// Called from the review modal when the operator picks or ignores an employee.
+async function ctSaveNameMap(connecteamName,employeeId,ignored){
+  var normName=ctNormName(connecteamName);
+  var existing=(S.tsNameMap||[]).find(function(m){return m.connecteam_name===normName;});
+  var row={connecteam_name:normName,employee_id:employeeId||null,ignored:!!ignored};
+  var res;
+  if(existing){
+    res=await sb2.from('timesheet_name_map').update(row).eq('id',existing.id).select();
+  }else{
+    res=await sb2.from('timesheet_name_map').insert(row).select();
+  }
+  if(res.error){showToast('Name map save failed: '+res.error.message,'err');return false;}
+  var upserted=res.data[0];
+  if(existing){
+    S.tsNameMap=(S.tsNameMap||[]).map(function(m){return m.id===existing.id?upserted:m;});
+  }else{
+    if(!S.tsNameMap)S.tsNameMap=[];
+    S.tsNameMap.push(upserted);
+  }
+  return true;
+}
+
+// ---- 3c. Participant matching ----
+
+// Case-insensitive token overlap between job string and participant names.
+// Tokens shorter than 3 chars are considered trivial (filters out "A", "Mc" etc.).
+function ctMatchParticipant(jobStr){
+  var jobToks=jobStr.toLowerCase().split(/\s+/).filter(function(t){return t.length>2;});
+  if(!jobToks.length)return{status:'none',participantId:null,candidates:[]};
+  var matches=[];
+  (S.participants||[]).forEach(function(p){
+    var ptToks=p.name.toLowerCase().split(/\s+/);
+    var hit=jobToks.some(function(jt){return ptToks.indexOf(jt)!==-1;});
+    if(hit)matches.push(p);
+  });
+  if(matches.length===1)return{status:'confident',participantId:matches[0].id,candidates:matches};
+  if(matches.length>1)return{status:'ambiguous',participantId:null,candidates:matches};
+  return{status:'none',participantId:null,candidates:[]};
+}
+
+// ---- 3d. Shift-type matching ----
+
+function ctTimeToMins(hhmm){
+  var p=hhmm.split(':').map(Number);return p[0]*60+p[1];
+}
+
+// Match a merged shift against a participant's active shift types.
+// Returns {status:'confident'|'suggested'|'unmatched', shiftTypeId, shiftKind}
+function ctMatchShiftType(shift,participantId){
+  var types=(S.shiftTypes||[]).filter(function(t){
+    return t.participant_id===participantId&&t.active;
+  });
+  if(!types.length)return{status:'unmatched',shiftTypeId:null,shiftKind:null};
+
+  var sInM=ctTimeToMins(shift['in']);
+  var sOutM=ctTimeToMins(shift.out);
+  // Normalise overnight shift
+  if(shift.crossesMidnight||sOutM<=sInM)sOutM+=1440;
+
+  var scored=types.map(function(t){
+    var tStart=ctTimeToMins(t.start_time);
+    var tEnd=ctTimeToMins(t.end_time);
+    if(tEnd<=tStart)tEnd+=1440; // overnight type window
+
+    // Try shift at ±24h offsets to handle cross-midnight alignment
+    var best=null;
+    [-1440,0,1440].forEach(function(offset){
+      var si=sInM+offset,so=sOutM+offset;
+      var sd=Math.abs(si-tStart),ed=Math.abs(so-tEnd);
+      if(!best||sd+ed<best.startDelta+best.endDelta)best={startDelta:sd,endDelta:ed};
+    });
+    return{type:t,startDelta:best.startDelta,endDelta:best.endDelta,total:best.startDelta+best.endDelta};
+  });
+  scored.sort(function(a,b){return a.total-b.total;});
+
+  // Confident: best candidate has both deltas within its own tolerance
+  var confident=scored.filter(function(sc){
+    return sc.startDelta<=sc.type.tolerance_mins&&sc.endDelta<=sc.type.tolerance_mins;
+  });
+  if(confident.length>0){
+    var w=confident[0];
+    return{status:'confident',shiftTypeId:w.type.id,shiftKind:w.type.shift_kind};
+  }
+
+  // Suggested: exactly one type within 3× its tolerance
+  var suggested=scored.filter(function(sc){
+    return sc.startDelta<=sc.type.tolerance_mins*3&&sc.endDelta<=sc.type.tolerance_mins*3;
+  });
+  if(suggested.length===1){
+    return{status:'suggested',shiftTypeId:suggested[0].type.id,shiftKind:suggested[0].type.shift_kind};
+  }
+
+  return{status:'unmatched',shiftTypeId:null,shiftKind:null};
+}
+
+// ---- Full enrichment pipeline ----
+
+// Takes an array of ctParsePDF results, returns enriched import items:
+// [{fileName, employeeName, periodStart, periodEnd, empMatch, shifts:[...], error}]
+// Each shift: {date, job, in, out, crossesMidnight, duration, included,
+//              participantId, participantStatus, participantCandidates,
+//              shiftTypeId, shiftTypeStatus, shiftKind, activeMins, warning}
+function ctEnrichResults(parsedResults){
+  // Detect duplicate employees across files
+  var nameCount={};
+  parsedResults.forEach(function(pr){
+    if(!pr.employeeName)return;
+    var n=ctNormName(pr.employeeName);
+    nameCount[n]=(nameCount[n]||0)+1;
+  });
+
+  return parsedResults.map(function(pr){
+    var normName=ctNormName(pr.employeeName||'');
+    var empMatch=ctMatchEmployee(normName);
+
+    // Flag duplicate exports (same employee in 2+ files)
+    if(nameCount[normName]>1){
+      empMatch.dupError=true;
+    }
+
+    // Midnight-merge this employee's raw shifts
+    var merged=ctMidnightMerge(pr.rawShifts||[]);
+
+    // Enrich each merged shift
+    var shifts=merged.map(function(s){
+      var dur=ctShiftDuration(s['in'],s.out,s.crossesMidnight);
+      // Zero / negative duration → flag, exclude by default
+      var warning=null;
+      if(dur<=0){warning='zero-duration';}
+
+      var ptRes=ctMatchParticipant(s.job);
+      var stRes={status:'unmatched',shiftTypeId:null,shiftKind:null};
+      if(ptRes.status==='confident'&&ptRes.participantId){
+        stRes=ctMatchShiftType(s,ptRes.participantId);
+      }
+
+      return{
+        date:s.date,
+        job:s.job,
+        'in':s['in'],
+        out:s.out,
+        crossesMidnight:s.crossesMidnight,
+        duration:dur,
+        included:!warning,
+        warning:warning,
+        participantId:ptRes.status==='confident'?ptRes.participantId:null,
+        participantStatus:ptRes.status,
+        participantCandidates:ptRes.candidates||[],
+        shiftTypeId:stRes.shiftTypeId,
+        shiftTypeStatus:stRes.status,
+        shiftKind:stRes.shiftKind,
+        activeMins:0
+      };
+    });
+
+    return{
+      fileName:pr.fileName,
+      employeeName:pr.employeeName,
+      periodStart:pr.periodStart,
+      periodEnd:pr.periodEnd,
+      empMatch:empMatch,
+      shifts:shifts,
+      error:pr.error||null
+    };
+  });
+}
+
+// Re-run only shift-type matching across all enriched results (called after a new
+// shift type is created inline so sibling shifts snap to it immediately).
+function ctRematchShiftTypes(enrichedResults){
+  enrichedResults.forEach(function(er){
+    (er.shifts||[]).forEach(function(s){
+      if(!s.participantId)return;
+      var stRes=ctMatchShiftType(s,s.participantId);
+      s.shiftTypeId=stRes.shiftTypeId;
+      s.shiftTypeStatus=stRes.status;
+      s.shiftKind=stRes.shiftKind;
+    });
+  });
+}
+
 // ────────────────────────────────────────────────────────────────────────────
 
 async function delParticipant(id){
