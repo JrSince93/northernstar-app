@@ -2371,10 +2371,100 @@ function toggleNDISCard(headerEl){
   if(ptId) _ndisCardOpen[ptId] = !isOpen;
 }
 
+// ── Monthly funding schedule mode ────────────────────────────────────────────
+// Alternative to the quarterly split for budget lines funded in irregular
+// monthly amounts (e.g. SIL Stated supports on a 17th-to-16th cycle) with
+// explicit rollover. A budget line opts in by having funding_schedule rows;
+// everything else keeps the quarterly tracker untouched.
+function blFundingSchedule(bl){
+  return (bl && Array.isArray(bl.funding_schedule) ? bl.funding_schedule : [])
+    .filter(function(p){ return p && p.start && p.end && isFinite(+p.amount); })
+    .slice().sort(function(a,b){ return String(a.start).localeCompare(String(b.start)); });
+}
+function findScheduleBudgetLine(pt){
+  var bls = pt && pt.budget_lines;
+  if(!Array.isArray(bls)) return null;
+  return bls.find(function(bl){ return bl.active!==false && blFundingSchedule(bl).length>0; }) || null;
+}
+function computeFundingScheduleRowsForParticipant(pt, bl){
+  var MON=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  var sched = blFundingSchedule(bl);
+  var periods = sched.map(function(p,i){
+    var sd=String(p.start).split('-');
+    return { idx:i, label:MON[parseInt(sd[1])-1]+' '+sd[0], start_iso:p.start, end_iso:p.end,
+             fresh:+p.amount, is_takeover:false };
+  });
+  var receipts = collectNDISReceiptsForParticipant(pt);
+  var placed = bucketReceiptsByQuarter(receipts, periods);
+  var ov = bl.funding_opening_balance_override || null;
+  var ovStart = ov && ov.period_start ? ov.period_start : null;
+  var ovAsOf  = ov && ov.as_of_date ? ov.as_of_date : null;
+
+  var todayIso = fmtDate(new Date());
+  var currentIdx = -1;
+  for(var i=0;i<periods.length;i++){
+    if(todayIso>=periods[i].start_iso && todayIso<=periods[i].end_iso){ currentIdx=i; break; }
+  }
+
+  var rolling = 0, trackingStarted = !ovStart;
+  var rows = periods.map(function(q, idx){
+    // Periods before the takeover override: prior provider's responsibility —
+    // no spend tracked or displayed, and they contribute nothing to rollover.
+    if(ovStart && q.start_iso < ovStart){
+      return { q:q, bucket:[], received:0, opening:null, available:null, carry:null,
+               untracked:true, pctUsed:0, status:null,
+               isCurrent: idx===currentIdx, isPast: todayIso>q.end_iso, isFuture: todayIso<q.start_iso };
+    }
+    var isOvPeriod = ovStart && q.start_iso===ovStart;
+    // In the takeover period only NSS's own spend (from as_of_date) counts.
+    var bucket = placed.buckets[idx].filter(function(r){
+      return !isOvPeriod || !ovAsOf || r.date >= ovAsOf;
+    });
+    var received = bucket.reduce(function(s,r){ return s + r.amount; }, 0);
+    var opening, available;
+    if(isOvPeriod){
+      // Known remaining balance at takeover replaces the full allocation.
+      opening = +ov.remaining_amount || 0;
+      available = opening;
+      trackingStarted = true;
+    } else {
+      opening = trackingStarted ? rolling : 0;
+      available = opening + q.fresh;
+      trackingStarted = true;
+    }
+    var carry = +(available - received).toFixed(3);
+    rolling = carry;
+    var pctUsed = available > 0 ? received / available : 0;
+    return { q:q, bucket:bucket, received:received, opening:opening, available:available,
+             carry:carry, untracked:false, takeover:isOvPeriod, negativeOpening:opening<0,
+             pctUsed:pctUsed, status:ndisBudgetStatus(pctUsed), priorCarry:opening,
+             isCurrent: idx===currentIdx, isPast: todayIso>q.end_iso, isFuture: todayIso<q.start_iso };
+  });
+
+  var totalFresh = periods.reduce(function(s,q){ return s + q.fresh; }, 0);
+  var tracked = rows.filter(function(r){ return !r.untracked; });
+  var totalReceived = tracked.reduce(function(s,r){ return s + r.received; }, 0);
+  var ytdFresh    = tracked.filter(function(r){ return !r.isFuture; }).reduce(function(s,r){ return s + r.q.fresh; }, 0);
+  var ytdReceived = tracked.filter(function(r){ return !r.isFuture; }).reduce(function(s,r){ return s + r.received; }, 0);
+  var fundingAmt = +bl.funding_amount || 0;
+  return {
+    mode:'schedule', scheduleBl: bl,
+    sumMismatch: fundingAmt > 0 && Math.abs(totalFresh - fundingAmt) > 0.01,
+    quarters: periods, receipts: receipts, rows: rows, orphans: placed.orphans,
+    currentIdx: currentIdx, totalFresh: totalFresh, totalReceived: totalReceived,
+    ytdFresh: ytdFresh, ytdReceived: ytdReceived
+  };
+}
+
 // Compute per-quarter rows for a single participant. Returns the rows array
 // plus aggregates (totalFresh, totalReceived, ytdFresh, ytdReceived, currentIdx).
 // Pure function — no DOM. Used by both per-card rendering and the aggregated summary.
 function computeNDISBudgetRowsForParticipant(pt, plan) {
+  // Monthly funding schedule mode takes over when any active budget line
+  // carries funding_schedule rows; the quarterly path below is untouched
+  // for everyone else.
+  var schedBl = findScheduleBudgetLine(pt);
+  if(schedBl) return computeFundingScheduleRowsForParticipant(pt, schedBl);
   var quarters = buildNDISQuartersForPlan(plan);
   var receipts = collectNDISReceiptsForParticipant(pt);
   var placed = bucketReceiptsByQuarter(receipts, quarters);
@@ -2452,9 +2542,11 @@ function renderNDISBudgetParticipantCard(pt, plan, computed) {
   var weeklyHrs = plan.weekly_hours_target;
   var takeoverIso = plan.takeover_date ? ndisDateToIso(plan.takeover_date) : '';
   var takeoverDmy = takeoverIso ? takeoverIso.split('-').reverse().join('/') : '';
+  var isSched = computed.mode === 'schedule';
   var subline = 'Plan ' + planStartDmy + ' \u2192 ' + planEndDmy
               + (weeklyHrs ? ' \u00B7 Target ' + weeklyHrs + ' hrs/week' : '')
-              + (takeoverDmy ? ' from ' + takeoverDmy : '');
+              + (takeoverDmy ? ' from ' + takeoverDmy : '')
+              + (isSched ? ' \u00B7 Monthly funding schedule ('+(computed.scheduleBl.name||'budget line')+')' : '');
 
   // Orphan banner
   var orphanBanner = '';
@@ -2464,14 +2556,40 @@ function renderNDISBudgetParticipantCard(pt, plan, computed) {
       + '&#9888; '+orphans.length+' receipt(s) dated outside the plan window ('+fmt(orphanTotal)+' total) &mdash; not counted in any quarter</div>';
   }
 
+  // Schedule-mode banners: entered rows not matching the plan total, and any
+  // period whose opening balance went negative (prior period overspent).
+  if(isSched && computed.sumMismatch){
+    orphanBanner += '<div style="background:rgba(210,153,34,.08);border:1px solid rgba(210,153,34,.25);border-radius:var(--r);padding:10px 14px;margin-bottom:12px;font-size:11px;color:var(--gold)">'
+      + '&#9888; Funding schedule rows sum to '+fmt(computed.totalFresh)+' but the budget line’s total funding is '+fmt(computed.scheduleBl.funding_amount)+' &mdash; check the entered periods</div>';
+  }
+  if(isSched && rows.some(function(r){ return r.negativeOpening; })){
+    orphanBanner += '<div style="background:rgba(248,81,73,.08);border:1px solid rgba(248,81,73,.25);border-radius:var(--r);padding:10px 14px;margin-bottom:12px;font-size:11px;color:var(--out)">'
+      + '&#9888; A period opened with a negative rollover &mdash; an earlier period was overspent</div>';
+  }
+
   // Per-quarter rows
   var quartersHtml = orphanBanner;
+  var freshLabel = isSched ? 'Allocated' : 'Fresh funding';
+  var carryLabel = isSched ? 'Remaining' : 'Rollover';
   rows.forEach(function(row, idx){
     var q = row.q, s = row.status;
     var key = ptId + ':' + idx;
     var open = !!_ndisBudgetOpen[key];
+    if(row.untracked){
+      // Pre-takeover period: prior provider's spend, not tracked by NSS.
+      quartersHtml += '<div style="border:1px solid var(--border);background:var(--bg4);border-radius:var(--r2);margin-bottom:8px;opacity:.55">'
+        + '<div style="display:grid;grid-template-columns:auto 1fr auto auto;gap:14px;align-items:center;padding:10px 16px">'
+        + '<div style="width:14px"></div>'
+        + '<div><div style="font-size:13px;font-weight:700">'+q.label
+          + '<span style="background:var(--bg5);color:var(--text3);font-size:9px;font-weight:700;padding:2px 6px;border-radius:10px;letter-spacing:.05em;text-transform:uppercase;margin-left:8px">Prior provider</span></div>'
+          + '<div class="td-muted" style="font-size:10px;margin-top:2px">'+q.start_iso.split('-').reverse().join('/')+' – '+q.end_iso.split('-').reverse().join('/')+'</div></div>'
+        + '<div style="text-align:right"><div class="td-muted" style="font-size:10px">'+freshLabel+'</div><div style="font-size:12px;font-weight:600">'+fmt(q.fresh)+'</div></div>'
+        + '<div class="td-muted" style="font-size:10px">Not tracked</div>'
+        + '</div></div>';
+      return;
+    }
     var currentBadge = row.isCurrent ? '<span style="background:var(--blue-dim);color:var(--blue);font-size:9px;font-weight:700;padding:2px 6px;border-radius:10px;letter-spacing:.05em;text-transform:uppercase;margin-left:8px">Current</span>' : '';
-    var kindBadge = q.is_takeover
+    var kindBadge = (q.is_takeover || row.takeover)
           ? '<span style="background:rgba(188,140,255,.15);color:#bc8cff;font-size:9px;font-weight:700;padding:2px 6px;border-radius:10px;letter-spacing:.05em;text-transform:uppercase;margin-left:6px">Takeover</span>'
         : '';
     if(q.is_overridden) {
@@ -2488,12 +2606,15 @@ function renderNDISBudgetParticipantCard(pt, plan, computed) {
         + '<div style="font-size:14px;color:var(--text3);width:14px;transition:.15s;transform:rotate('+(open?'90':'0')+'deg)">&#9656;</div>'
         + '<div>'
           + '<div style="font-size:13px;font-weight:700">'+q.label+kindBadge+currentBadge+'</div>'
-          + '<div class="td-muted" style="font-size:10px;margin-top:2px">'+dateRange+'</div>'
+          + '<div class="td-muted" style="font-size:10px;margin-top:2px">'+dateRange
+            + (isSched ? ' &nbsp;·&nbsp; Opening <b style="color:'+(row.negativeOpening?'var(--out)':'var(--text2)')+'">'+fmt(row.opening)+(row.negativeOpening?' (overspent)':'')+'</b>'
+                       + ' → Available <b style="color:var(--text2)">'+fmt(row.available)+'</b>' : '')
+          + '</div>'
         + '</div>'
-        + '<div style="text-align:right"><div class="td-muted" style="font-size:10px">Fresh funding</div><div style="font-size:12px;font-weight:600">'+fmt(q.fresh)+'</div></div>'
+        + '<div style="text-align:right"><div class="td-muted" style="font-size:10px">'+freshLabel+'</div><div style="font-size:12px;font-weight:600">'+(isSched&&row.takeover ? fmt(row.available)+'<span class="td-muted" style="font-size:9px"> of '+fmt(q.fresh)+'</span>' : fmt(q.fresh))+'</div></div>'
         + '<div style="text-align:right"><div class="td-muted" style="font-size:10px">Received</div><div style="font-size:12px;font-weight:600;color:'+s.color+'">'+fmt(row.received)+'</div></div>'
         + '<div style="min-width:100px"><div style="height:6px;background:rgba(255,255,255,.05);border-radius:3px;overflow:hidden"><div style="height:100%;width:'+barWidthPct+'%;background:'+s.color+';transition:.2s"></div></div><div style="text-align:right;font-size:10px;color:'+s.color+';font-weight:700;margin-top:3px">'+pctLabel+'</div></div>'
-        + '<div style="text-align:right"><div class="td-muted" style="font-size:10px">Rollover</div><div style="font-size:12px;font-weight:700;color:'+carryColor+'">'+carrySign+fmt(row.carry)+'</div></div>'
+        + '<div style="text-align:right"><div class="td-muted" style="font-size:10px">'+carryLabel+'</div><div style="font-size:12px;font-weight:700;color:'+carryColor+'">'+carrySign+fmt(row.carry)+'</div></div>'
         + '<span style="background:'+s.color+';color:#fff;font-size:9px;font-weight:700;padding:3px 8px;border-radius:10px;letter-spacing:.05em;text-transform:uppercase;white-space:nowrap">'+s.label+'</span>'
       + '</div>';
 
@@ -2543,7 +2664,7 @@ function renderNDISBudgetParticipantCard(pt, plan, computed) {
 
   // Header KPI strip for this participant (per-card)
   var perCardSummary = '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:14px">'
-    + '<div class="kpi"><div class="kpi-label">Plan funding</div><div class="kpi-val purple">'+fmt(totalFresh)+'</div><div class="td-muted" style="font-size:10px">over '+rows.length+' quarter'+(rows.length===1?'':'s')+'</div></div>'
+    + '<div class="kpi"><div class="kpi-label">Plan funding</div><div class="kpi-val purple">'+fmt(totalFresh)+'</div><div class="td-muted" style="font-size:10px">over '+rows.length+' '+(isSched?'monthly period':'quarter')+(rows.length===1?'':'s')+'</div></div>'
     + '<div class="kpi"><div class="kpi-label">Received</div><div class="kpi-val green">'+fmt(totalReceived)+'</div><div class="td-muted" style="font-size:10px">'+receipts.length+' receipt'+(receipts.length===1?'':'s')+'</div></div>'
     + '<div class="kpi"><div class="kpi-label">Plan progress</div><div class="kpi-val" style="color:'+ndisBudgetStatus(pctOverall).color+'">'+Math.round(pctOverall*100)+'%</div><div class="td-muted" style="font-size:10px">'+fmt(totalReceived)+' / '+fmt(totalFresh)+'</div></div>'
   + '</div>';
@@ -5424,6 +5545,8 @@ function buildBudgetLineCardHtml(bl, idx) {
     .map(function(k){ return '<option value="'+k+'"'+(bl.rate_card===k?' selected':'')+'>'+BL_CARD_LABELS[k]+'</option>'; }).join('');
   var isPM = bl.management==='plan'||bl.management==='self';
   var tDays = bl.travel ? (bl.travel.days||[]) : [];
+  var fsRows = Array.isArray(bl.funding_schedule) ? bl.funding_schedule : [];
+  var fso = bl.funding_opening_balance_override || {};
   var dayCbs = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'].map(function(d,di){
     return '<label style="display:flex;align-items:center;gap:4px;font-size:11px;cursor:pointer;background:var(--bg5);border:1px solid var(--border2);border-radius:var(--r);padding:4px 8px">'
       +'<input type="checkbox" class="bl-travel-day-cb" data-dow="'+di+'"'+(tDays.indexOf(di)!==-1?' checked':'')+'>'+d+'</label>';
@@ -5464,7 +5587,69 @@ function buildBudgetLineCardHtml(bl, idx) {
     +'<div style="margin-top:6px"><label style="font-size:10px;color:var(--text3);text-transform:uppercase;font-weight:600;display:block;margin-bottom:4px">Claim travel on these days</label>'
     +'<div style="display:flex;gap:6px;flex-wrap:wrap">'+dayCbs+'</div></div>'
     +'</div></details>'
+    +'<details style="margin-top:6px"'+(fsRows.length?' open':'')+'><summary style="font-size:10px;font-weight:700;text-transform:uppercase;color:var(--text3);cursor:pointer;letter-spacing:.04em;user-select:none">Monthly funding schedule '+(fsRows.length?'('+fsRows.length+' periods)':'(optional — replaces quarterly tracking)')+'</summary>'
+    +'<div style="margin-top:8px">'
+    +'<div style="font-size:10px;color:var(--text3);margin-bottom:6px">Enter each funding period from the NDIS plan letter. When any rows exist, the Budget Tracker uses these periods (with rollover) instead of the quarterly split — for this budget line’s participant only.</div>'
+    +'<div class="bl-fs-container">'+fsRows.map(blFsRowHtml).join('')+'</div>'
+    +'<div style="display:flex;align-items:center;justify-content:space-between;margin-top:6px">'
+    +'<button class="btn btn-outline" style="font-size:11px;padding:4px 10px" onclick="blAddFsRow(this)">+ Add period</button>'
+    +'<span class="bl-fs-sum" style="font-size:11px;color:var(--text3)"></span>'
+    +'</div>'
+    +'<div style="border-top:1px solid var(--border);margin-top:10px;padding-top:8px">'
+    +'<label style="font-size:10px;color:var(--text3);text-transform:uppercase;font-weight:600;display:block;margin-bottom:4px">Takeover opening balance (optional, one-off)</label>'
+    +'<div style="font-size:10px;color:var(--text3);margin-bottom:6px">If NSS took over mid-period, enter what remained unspent at takeover. Periods before this one are shown as “prior provider” and not tracked.</div>'
+    +'<div class="form-row">'
+    +'<div class="field"><label style="font-size:9px">As of date</label><input class="bl-fso-asof" type="date" value="'+(fso.as_of_date||'')+'" style="font-size:11px;padding:4px 6px"></div>'
+    +'<div class="field"><label style="font-size:9px">Period start</label><input class="bl-fso-pstart" type="date" value="'+(fso.period_start||'')+'" style="font-size:11px;padding:4px 6px"></div>'
+    +'<div class="field"><label style="font-size:9px">Remaining ($)</label><input class="bl-fso-remaining" type="number" step="0.01" value="'+(fso.remaining_amount!=null?fso.remaining_amount:'')+'" style="font-size:11px;padding:4px 6px"></div>'
+    +'</div></div>'
+    +'</div></details>'
     +'</div>';
+}
+
+function blFsRowHtml(p){
+  p = p || {};
+  return '<div class="bl-fs-row form-row" style="align-items:flex-end;gap:6px;margin-bottom:4px">'
+    +'<div class="field"><label style="font-size:9px">Period start</label><input class="bl-fs-start" type="date" value="'+(p.start||'')+'" style="font-size:11px;padding:4px 6px"></div>'
+    +'<div class="field"><label style="font-size:9px">Period end</label><input class="bl-fs-end" type="date" value="'+(p.end||'')+'" style="font-size:11px;padding:4px 6px"></div>'
+    +'<div class="field"><label style="font-size:9px">Amount ($)</label><input class="bl-fs-amt" type="number" step="0.001" min="0" value="'+(p.amount!=null?p.amount:'')+'" oninput="blUpdateFsSum(this)" style="font-size:11px;padding:4px 6px"></div>'
+    +'<button class="btn-icon" title="Remove period" onclick="blRemoveFsRow(this)" style="margin-bottom:2px">&times;</button>'
+    +'</div>';
+}
+
+function blAddFsRow(btn){
+  var card = btn.closest('.bl-card');
+  if(!card) return;
+  card.querySelector('.bl-fs-container').insertAdjacentHTML('beforeend', blFsRowHtml({}));
+  blUpdateFsSum(btn);
+}
+
+function blRemoveFsRow(btn){
+  var card = btn.closest('.bl-card');
+  var row = btn.closest('.bl-fs-row');
+  if(row) row.remove();
+  if(card) blUpdateFsSum(card.querySelector('.bl-fs-container') || btn);
+}
+
+// Live sanity check: entered periods should sum to the line's total funding.
+function blUpdateFsSum(el){
+  var card = el.closest ? el.closest('.bl-card') : null;
+  if(!card) return;
+  var sumEl = card.querySelector('.bl-fs-sum');
+  if(!sumEl) return;
+  var sum = 0, n = 0;
+  card.querySelectorAll('.bl-fs-row .bl-fs-amt').forEach(function(inp){
+    var v = parseFloat(inp.value);
+    if(isFinite(v)){ sum += v; n++; }
+  });
+  if(n === 0){ sumEl.textContent = ''; return; }
+  var funding = parseFloat((card.querySelector('.bl-funding')||{value:''}).value);
+  var sumStr = '$'+sum.toLocaleString('en-AU',{minimumFractionDigits:2,maximumFractionDigits:3});
+  if(isFinite(funding) && funding > 0 && Math.abs(sum - funding) > 0.01){
+    sumEl.innerHTML = '<span style="color:var(--gold)">&#9888; Periods sum to '+sumStr+' — total funding is '+fmt(funding)+'</span>';
+  } else {
+    sumEl.innerHTML = '<span style="color:var(--in)">Periods sum to '+sumStr+(isFinite(funding)&&funding>0?' ✓ matches total funding':'')+'</span>';
+  }
 }
 
 function renderBudgetLinesInModal() {
@@ -5521,6 +5706,17 @@ function collectBudgetLines() {
     });
     var tdays = [];
     card.querySelectorAll('.bl-travel-day-cb:checked').forEach(function(cb){ tdays.push(+cb.dataset.dow); });
+    var fs = [];
+    card.querySelectorAll('.bl-fs-row').forEach(function(row){
+      var s=(row.querySelector('.bl-fs-start')||{value:''}).value;
+      var e=(row.querySelector('.bl-fs-end')||{value:''}).value;
+      var a=parseFloat((row.querySelector('.bl-fs-amt')||{value:''}).value);
+      if(s && e && isFinite(a)) fs.push({start:s, end:e, amount:a});
+    });
+    var fsoAsof=(card.querySelector('.bl-fso-asof')||{value:''}).value;
+    var fsoPs=(card.querySelector('.bl-fso-pstart')||{value:''}).value;
+    var fsoRemRaw=(card.querySelector('.bl-fso-remaining')||{value:''}).value;
+    var fsoRem=parseFloat(fsoRemRaw);
     lines.push({
       id: card.dataset.blid||('bl-'+idx),
       name: (card.querySelector('.bl-name')||{value:''}).value.trim(),
@@ -5541,6 +5737,10 @@ function collectBudgetLines() {
       funding_amount: parseFloat((card.querySelector('.bl-funding')||{value:''}).value)||null,
       plan_start: (card.querySelector('.bl-plan-start')||{value:''}).value||'',
       plan_end: (card.querySelector('.bl-plan-end')||{value:''}).value||'',
+      funding_schedule: fs,
+      funding_opening_balance_override: (fsoPs && isFinite(fsoRem))
+        ? {as_of_date: fsoAsof || fsoPs, period_start: fsoPs, remaining_amount: fsoRem}
+        : null,
       active: !!(card.querySelector('.bl-active-cb')||{checked:true}).checked
     });
   });
