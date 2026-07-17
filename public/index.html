@@ -3800,12 +3800,16 @@ function ctResolveDate(day, month, periodStart, periodEnd){
 }
 
 // Words that appear in Connecteam PDF table cells but are NOT job names.
-var CT_NOISE={no:1,sub:1,items:1,daily:1,total:1,paid:1,regular:1,overtime:1,
-  unpaid:1,auto:1,breaks:1,work:1,hours:1,absences:1,absence:1,type:1,
+// A token is treated as noise when ALL of its words are in this set, so
+// multi-word cells like "No sub items" are filtered out too.
+var CT_NOISE={no:1,sub:1,items:1,item:1,daily:1,total:1,paid:1,regular:1,overtime:1,
+  unpaid:1,auto:1,breaks:1,work:1,hours:1,absences:1,absence:1,type:1,day:1,
   clock:1,'in':1,out:1,sum:1,shift:1};
 
 var CT_DOW=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
 var CT_TIME_RE=/^\d{2}:\d{2}$/;
+// Day anchor as a single cell, e.g. "Wed 15/7". Matched per-item (not against
+// the whole joined row), because the anchor shares its row with job + times.
 var CT_DAY_RE=/^(Sun|Mon|Tue|Wed|Thu|Fri|Sat)\s+(\d{1,2})\/(\d{1,2})$/;
 
 // Parse one PDF page's text items into raw shift records.
@@ -3831,34 +3835,50 @@ function ctParsePageShifts(items, periodStart, periodEnd){
     g.items.sort(function(a,b){return a.x-b.x;});
   });
 
-  // 2. Find day-anchor lines and mark them with their resolved date.
-  //    An anchor may be one item "Wed 15/7" or two "Wed" + "15/7".
+  // 2. Detect the day anchor within each row. The anchor is a single cell
+  //    "Wed 15/7" (or, defensively, split into "Wed" + "15/7"); it sits at
+  //    the left of the same row as the job name and clock times.
   groups.forEach(function(g){
-    var joined=g.items.map(function(it){return it.str;}).join(' ');
-    var m=joined.match(CT_DAY_RE);
-    if(m){
-      g.dayDate=ctResolveDate(parseInt(m[2]),parseInt(m[3]),periodStart,periodEnd);
+    for(var i=0;i<g.items.length;i++){
+      var m=g.items[i].str.match(CT_DAY_RE);
+      if(m){g.dayDate=ctResolveDate(parseInt(m[2]),parseInt(m[3]),periodStart,periodEnd);return;}
+    }
+    for(var j=0;j<g.items.length-1;j++){
+      if(CT_DOW.indexOf(g.items[j].str)!==-1&&/^\d{1,2}\/\d{1,2}$/.test(g.items[j+1].str)){
+        var p=g.items[j+1].str.split('/');
+        g.dayDate=ctResolveDate(parseInt(p[0]),parseInt(p[1]),periodStart,periodEnd);return;
+      }
     }
   });
 
-  // 3. Assign each group to the most recent day anchor above it.
-  var currentDate=null;
+  var anchors=groups.filter(function(g){return g.dayDate;});
+  if(anchors.length===0)return [];
+
+  // 3. Assign every row the date of the NEAREST anchor by vertical distance.
+  //    Overnight sleepovers are split at midnight into sub-rows that can sit
+  //    directly above OR below their day's anchor (the anchor+daily-total gets
+  //    its own row between them), so "nearest" is correct where "most recent
+  //    above" would misfile the pre-midnight half onto the following day.
   groups.forEach(function(g){
-    if(g.dayDate)currentDate=g.dayDate;
-    g.assignedDate=currentDate;
+    if(g.dayDate){g.assignedDate=g.dayDate;return;}
+    var best=null,bestD=Infinity;
+    anchors.forEach(function(a){var d=Math.abs(a.y-g.y);if(d<bestD){bestD=d;best=a;}});
+    g.assignedDate=best?best.dayDate:null;
   });
+
+  // A token is noise when every word in it is a known column/label word —
+  // catches multi-word cells such as "No sub items".
+  function ctIsNoiseTok(tok){
+    var words=tok.split(/\s+/);
+    for(var i=0;i<words.length;i++){if(!CT_NOISE[words[i].toLowerCase()])return false;}
+    return true;
+  }
 
   // 4. For each group that has an assigned date, extract shifts.
   var shifts=[];
   groups.forEach(function(g){
     if(!g.assignedDate)return;
     var tokens=g.items.map(function(it){return it.str;});
-
-    // Detect empty-day lines (all dashes, possibly with day anchor tokens)
-    var meaningful=tokens.filter(function(t){
-      return t!=='--'&&t!=='-'&&!/^(Sun|Mon|Tue|Wed|Thu|Fri|Sat)$/.test(t)&&!/^\d{1,2}\/\d{1,2}$/.test(t);
-    });
-    if(meaningful.length===0)return;
 
     // Collect job-name runs and times from this line.
     // Job-name runs are separated by "/" or "×N" or a time token.
@@ -3877,11 +3897,12 @@ function ctParsePageShifts(items, periodStart, periodEnd){
         if(cur.length){jobRuns.push(cur);cur=[];}
         return;
       }
-      // Day anchor tokens — skip
+      // Day anchor cell (single "Wed 15/7" or bare "Wed" / "15/7") — skip
+      if(CT_DAY_RE.test(tok))return;
       if(CT_DOW.indexOf(tok)!==-1)return;
       if(/^\d{1,2}\/\d{1,2}$/.test(tok))return;
-      // Noise words
-      if(CT_NOISE[tok.toLowerCase()])return;
+      // Noise cells (column labels, "No sub items", …)
+      if(ctIsNoiseTok(tok))return;
       // Pure punctuation / digits only
       if(!/[a-zA-Z]/.test(tok))return;
       cur.push(tok);
