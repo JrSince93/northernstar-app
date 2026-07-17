@@ -1706,6 +1706,70 @@ function getHoursByDayType(empId, periodStart, periodEnd) {
   return result;
 }
 
+// Pure pay arithmetic — no DOM access.
+// Called by calcPay() (manual form) and tsCreatePayRuns() (import).
+// input: { baseRate, satRate, sunRate,
+//          wdHrs, satHrs, sunHrs, holHrs, holRate,
+//          sleepShifts, sleepActiveMins,   ← manual path (single per-shift value)
+//          sleepPerShiftMins,              ← import path (array; overrides sleepActiveMins)
+//          paygOn, superOn, periodEnd,
+//          wdLabel, satLabel, sunLabel }   ← optional breakdown label overrides
+// output: { gross, tax, sup, net, breakdown }
+function computePay(input){
+  var baseRate=+input.baseRate||0;
+  var satRate =input.satRate !=null?+input.satRate :+(baseRate*1.5).toFixed(2);
+  var sunRate =input.sunRate !=null?+input.sunRate :+(baseRate*2).toFixed(2);
+  var holRate =input.holRate !=null?+input.holRate :+(baseRate*2.25).toFixed(2);
+  var wdHrs  =+input.wdHrs ||0;
+  var satHrs =+input.satHrs||0;
+  var sunHrs =+input.sunHrs||0;
+  var holHrs =+input.holHrs||0;
+  var sleepShifts    =+input.sleepShifts||0;
+  var sleepActMins   =+input.sleepActiveMins||0;
+  var perShiftMins   =Array.isArray(input.sleepPerShiftMins)?input.sleepPerShiftMins:null;
+  var paygOn =input.paygOn!==false;
+  var superOn=input.superOn!==false;
+  var periodEnd=input.periodEnd||tod();
+  var wdLabel =input.wdLabel ||'Weekday';
+  var satLabel=input.satLabel||'Saturday';
+  var sunLabel=input.sunLabel||'Sunday';
+
+  var gross=0,breakdown=[];
+
+  if(wdHrs>0){var wg=+(wdHrs*baseRate).toFixed(2);gross+=wg;breakdown.push({label:wdLabel,hrs:wdHrs,rate:baseRate,amt:wg});}
+  if(satHrs>0){var sg=+(satHrs*satRate).toFixed(2);gross+=sg;breakdown.push({label:satLabel,hrs:satHrs,rate:satRate,amt:sg});}
+  if(sunHrs>0){var sug=+(sunHrs*sunRate).toFixed(2);gross+=sug;breakdown.push({label:sunLabel,hrs:sunHrs,rate:sunRate,amt:sug});}
+  if(holHrs>0){var hg=+(holHrs*holRate).toFixed(2);gross+=hg;breakdown.push({label:'Public holiday',hrs:holHrs,rate:holRate,amt:hg});}
+
+  if(sleepShifts>0){
+    var sleepAllow=+(sleepShifts*SCHADS_SLEEPOVER_ALLOWANCE).toFixed(2);
+    gross+=sleepAllow;
+    breakdown.push({label:'Sleepover allowance ('+sleepShifts+' shift'+(sleepShifts!==1?'s':'')+')',hrs:'',rate:'',amt:sleepAllow,isSleep:true});
+    var sleepOTRate=+(baseRate*1.5).toFixed(2);
+    if(perShiftMins&&perShiftMins.length>0){
+      // Import path: per-shift active-work computed individually then summed
+      var totalOTHrs=0;
+      perShiftMins.forEach(function(m){if(m>0)totalOTHrs+=Math.max(SCHADS_SLEEPOVER_ACTIVE_MIN_HRS,+(m/60).toFixed(2));});
+      if(totalOTHrs>0){
+        var actTotal=+(totalOTHrs*sleepOTRate).toFixed(2);gross+=actTotal;
+        breakdown.push({label:'Sleepover active work ('+totalOTHrs.toFixed(1)+'h @ $'+sleepOTRate+'/hr OT)',hrs:+totalOTHrs.toFixed(2),rate:sleepOTRate,amt:actTotal,isSleep:true});
+      }
+    }else if(sleepActMins>0){
+      // Manual path: one value covers all shifts equally
+      var actHpS=Math.max(SCHADS_SLEEPOVER_ACTIVE_MIN_HRS,+(sleepActMins/60).toFixed(2));
+      var actTot=+(sleepShifts*actHpS*sleepOTRate).toFixed(2);gross+=actTot;
+      breakdown.push({label:'Sleepover active work ('+sleepShifts+'×'+actHpS.toFixed(1)+'h @ $'+sleepOTRate+'/hr OT)',hrs:+(sleepShifts*actHpS).toFixed(2),rate:sleepOTRate,amt:actTot,isSleep:true});
+    }
+  }
+
+  gross=+gross.toFixed(2);
+  var annualEq=gross*26;
+  var periodTax=paygOn?+(paygCalc(annualEq)/26).toFixed(2):0;
+  var sup=superOn?+(gross*getSuperRate(periodEnd)).toFixed(2):0;
+  var net=+(gross-periodTax).toFixed(2);
+  return{gross:gross,tax:periodTax,sup:sup,net:net,breakdown:breakdown};
+}
+
 function calcPay(){
   var sel=eid('pr-emp'),opt=sel.selectedOptions[0];
   var empId=sel.value;
@@ -1718,175 +1782,120 @@ function calcPay(){
   var periodStart=eid('pr-s').value, periodEnd=eid('pr-e').value;
   var paygOn=eid('pr-payg-on').checked;
   var superOn=eid('pr-super-on').checked;
-
-  // Find the employee object for sat/sun rates
   var emp=S.emps.find(function(e){return e.id===empId;});
   var satRate=emp&&emp.sat_rate?parseFloat(emp.sat_rate):(baseRate*1.5);
   var sunRate=emp&&emp.sun_rate?parseFloat(emp.sun_rate):(baseRate*2);
 
-  var gross=0, breakdown=[];
-
+  // ── Salary path — does not use computePay ──
   if(empType==='salary'){
-    // Default fortnightly = annual ÷ 26. User can override via #pr-salary-amount
-    // for off-cycle adjustments (bonuses, partial fortnights, LWOP, etc.).
-    // Empty/blank/0 → use default. Any positive number → use as-is.
-    var defaultFortnight = baseRate/26;
-    var overrideEl = eid('pr-salary-amount');
-    var overrideVal = overrideEl ? parseFloat(overrideEl.value) : NaN;
-    var useOverride = !isNaN(overrideVal) && overrideVal > 0;
-    gross = useOverride ? overrideVal : defaultFortnight;
-    breakdown.push({label: useOverride ? 'Salary (manual override)' : 'Salary (fortnightly)', hrs:'', rate:'', amt:gross});
-  } else if(periodStart && periodEnd){
-    // Prefer the day grid (visible, user-controlled checkboxes) as the source
-    // of truth for weekday/Sat/Sun hours when it is rendered. Each ticked
-    // checkbox in #pr-day-grid carries its own hours and day-type via
-    // data-hrs / data-type, so we honour exactly what the user ticked instead
-    // of scaling the roster's ratios to fit the manual total — which silently
-    // misallocates hours when the actual days worked don't match the roster.
+    var defaultFortnight=baseRate/26;
+    var overrideEl=eid('pr-salary-amount');
+    var overrideVal=overrideEl?parseFloat(overrideEl.value):NaN;
+    var useOverride=!isNaN(overrideVal)&&overrideVal>0;
+    var gross=useOverride?overrideVal:defaultFortnight;
+    var breakdown=[{label:useOverride?'Salary (manual override)':'Salary (fortnightly)',hrs:'',rate:'',amt:gross}];
+    var annualEq=baseRate; // PAYG basis is always the annual salary
+    var periodTax=paygOn?+(paygCalc(annualEq)/26).toFixed(2):0;
+    var sup=superOn?+(gross*getSuperRate(periodEnd||tod())).toFixed(2):0;
+    var net=+(gross-periodTax).toFixed(2);
+    var dbEl=eid('pp-day-breakdown');
+    if(dbEl)dbEl.innerHTML=breakdown.map(function(b){return'<div class="pay-line" style="font-size:11px;color:var(--text3)"><span>'+b.label+'</span><span style="color:var(--text2)">'+fmt(b.amt)+'</span></div>';}).join('');
+    eid('pp-g').textContent=fmt(gross);eid('pp-t').textContent=paygOn?'-'+fmt(periodTax):'Off';
+    eid('pp-s').textContent=superOn?fmt(sup):'Off';eid('pp-n').textContent=fmt(net);
+    if(eid('pp-tax-row'))eid('pp-tax-row').style.opacity=paygOn?'1':'0.35';
+    if(eid('pp-super-row'))eid('pp-super-row').style.opacity=superOn?'1':'0.35';
+    return{gross:gross,tax:periodTax,sup:sup,net:net};
+  }
+
+  // ── Hourly path — compute wdHrs/satHrs/sunHrs from grid/roster/fallback ──
+  var wdHrs=0,satHrs=0,sunHrs=0;
+  var wdLabel='Weekday',satLabel='Saturday',sunLabel='Sunday';
+  var manualHrs=parseFloat(eid('pr-hrs').value)||0;
+
+  if(periodStart&&periodEnd){
     var grid=eid('pr-day-grid');
-    var gridVisible=grid && grid.style.display!=='none';
+    var gridVisible=grid&&grid.style.display!=='none';
     var gridCbs=gridVisible?document.querySelectorAll('#pr-day-grid .pr-day-cb:checked'):[];
-    var manualHrs=parseFloat(eid('pr-hrs').value)||0;
     var gridWd=0,gridSat=0,gridSun=0;
     gridCbs.forEach(function(cb){
       var h=parseFloat(cb.dataset.hrs)||0,t=cb.dataset.type;
       if(t==='saturday')gridSat+=h;
       else if(t==='sunday')gridSun+=h;
       else if(t==='weekday')gridWd+=h;
-      // 'holiday' is excluded — handled by holHrs below
+      // 'holiday' excluded — handled by holHrs
     });
     var gridTotal=+(gridWd+gridSat+gridSun).toFixed(2);
 
     if(gridTotal>0){
-      // Use grid totals directly. If the user has typed an override into
-      // #pr-hrs that differs from the grid total, scale the grid's day-type
-      // ratios to match — preserves manual override while keeping correct
-      // weekday/Sat/Sun split.
-      var nonHolTotal = manualHrs>0 ? manualHrs : gridTotal;
-      var scale = Math.abs(nonHolTotal-gridTotal)<0.01 ? 1 : (nonHolTotal/gridTotal);
-      var wHrs=+(gridWd*scale).toFixed(2);
-      var sHrs=+(gridSat*scale).toFixed(2);
-      var suHrs=+(gridSun*scale).toFixed(2);
-      if(wHrs>0){
-        var wGross=+(wHrs*baseRate).toFixed(2);
-        gross+=wGross;
-        breakdown.push({label:'Weekday',hrs:wHrs,rate:baseRate,amt:wGross});
-      }
-      if(sHrs>0){
-        var sGross=+(sHrs*satRate).toFixed(2);
-        gross+=sGross;
-        breakdown.push({label:'Saturday',hrs:sHrs,rate:satRate,amt:sGross});
-      }
-      if(suHrs>0){
-        var suGross=+(suHrs*sunRate).toFixed(2);
-        gross+=suGross;
-        breakdown.push({label:'Sunday',hrs:suHrs,rate:sunRate,amt:suGross});
-      }
-    } else {
-    // Get hours by day type from roster
-    var dayHrs=getHoursByDayType(empId, periodStart, periodEnd);
-    var totalRostered=dayHrs.weekday+dayHrs.saturday+dayHrs.sunday;
-
-    if(totalRostered>0){
-      // Roster already excludes holiday days — scale remaining non-holiday hours
-      var nonHolTotal = manualHrs; // Hours Worked = non-holiday hours; holiday is additive
-      var scale = totalRostered>0 ? nonHolTotal/totalRostered : 1;
-      var wHrs=+(dayHrs.weekday*scale).toFixed(2);
-      var sHrs=+(dayHrs.saturday*scale).toFixed(2);
-      var suHrs=+(dayHrs.sunday*scale).toFixed(2);
-      if(wHrs>0){
-        var wGross=+(wHrs*baseRate).toFixed(2);
-        gross+=wGross;
-        breakdown.push({label:'Weekday',hrs:wHrs,rate:baseRate,amt:wGross});
-      }
-      if(sHrs>0){
-        var sGross=+(sHrs*satRate).toFixed(2);
-        gross+=sGross;
-        breakdown.push({label:'Saturday',hrs:sHrs,rate:satRate,amt:sGross});
-      }
-      if(suHrs>0){
-        var suGross=+(suHrs*sunRate).toFixed(2);
-        gross+=suGross;
-        breakdown.push({label:'Sunday',hrs:suHrs,rate:sunRate,amt:suGross});
-      }
-    } else {
-      // No roster — derive daily hours from total hours / non-holiday working days
-      // This gives clean per-day splits (e.g. 80hrs / 10 working days = 8hrs/day)
-      var nonHolHrs = manualHrs;
-      var totalNonHolDays = dayHrs.wdDays + dayHrs.satDays + dayHrs.sunDays;
-      if(totalNonHolDays > 0 && nonHolHrs > 0){
-        // Round to nearest 0.5hr per day for clean numbers
-        var hpd2 = Math.round((nonHolHrs / totalNonHolDays) * 2) / 2;
-        var wHrs2 = +(hpd2 * dayHrs.wdDays).toFixed(1);
-        var sHrs2 = +(hpd2 * dayHrs.satDays).toFixed(1);
-        var suHrs2 = +(hpd2 * dayHrs.sunDays).toFixed(1);
-        if(wHrs2>0){var wg2=+(wHrs2*baseRate).toFixed(2);gross+=wg2;breakdown.push({label:'Weekday ('+dayHrs.wdDays+' days @ '+hpd2+'h)',hrs:wHrs2,rate:baseRate,amt:wg2});}
-        if(sHrs2>0){var sg2=+(sHrs2*satRate).toFixed(2);gross+=sg2;breakdown.push({label:'Saturday ('+dayHrs.satDays+' day @ '+hpd2+'h)',hrs:sHrs2,rate:satRate,amt:sg2});}
-        if(suHrs2>0){var sug2=+(suHrs2*sunRate).toFixed(2);gross+=sug2;breakdown.push({label:'Sunday ('+dayHrs.sunDays+' day @ '+hpd2+'h)',hrs:suHrs2,rate:sunRate,amt:sug2});}
-      } else if(nonHolHrs > 0){
-        var rg2=+(nonHolHrs*baseRate).toFixed(2);gross+=rg2;
-        breakdown.push({label:'Regular',hrs:nonHolHrs,rate:baseRate,amt:rg2});
+      // Prefer the day grid (visible, user-controlled checkboxes) as the source
+      // of truth for weekday/Sat/Sun hours when it is rendered.
+      var nonHolTotal=manualHrs>0?manualHrs:gridTotal;
+      var scale=Math.abs(nonHolTotal-gridTotal)<0.01?1:(nonHolTotal/gridTotal);
+      wdHrs=+(gridWd*scale).toFixed(2);
+      satHrs=+(gridSat*scale).toFixed(2);
+      sunHrs=+(gridSun*scale).toFixed(2);
+    }else{
+      // Roster-based fallback
+      var dayHrs=getHoursByDayType(empId,periodStart,periodEnd);
+      var totalRostered=dayHrs.weekday+dayHrs.saturday+dayHrs.sunday;
+      if(totalRostered>0){
+        var rscale=manualHrs/totalRostered;
+        wdHrs=+(dayHrs.weekday*rscale).toFixed(2);
+        satHrs=+(dayHrs.saturday*rscale).toFixed(2);
+        sunHrs=+(dayHrs.sunday*rscale).toFixed(2);
+      }else{
+        // No roster — derive per-day from total / working days
+        var totalNonHolDays=dayHrs.wdDays+dayHrs.satDays+dayHrs.sunDays;
+        var nonHolHrs=manualHrs;
+        if(totalNonHolDays>0&&nonHolHrs>0){
+          var hpd2=Math.round((nonHolHrs/totalNonHolDays)*2)/2;
+          wdHrs=+(hpd2*dayHrs.wdDays).toFixed(1);
+          satHrs=+(hpd2*dayHrs.satDays).toFixed(1);
+          sunHrs=+(hpd2*dayHrs.sunDays).toFixed(1);
+          if(wdHrs>0)wdLabel='Weekday ('+dayHrs.wdDays+' days @ '+hpd2+'h)';
+          if(satHrs>0)satLabel='Saturday ('+dayHrs.satDays+' day @ '+hpd2+'h)';
+          if(sunHrs>0)sunLabel='Sunday ('+dayHrs.sunDays+' day @ '+hpd2+'h)';
+        }else if(nonHolHrs>0){
+          wdHrs=nonHolHrs;wdLabel='Regular';
+        }
       }
     }
-    }
-    if(holHrs>0){
-      var hGross=+(holHrs*holRate).toFixed(2);
-      gross+=hGross;
-      breakdown.push({label:'Public holiday',hrs:holHrs,rate:holRate,amt:hGross});
-    }
-  } else {
-    // No period yet — use manual hours × base
-    var mHrs=parseFloat(eid('pr-hrs').value)||0;
-    var regH=Math.max(0,mHrs-holHrs);
-    if(regH>0){gross+=regH*baseRate;breakdown.push({label:'Regular',hrs:regH,rate:baseRate,amt:regH*baseRate});}
-    if(holHrs>0){var hg=holHrs*holRate;gross+=hg;breakdown.push({label:'Public holiday',hrs:holHrs,rate:holRate,amt:hg});}
+  }else{
+    // No period — manual hours × base
+    wdHrs=Math.max(0,manualHrs-holHrs);
+    wdLabel='Regular';
   }
 
-  // Sleepover shifts (SCHADS Award) — flat allowance + overtime for active minutes.
-  // Active minutes >=1 attract overtime at 1.5x base, minimum 1 hour per shift.
   var sleepShifts=parseFloat((eid('pr-sleep-shifts')||{value:'0'}).value)||0;
-  if(sleepShifts>0 && empType!=='salary'){
-    var sleepAllow=+(sleepShifts*SCHADS_SLEEPOVER_ALLOWANCE).toFixed(2);
-    gross+=sleepAllow;
-    breakdown.push({label:'Sleepover allowance ('+sleepShifts+' shift'+(sleepShifts!==1?'s':'')+')',hrs:'',rate:'',amt:sleepAllow,isSleep:true});
-    var sleepActMin=parseFloat((eid('pr-sleep-active-min')||{value:'0'}).value)||0;
-    if(sleepActMin>0){
-      var sleepActHrsPerShift=Math.max(SCHADS_SLEEPOVER_ACTIVE_MIN_HRS,+(sleepActMin/60).toFixed(2));
-      var sleepOTRate=+(baseRate*1.5).toFixed(2);
-      var sleepActTotal=+(sleepShifts*sleepActHrsPerShift*sleepOTRate).toFixed(2);
-      gross+=sleepActTotal;
-      breakdown.push({label:'Sleepover active work ('+sleepShifts+'×'+sleepActHrsPerShift.toFixed(1)+'h @ $'+sleepOTRate+'/hr OT)',hrs:+(sleepShifts*sleepActHrsPerShift).toFixed(2),rate:sleepOTRate,amt:sleepActTotal,isSleep:true});
-    }
-  }
-  gross=+gross.toFixed(2);
-  var annualEq=empType==='salary'?baseRate:gross*26;
-  var periodTax=paygOn?+(paygCalc(annualEq)/26).toFixed(2):0;
-  var sup=superOn?+(gross*getSuperRate(periodEnd||tod())).toFixed(2):0;
-  var net=+(gross-periodTax).toFixed(2);
+  var sleepActMin=parseFloat((eid('pr-sleep-active-min')||{value:'0'}).value)||0;
 
-  // Render day breakdown
+  var p=computePay({
+    baseRate:baseRate,satRate:satRate,sunRate:sunRate,
+    wdHrs:wdHrs,satHrs:satHrs,sunHrs:sunHrs,
+    holHrs:holHrs,holRate:holRate,
+    sleepShifts:sleepShifts,sleepActiveMins:sleepActMin,
+    paygOn:paygOn,superOn:superOn,periodEnd:periodEnd||tod(),
+    wdLabel:wdLabel,satLabel:satLabel,sunLabel:sunLabel
+  });
+
+  // Render breakdown and summary
   var dbEl=eid('pp-day-breakdown');
   if(dbEl){
-    if(breakdown.length===0){
-      dbEl.innerHTML='';
-    } else {
-      dbEl.innerHTML=breakdown.map(function(b){
-        var clr=b.isSleep?'#bc8cff':'var(--text3)';
-        return '<div class="pay-line" style="font-size:11px;color:'+clr+'">'
-          +'<span>'+b.label+(b.hrs?(' — '+b.hrs+'h @ $'+parseFloat(b.rate).toFixed(2)+'/hr'):'')+'</span>'
-          +'<span style="color:'+(b.isSleep?'#bc8cff':'var(--text2)')+'">'+fmt(b.amt)+'</span>'
-          +'</div>';
-      }).join('');
-    }
+    dbEl.innerHTML=p.breakdown.length===0?'':p.breakdown.map(function(b){
+      var clr=b.isSleep?'#bc8cff':'var(--text3)';
+      return'<div class="pay-line" style="font-size:11px;color:'+clr+'">'
+        +'<span>'+b.label+(b.hrs?(' — '+b.hrs+'h @ $'+parseFloat(b.rate).toFixed(2)+'/hr'):'')+'</span>'
+        +'<span style="color:'+(b.isSleep?'#bc8cff':'var(--text2)')+'">'+fmt(b.amt)+'</span>'
+        +'</div>';
+    }).join('');
   }
-
-  eid('pp-g').textContent=fmt(gross);
-  eid('pp-t').textContent=paygOn?'-'+fmt(periodTax):'Off';
-  eid('pp-s').textContent=superOn?fmt(sup):'Off';
-  eid('pp-n').textContent=fmt(net);
+  eid('pp-g').textContent=fmt(p.gross);
+  eid('pp-t').textContent=paygOn?'-'+fmt(p.tax):'Off';
+  eid('pp-s').textContent=superOn?fmt(p.sup):'Off';
+  eid('pp-n').textContent=fmt(p.net);
   if(eid('pp-tax-row'))eid('pp-tax-row').style.opacity=paygOn?'1':'0.35';
   if(eid('pp-super-row'))eid('pp-super-row').style.opacity=superOn?'1':'0.35';
-  return{gross:gross,tax:periodTax,sup:sup,net:net};
+  return{gross:p.gross,tax:p.tax,sup:p.sup,net:p.net};
 }
 async function savePayRun(){
   var sel=eid('pr-emp'),opt=sel.selectedOptions[0];
@@ -6985,7 +6994,7 @@ function renderTsStage3(){
     var totalHrs=tot.wd+tot.sat+tot.sun+tot.ph;
 
     // Estimate gross (approximate — full calc happens in ctCreatePayRuns)
-    var br=parseFloat(emp.base_rate)||0;
+    var br=parseFloat(emp.pay_rate)||0;
     var sr=parseFloat(emp.sat_rate)||(br*1.5);
     var ur=parseFloat(emp.sun_rate)||(br*2);
     var pr=br*2.25;
@@ -7035,6 +7044,153 @@ function renderTsStage3(){
     +'<th style="padding:7px 10px;text-align:right;font-size:10px;color:var(--text3);text-transform:uppercase;border-bottom:1px solid var(--border)">Est. gross</th>'
     +'</tr></thead>'
     +'<tbody>'+rows.join('')+'</tbody></table>';
+}
+
+function tsDowLabel(dateStr){
+  var d=new Date(dateStr+'T12:00:00');
+  return ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][d.getDay()];
+}
+
+async function tsCreatePayRuns(){
+  var btn=eid('ts-btn-create');
+  if(btn){btn.disabled=true;btn.textContent='Creating...';}
+
+  var created=0,skipped=[],errors=[];
+
+  for(var i=0;i<_tsEnriched.length;i++){
+    var er=_tsEnriched[i];
+    if(!er.empMatch||!er.empMatch.employee_id||er.empMatch.status==='ignored')continue;
+    if(er.error&&!er.shifts.length)continue;
+
+    var emp=(S.emps||[]).find(function(e){return e.id===er.empMatch.employee_id;});
+    if(!emp)continue;
+
+    // Skip salary employees — they must be processed manually
+    if(emp.pay_type==='salary'){
+      skipped.push(emp.name+' (salary — process manually)');
+      continue;
+    }
+
+    // Duplicate guard — skip unless user checked "Create anyway"
+    if(er._dupRun){
+      var cbEl=eid('ts-dup-'+er.empMatch.employee_id);
+      if(!cbEl||!cbEl.checked){
+        skipped.push(emp.name+' (duplicate — skipped)');
+        continue;
+      }
+    }
+
+    // Collect included shifts only
+    var included=(er.shifts||[]).filter(function(s){return s.included!==false;});
+    if(!included.length)continue;
+
+    var tot=tsTotals(included);
+    var br=parseFloat(emp.pay_rate)||0;
+    var sr=emp.sat_rate?parseFloat(emp.sat_rate):(br*1.5);
+    var ur=emp.sun_rate?parseFloat(emp.sun_rate):(br*2);
+
+    // Per-sleepover active minutes array for computePay
+    var perShiftMins=included.filter(function(s){return s.shiftKind==='sleepover';}).map(function(s){return s.activeMins||0;});
+
+    var p=computePay({
+      baseRate:br,satRate:sr,sunRate:ur,
+      wdHrs:tot.wd,satHrs:tot.sat,sunHrs:tot.sun,
+      holHrs:tot.ph,holRate:br*2.25,
+      sleepShifts:tot.sleep,sleepActiveMins:0,sleepPerShiftMins:perShiftMins,
+      paygOn:true,superOn:true,
+      periodEnd:er.periodEnd
+    });
+
+    // Build day_breakdown — one entry per included shift + sleepover_meta + import_meta
+    var dtLabelMap={'PH':'holiday','Sat':'saturday','Sun':'sunday','Wkday':'weekday'};
+    var dayBreakdown=included.map(function(s){
+      var dtObj=tsDayType(s.date);
+      var isSleep=s.shiftKind==='sleepover';
+      return{
+        date:s.date,
+        dow:tsDowLabel(s.date),
+        type:dtLabelMap[dtObj.label]||'weekday',
+        worked:true,
+        hrs:isSleep?0:+(s.duration||0),
+        startTime:s['in']||'',
+        endTime:s.out||'',
+        participant:s.job||'',
+        shiftTypeName:s.shiftTypeId?(S.shiftTypes||[]).reduce(function(a,t){return t.id===s.shiftTypeId?t.name:a;},''):'',
+        isSleep:isSleep
+      };
+    });
+
+    if(tot.sleep>0){
+      var totalActMins=perShiftMins.reduce(function(a,m){return a+m;},0);
+      var avgActMins=tot.sleep>0?Math.round(totalActMins/tot.sleep):0;
+      dayBreakdown.push({
+        type:'sleepover_meta',
+        shifts:tot.sleep,
+        active_minutes:avgActMins,
+        per_shift_mins:perShiftMins
+      });
+    }
+
+    dayBreakdown.push({
+      type:'import_meta',
+      source:'connecteam',
+      periodStart:er.periodStart,
+      periodEnd:er.periodEnd,
+      importedAt:new Date().toISOString()
+    });
+
+    var insertRow={
+      employee_id:emp.id,
+      period_start:er.periodStart,
+      period_end:er.periodEnd,
+      hours_worked:+(tot.wd+tot.sat+tot.sun+tot.ph).toFixed(2),
+      gross_pay:p.gross,
+      tax_withheld:p.tax,
+      super_amount:p.sup,
+      net_pay:p.net,
+      status:'processed',
+      wise_status:'pending',
+      paid_date:er.periodEnd,
+      day_breakdown:dayBreakdown
+    };
+
+    var res=await sb2.from('pay_runs').insert(insertRow).select();
+    if(res.error&&/day_breakdown/i.test(res.error.message||'')){
+      delete insertRow.day_breakdown;
+      res=await sb2.from('pay_runs').insert(insertRow).select();
+    }
+    if(res.error){errors.push(emp.name+': '+res.error.message);continue;}
+
+    var run=res.data[0];
+    run._empName=emp.name;
+    S.runs.unshift(run);
+
+    // Pending cash book entry — amount_out:0 until Wise transfer matches
+    var pendingRef='PAYROLL-PENDING-'+run.id.slice(0,8);
+    var month=MONTHS[new Date(er.periodEnd).getMonth()];
+    var txRes=await sb2.from('transactions').insert({
+      month:month,date:er.periodEnd,
+      description:'Payroll - '+emp.name+' [pending]',
+      payment_type:'EFT',reference:pendingRef,
+      amount_in:0,amount_out:0
+    }).select();
+    if(txRes.data&&txRes.data[0])S.tx.push(txRes.data[0]);
+    created++;
+  }
+
+  if(btn){btn.disabled=false;}
+
+  var msgs=[];
+  if(created)msgs.push(created+' pay run'+(created!==1?'s':'')+' created');
+  if(skipped.length)msgs.push(skipped.length+' skipped: '+skipped.join(', '));
+  if(errors.length)msgs.push('Errors: '+errors.join('; '));
+  showToast(msgs.join(' · ')||(errors.length?'Failed':'Done'),errors.length?'err':'ok');
+
+  if(created){
+    closeTsImport();
+    renderPR();renderDash();renderCB();
+    nav('payroll');
+  }
 }
 
 // ────────────────────────────────────────────────────────────────────────────
