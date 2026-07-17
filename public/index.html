@@ -783,9 +783,9 @@ input[type=number]{text-align:right}
       <div id="ts-confirm-body"></div>
     </div>
 
-    <!-- Inline new-shift-type mini-form -->
+    <!-- Inline new-shift-block mini-form -->
     <div id="ts-new-st-form" style="display:none;background:var(--bg4);border:1px solid var(--blue-dim);border-radius:var(--r);padding:12px;margin-top:10px">
-      <div style="font-size:11px;font-weight:700;text-transform:uppercase;color:var(--blue);margin-bottom:8px">New shift type</div>
+      <div style="font-size:11px;font-weight:700;text-transform:uppercase;color:var(--blue);margin-bottom:8px">New shift block</div>
       <div class="form-row">
         <div class="field"><label>Name</label><input type="text" id="ts-st-name" placeholder="e.g. Evening Support" style="width:100%"></div>
         <div class="field"><label>Kind</label><select id="ts-st-kind" style="width:100%"><option value="standard">Standard</option><option value="sleepover">Sleepover</option><option value="travel">Travel</option></select></div>
@@ -794,6 +794,16 @@ input[type=number]{text-align:right}
         <div class="field"><label>Start</label><input type="time" id="ts-st-start" style="width:100%"></div>
         <div class="field"><label>End</label><input type="time" id="ts-st-end" style="width:100%"></div>
         <div class="field"><label>Tolerance (mins)</label><input type="number" id="ts-st-tol" value="60" min="0" max="240" style="width:100%"></div>
+      </div>
+      <div class="field"><label>Days of week <span style="font-size:10px;color:var(--text3)">(the shift's day is pre-selected; tick every day this block recurs)</span></label><div id="ts-st-days" style="display:flex;gap:6px;flex-wrap:wrap"></div></div>
+      <div class="form-row">
+        <div class="field"><label>Rate mode</label><select id="ts-st-rate-mode" style="width:100%" onchange="tsToggleStRateInputs()"><option value="hourly">hourly</option><option value="flat">flat</option><option value="both">both</option></select></div>
+        <div class="field" id="ts-st-hourly-wrap"><label>Hourly source</label><select id="ts-st-hourly-source" style="width:100%" onchange="tsToggleStRateInputs()"><option value="employee">Employee profile</option><option value="manual">Manual $ input</option></select></div>
+        <div class="field" id="ts-st-manual-hourly-wrap"><label>Manual hourly rate</label><input type="number" id="ts-st-manual-hourly" placeholder="0.00" step="0.01" style="width:100%"></div>
+      </div>
+      <div class="form-row">
+        <div class="field" id="ts-st-flat-wrap"><label>Flat source</label><select id="ts-st-flat-source" style="width:100%" onchange="tsToggleStRateInputs()"><option value="employee">Employee profile</option><option value="manual">Manual $ input</option></select></div>
+        <div class="field" id="ts-st-manual-flat-wrap"><label>Manual flat rate</label><input type="number" id="ts-st-manual-flat" placeholder="0.00" step="0.01" style="width:100%"></div>
       </div>
       <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:8px">
         <button class="btn btn-outline" style="font-size:11px" onclick="tsCancelNewST()">Cancel</button>
@@ -4194,7 +4204,7 @@ function renderShiftTypes(participantId){
   if(!body)return;
   var addBtn=eid('pt-add-shift-type-btn');
   if(S._shiftTypesTableMissing){
-    body.innerHTML='<div style="background:rgba(251,191,36,.08);border:1px solid rgba(251,191,36,.3);border-radius:var(--r);padding:10px 12px;font-size:12px;color:#f59e0b">&#9888; '+TS_SETUP_HINT+'</div>';
+    body.innerHTML='<div style="background:rgba(251,191,36,.08);border:1px solid rgba(251,191,36,.3);border-radius:var(--r);padding:10px 12px;font-size:12px;color:#f59e0b">&#9888; Legacy shift_types table missing — this section is superseded by the weekly schedule blocks above.</div>';
     if(addBtn){addBtn.disabled=true;addBtn.style.opacity='0.5';}
     return;
   }
@@ -4691,8 +4701,21 @@ function ctTimeToMins(hhmm){
 // Match a merged shift against a participant's active shift types.
 // Returns {status:'confident'|'suggested'|'unmatched', shiftTypeId, shiftKind}
 function ctMatchShiftType(shift,participantId){
-  var types=(S.shiftTypes||[]).filter(function(t){
-    return t.participant_id===participantId&&t.active;
+  // Matches against schedule_blocks (the weekly schedule) — shift_types is legacy.
+  // A block that doesn't run on the shift's actual day of week is not a
+  // candidate at all, no matter how well its time window lines up.
+  var dowIdx=null;
+  if(shift&&shift.date){
+    var dp=String(shift.date).split('-');
+    if(dp.length===3){
+      var dd=new Date(parseInt(dp[0]),parseInt(dp[1])-1,parseInt(dp[2]));
+      if(!isNaN(dd.getTime()))dowIdx=dd.getDay();
+    }
+  }
+  var types=(S.scheduleBlocks||[]).filter(function(t){
+    if(t.participant_id!==participantId||t.active===false)return false;
+    if(dowIdx!==null&&(!Array.isArray(t.days_of_week)||t.days_of_week.indexOf(dowIdx)===-1))return false;
+    return true;
   });
   if(!types.length)return{status:'unmatched',shiftTypeId:null,shiftKind:null};
 
@@ -4719,7 +4742,8 @@ function ctMatchShiftType(shift,participantId){
 
   // Confident: best candidate has both deltas within its own tolerance
   var confident=scored.filter(function(sc){
-    return sc.startDelta<=sc.type.tolerance_mins&&sc.endDelta<=sc.type.tolerance_mins;
+    var tol=parseInt(sc.type.tolerance_mins)||60;
+    return sc.startDelta<=tol&&sc.endDelta<=tol;
   });
   if(confident.length>0){
     var w=confident[0];
@@ -4728,7 +4752,8 @@ function ctMatchShiftType(shift,participantId){
 
   // Suggested: exactly one type within 3× its tolerance
   var suggested=scored.filter(function(sc){
-    return sc.startDelta<=sc.type.tolerance_mins*3&&sc.endDelta<=sc.type.tolerance_mins*3;
+    var tol=parseInt(sc.type.tolerance_mins)||60;
+    return sc.startDelta<=tol*3&&sc.endDelta<=tol*3;
   });
   if(suggested.length===1){
     return{status:'suggested',shiftTypeId:suggested[0].type.id,shiftKind:suggested[0].type.shift_kind};
@@ -7204,13 +7229,13 @@ function tsTableMissing(err){
 }
 
 // Shared operator hint pointing at the Step 0 schema.
-var TS_SETUP_HINT='Timesheet import needs setup — run the Step 0 SQL (shift_types + timesheet_name_map tables) in Supabase.';
+var TS_SETUP_HINT='Timesheet import needs setup — the schedule_blocks and/or timesheet_name_map table is missing in Supabase. Run the setup SQL.';
 
 function openTsImport(){
   if(typeof pdfjsLib==='undefined'){
     showToast('PDF.js not loaded — check internet connection','err'); return;
   }
-  if(S._shiftTypesTableMissing||S._nameMapTableMissing){
+  if(S._scheduleBlocksTableMissing||S._nameMapTableMissing){
     showToast(TS_SETUP_HINT,'err'); return;
   }
   _tsEnriched=[];_tsStage=1;_tsNewSTContext=null;
@@ -7468,7 +7493,7 @@ function renderTsShiftRow(er,idx,s,si){
   // Shift-type cell
   var stPill='',stCell='';
   if(s.shiftTypeId){
-    var st=(S.shiftTypes||[]).find(function(t){return t.id===s.shiftTypeId;});
+    var st=(S.scheduleBlocks||[]).find(function(t){return t.id===s.shiftTypeId;});
     var pillColor=s.shiftTypeStatus==='confident'?'#16a34a':s.shiftTypeStatus==='suggested'?'#d97706':'#dc2626';
     var pillBg=s.shiftTypeStatus==='confident'?'rgba(22,163,74,.15)':s.shiftTypeStatus==='suggested'?'rgba(217,119,6,.15)':'rgba(220,38,38,.15)';
     var pillLabel=s.shiftTypeStatus==='confident'?'Matched':s.shiftTypeStatus==='suggested'?'Check':'Assign';
@@ -7534,14 +7559,14 @@ function tsSetParticipant(erIdx,si,ptId){
 }
 
 function tsStDropdown(erIdx,si,participantId){
-  var types=participantId?(S.shiftTypes||[]).filter(function(t){return t.participant_id===participantId&&t.active;}):[];
+  var types=participantId?(S.scheduleBlocks||[]).filter(function(t){return t.participant_id===participantId&&t.active!==false;}):[];
   var opts=types.map(function(t){
-    return'<option value="'+t.id+'">'+t.name+'</option>';
+    return'<option value="'+t.id+'">'+t.name+' ('+(t.start_time||'')+'–'+(t.end_time||'')+')</option>';
   }).join('');
   return'<select style="font-size:11px;padding:3px 6px;max-width:160px" onchange="tsSetShiftType('+erIdx+','+si+',this.value)">'
-    +'<option value="">-- shift type --</option>'
+    +'<option value="">-- shift block --</option>'
     +opts
-    +(participantId?'<option value="__new__">＋ New shift type…</option>':'')
+    +(participantId?'<option value="__new__">＋ New shift block…</option>':'')
     +'</select>';
 }
 
@@ -7556,7 +7581,7 @@ function tsSetShiftType(erIdx,si,stId){
   var er=_tsEnriched[erIdx];if(!er)return;
   var s=er.shifts[si];if(!s)return;
   if(stId==='__new__'){
-    // Open inline shift-type creator
+    // Open inline shift-block creator
     _tsNewSTContext={erIdx:erIdx,si:si};
     var ptId=s.participantId;
     var guessKind=(s.crossesMidnight||s.duration>=8)?'sleepover':'standard';
@@ -7566,12 +7591,35 @@ function tsSetShiftType(erIdx,si,stId){
     eid('ts-st-end').value=s.out;
     eid('ts-st-tol').value='60';
     eid('ts-st-participant-id').value=ptId||'';
+    // Pre-tick the day the shift under review actually fell on
+    var shiftDow=null;
+    if(s.date){
+      var sdp=String(s.date).split('-');
+      if(sdp.length===3){
+        var sdd=new Date(parseInt(sdp[0]),parseInt(sdp[1])-1,parseInt(sdp[2]));
+        if(!isNaN(sdd.getTime()))shiftDow=sdd.getDay();
+      }
+    }
+    var daysWrap=eid('ts-st-days');
+    daysWrap.innerHTML=['Mon','Tue','Wed','Thu','Fri','Sat','Sun'].map(function(day,idx2){
+      var jsIdx=idx2===6?0:idx2+1;
+      var on=jsIdx===shiftDow;
+      return'<button type="button" class="btn '+(on?'btn-primary':'btn-outline')+'" data-dow="'+jsIdx+'" style="padding:4px 8px;min-width:38px;font-size:11px" onclick="toggleScheduleDay(this)">'+day+'</button>';
+    }).join('');
+    // Sleepover-shaped shifts default to both rates (employee-sourced flat +
+    // hourly); everything else to hourly/employee.
+    eid('ts-st-rate-mode').value=guessKind==='sleepover'?'both':'hourly';
+    eid('ts-st-hourly-source').value='employee';
+    eid('ts-st-manual-hourly').value='';
+    eid('ts-st-flat-source').value='employee';
+    eid('ts-st-manual-flat').value='';
+    tsToggleStRateInputs();
     eid('ts-new-st-form').style.display='';
     return;
   }
   s.shiftTypeId=stId||null;
   if(stId){
-    var t=(S.shiftTypes||[]).find(function(t){return t.id===stId;});
+    var t=(S.scheduleBlocks||[]).find(function(t){return t.id===stId;});
     s.shiftTypeStatus='confident';s.shiftKind=t?t.shift_kind:null;
   }else{
     s.shiftTypeStatus='unmatched';s.shiftKind=null;
@@ -7579,32 +7627,58 @@ function tsSetShiftType(erIdx,si,stId){
   refreshTsCard(erIdx);
 }
 
+function tsToggleStRateInputs(){
+  var mode=eid('ts-st-rate-mode').value;
+  var showHourly=mode==='hourly'||mode==='both';
+  var showFlat=mode==='flat'||mode==='both';
+  var hw=eid('ts-st-hourly-wrap'),mhw=eid('ts-st-manual-hourly-wrap');
+  var fw=eid('ts-st-flat-wrap'),mfw=eid('ts-st-manual-flat-wrap');
+  if(hw)hw.style.display=showHourly?'':'none';
+  if(mhw)mhw.style.display=(showHourly&&eid('ts-st-hourly-source').value==='manual')?'':'none';
+  if(fw)fw.style.display=showFlat?'':'none';
+  if(mfw)mfw.style.display=(showFlat&&eid('ts-st-flat-source').value==='manual')?'':'none';
+}
+
 async function tsSaveNewST(){
   var ctx=_tsNewSTContext;if(!ctx)return;
   var ptId=eid('ts-st-participant-id').value;
-  if(!ptId){showToast('No participant for this shift type','err');return;}
+  if(!ptId){showToast('No participant for this shift block','err');return;}
   var name=(eid('ts-st-name').value||'').trim();
   if(!name){showToast('Name required','err');return;}
+  var days=[];
+  eid('ts-st-days').querySelectorAll('[data-dow]').forEach(function(btn){
+    if(btn.classList.contains('btn-primary'))days.push(parseInt(btn.dataset.dow));
+  });
+  if(!days.length){showToast('Select at least one day of week','err');return;}
   var row={
     participant_id:ptId,name:name,
     start_time:eid('ts-st-start').value,
     end_time:eid('ts-st-end').value,
+    days_of_week:days,
     shift_kind:eid('ts-st-kind').value,
+    rate_mode:eid('ts-st-rate-mode').value,
+    hourly_rate_source:eid('ts-st-hourly-source').value,
+    manual_hourly_rate:parseFloat(eid('ts-st-manual-hourly').value)||null,
+    flat_rate_source:eid('ts-st-flat-source').value,
+    manual_flat_rate:parseFloat(eid('ts-st-manual-flat').value)||null,
     tolerance_mins:parseInt(eid('ts-st-tol').value)||60,
+    // Import-created blocks never pre-assign employees — rate resolution against
+    // the PDF's matched employee is one-off, per shift, at pay-run time.
+    assigned_employee_ids:[],
     active:true
   };
   setSync('saving');
-  var res=await sb2.from('shift_types').insert(row).select();
+  var res=await sb2.from('schedule_blocks').insert(row).select();
   if(res.error){setSync('error');showToast(res.error.message,'err');return;}
-  if(!S.shiftTypes)S.shiftTypes=[];
-  S.shiftTypes.push(res.data[0]);
+  if(!S.scheduleBlocks)S.scheduleBlocks=[];
+  S.scheduleBlocks.push(res.data[0]);
   setSync('ok');
   eid('ts-new-st-form').style.display='none';
-  // Re-match all shift types across the whole batch
+  // Re-match all shift blocks across the whole batch
   ctRematchShiftTypes(_tsEnriched);
   // Re-render all cards
   renderTsStage2(null);
-  showToast('Shift type saved and batch re-matched','ok');
+  showToast('Shift block saved and batch re-matched','ok');
 }
 
 function tsCancelNewST(){
@@ -7673,6 +7747,25 @@ function tsBack(){
   }
 }
 
+// One-off rate resolution: a shift matched to a schedule block resolves its
+// sleepover flat through that block's rate config using THIS file's matched
+// employee (manual $ wins; employee-sourced falls back to the employee's
+// profile rate). Nothing is ever written back to assigned_employee_ids.
+function tsSleepoverFlatSum(shifts, emp){
+  var sum=0, count=0;
+  (shifts||[]).forEach(function(s){
+    if(s.shiftKind!=='sleepover'||s.included===false)return;
+    count++;
+    var block=s.shiftTypeId?(S.scheduleBlocks||[]).find(function(b){return b.id===s.shiftTypeId;}):null;
+    if(block){
+      var r=resolveBlockRate(block, emp?emp.id:null);
+      if(r.flat!=null){sum+=parseFloat(r.flat)||0;return;}
+    }
+    sum+=resolveSleepoverFlatRate(emp);
+  });
+  return {sum:+sum.toFixed(2), count:count};
+}
+
 function renderTsStage3(){
   eid('ts-modal-title').textContent='Confirm pay runs';
   var rows=[];
@@ -7694,9 +7787,9 @@ function renderTsStage3(){
     var sr=parseFloat(emp.sat_rate)||(br*1.5);
     var ur=parseFloat(emp.sun_rate)||(br*2);
     var pr=br*2.25;
-    var sleepoverFlatRate=resolveSleepoverFlatRate(emp);
+    var sleepFlat=tsSleepoverFlatSum(er.shifts, emp);
     var gross=+(tot.wd*br+tot.sat*sr+tot.sun*ur+tot.ph*pr
-      +tot.sleep*sleepoverFlatRate).toFixed(2);
+      +sleepFlat.sum).toFixed(2);
     if(tot.sleep>0&&tot.activeMins>0){
       var actHrs=Math.max(SCHADS_SLEEPOVER_ACTIVE_MIN_HRS,tot.activeMins/60);
       gross=+(gross+tot.sleep*actHrs*(br*1.5)).toFixed(2);
@@ -7791,6 +7884,11 @@ async function tsCreatePayRuns(){
     // Per-sleepover active minutes array for computePay
     var perShiftMins=included.filter(function(s){return s.shiftKind==='sleepover';}).map(function(s){return s.activeMins||0;});
 
+    // computePay prices sleepovers as shifts × one flat rate; pass the average
+    // of the per-shift block-resolved flats so the total equals the exact sum.
+    var sleepFlat2=tsSleepoverFlatSum(included, emp);
+    var sleepoverFlatRate=sleepFlat2.count>0?sleepFlat2.sum/sleepFlat2.count:resolveSleepoverFlatRate(emp);
+
     var p=computePay({
       baseRate:br,satRate:sr,sunRate:ur,
       wdHrs:tot.wd,satHrs:tot.sat,sunHrs:tot.sun,
@@ -7815,7 +7913,9 @@ async function tsCreatePayRuns(){
         startTime:s['in']||'',
         endTime:s.out||'',
         participant:s.job||'',
-        shiftTypeName:s.shiftTypeId?(S.shiftTypes||[]).reduce(function(a,t){return t.id===s.shiftTypeId?t.name:a;},''):'',
+        shiftTypeName:s.shiftTypeId?(S.scheduleBlocks||[]).reduce(function(a,t){return t.id===s.shiftTypeId?t.name:a;},''):'',
+        shift_label:s.shiftTypeId?(S.scheduleBlocks||[]).reduce(function(a,t){return t.id===s.shiftTypeId?t.name:a;},''):null,
+        block_id:s.shiftTypeId||null,
         isSleep:isSleep
       };
     });
