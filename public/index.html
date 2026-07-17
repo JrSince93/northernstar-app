@@ -313,7 +313,10 @@ input[type=number]{text-align:right}
   <!-- PARTICIPANTS -->
   <div class="page" id="page-participants">
     <div class="section-header"><div class="section-title">Participants</div>
-      <button class="btn btn-primary" onclick="openParticipantModal(null)">+ Add participant</button>
+      <div style="display:flex;gap:8px">
+        <button class="btn btn-outline" onclick="openTsImport()" style="font-size:12px">&#8593; Import timesheets</button>
+        <button class="btn btn-primary" onclick="openParticipantModal(null)">+ Add participant</button>
+      </div>
     </div>
     <div id="participant-list"><div class="loading"><div class="spin"></div>Loading...</div></div>
   </div>
@@ -752,6 +755,76 @@ input[type=number]{text-align:right}
     <button class="btn btn-green" onclick="confirmWisePayment()">Confirm payment</button>
   </div>
 </div></div></div>
+
+<!-- Timesheet Import Modal -->
+<div id="m-ts-import" style="display:none"><div class="modal-bg" onclick="if(event.target===this)closeTsImport()">
+  <div class="modal" style="width:820px;max-width:calc(100vw - 32px);max-height:90vh;display:flex;flex-direction:column">
+    <div class="modal-title">
+      <span id="ts-modal-title">Import timesheets</span>
+      <button class="btn-icon" onclick="closeTsImport()">&#x2715;</button>
+    </div>
+
+    <!-- Stage 1: Drop zone -->
+    <div id="ts-stage-1" style="padding:0 0 16px">
+      <div id="ts-dropzone" style="border:2px dashed var(--border2);border-radius:var(--r);padding:48px 24px;text-align:center;cursor:pointer;transition:.15s" onclick="eid('ts-file-input').click()" ondragover="event.preventDefault();this.style.borderColor='var(--blue)'" ondragleave="this.style.borderColor='var(--border2)'" ondrop="event.preventDefault();this.style.borderColor='var(--border2)';onTsFileDrop(event.dataTransfer.files)">
+        <div style="font-size:32px;margin-bottom:12px">&#128196;</div>
+        <div style="font-weight:600;color:var(--text)">Drop Connecteam PDF timesheets here</div>
+        <div style="font-size:12px;color:var(--text3);margin-top:6px">or click to select · Multiple files · One PDF per employee</div>
+        <div style="font-size:11px;color:var(--text3);margin-top:4px">Filename format: First_Last_DD-MM-YYYY_DD-MM-YYYY.pdf</div>
+        <input type="file" id="ts-file-input" accept=".pdf" multiple style="display:none" onchange="onTsFileSelect(this)">
+      </div>
+      <div id="ts-parse-list" style="display:none;margin-top:16px"></div>
+    </div>
+
+    <!-- Stage 2: Review -->
+    <div id="ts-stage-2" style="display:none;flex:1;overflow-y:auto;min-height:0">
+      <div id="ts-period-header" style="font-weight:700;font-size:14px;margin-bottom:4px;padding-top:4px"></div>
+      <div id="ts-period-warn" style="display:none;background:rgba(251,191,36,.1);border:1px solid rgba(251,191,36,.4);border-radius:var(--r);padding:8px 12px;font-size:12px;color:#f59e0b;margin-bottom:10px"></div>
+      <div id="ts-review-body"></div>
+      <details id="ts-errors-section" style="display:none;margin-top:10px">
+        <summary style="font-size:11px;font-weight:700;text-transform:uppercase;color:var(--text3);cursor:pointer;letter-spacing:.04em">Could not parse</summary>
+        <div id="ts-errors-list" style="margin-top:6px"></div>
+      </details>
+      <details id="ts-ignored-section" style="display:none;margin-top:6px">
+        <summary style="font-size:11px;font-weight:700;text-transform:uppercase;color:var(--text3);cursor:pointer;letter-spacing:.04em">Ignored staff</summary>
+        <div id="ts-ignored-list" style="margin-top:6px"></div>
+      </details>
+    </div>
+
+    <!-- Stage 3: Confirm -->
+    <div id="ts-stage-3" style="display:none;flex:1;overflow-y:auto;min-height:0">
+      <div id="ts-confirm-body"></div>
+    </div>
+
+    <!-- Inline new-shift-type mini-form -->
+    <div id="ts-new-st-form" style="display:none;background:var(--bg4);border:1px solid var(--blue-dim);border-radius:var(--r);padding:12px;margin-top:10px">
+      <div style="font-size:11px;font-weight:700;text-transform:uppercase;color:var(--blue);margin-bottom:8px">New shift type</div>
+      <div class="form-row">
+        <div class="field"><label>Name</label><input type="text" id="ts-st-name" placeholder="e.g. Evening Support" style="width:100%"></div>
+        <div class="field"><label>Kind</label><select id="ts-st-kind" style="width:100%"><option value="standard">Standard</option><option value="sleepover">Sleepover</option><option value="travel">Travel</option></select></div>
+      </div>
+      <div class="form-row">
+        <div class="field"><label>Start</label><input type="time" id="ts-st-start" style="width:100%"></div>
+        <div class="field"><label>End</label><input type="time" id="ts-st-end" style="width:100%"></div>
+        <div class="field"><label>Tolerance (mins)</label><input type="number" id="ts-st-tol" value="60" min="0" max="240" style="width:100%"></div>
+      </div>
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:8px">
+        <button class="btn btn-outline" style="font-size:11px" onclick="tsCancelNewST()">Cancel</button>
+        <button class="btn btn-primary" style="font-size:11px" onclick="tsSaveNewST()">Save &amp; re-match</button>
+      </div>
+      <input type="hidden" id="ts-st-participant-id">
+    </div>
+
+    <!-- Footer -->
+    <div class="modal-footer" style="flex-shrink:0">
+      <button id="ts-btn-back" class="btn btn-outline" style="display:none" onclick="tsBack()">&#8592; Back</button>
+      <span style="flex:1"></span>
+      <span id="ts-blocker-count" style="font-size:11px;color:var(--text3);margin-right:12px"></span>
+      <button id="ts-btn-next" class="btn btn-primary" style="display:none" onclick="tsGoToConfirm()">Review &amp; generate &#8594;</button>
+      <button id="ts-btn-create" class="btn btn-green" style="display:none" onclick="tsCreatePayRuns()">Create pay runs</button>
+    </div>
+  </div>
+</div></div>
 
 <div class="toast" id="toast"></div>
 </div>
@@ -6421,6 +6494,550 @@ loadAll = async function() {
 };
 
 checkAuth();
+
+// ── Step 4: Timesheet Import Modal ──────────────────────────────────────────
+
+var _tsEnriched = [];     // live enriched results for stage 2/3
+var _tsStage = 1;
+var _tsNewSTContext = null; // {erIdx, shiftIdx} for inline shift-type creator
+
+function openTsImport(){
+  if(typeof pdfjsLib==='undefined'){
+    showToast('PDF.js not loaded — check internet connection','err'); return;
+  }
+  if(!(S.shiftTypes&&S.tsNameMap)){
+    showToast('Run the Step 0 SQL in Supabase first','err'); return;
+  }
+  _tsEnriched=[];_tsStage=1;_tsNewSTContext=null;
+  eid('ts-stage-1').style.display='';
+  eid('ts-stage-2').style.display='none';
+  eid('ts-stage-3').style.display='none';
+  eid('ts-btn-back').style.display='none';
+  eid('ts-btn-next').style.display='none';
+  eid('ts-btn-create').style.display='none';
+  eid('ts-modal-title').textContent='Import timesheets';
+  eid('ts-parse-list').style.display='none';
+  eid('ts-parse-list').innerHTML='';
+  eid('ts-dropzone').style.display='';
+  eid('ts-new-st-form').style.display='none';
+  eid('ts-file-input').value='';
+  eid('m-ts-import').style.display='flex';
+}
+
+function closeTsImport(){ eid('m-ts-import').style.display='none'; }
+
+function onTsFileSelect(input){ onTsFileDrop(input.files); }
+
+function onTsFileDrop(files){
+  if(!files||!files.length)return;
+  var arr=[];for(var i=0;i<files.length;i++)arr.push(files[i]);
+  runTsParse(arr);
+}
+
+async function runTsParse(files){
+  eid('ts-dropzone').style.display='none';
+  var listEl=eid('ts-parse-list');
+  listEl.style.display='';
+  var rows=files.map(function(f){
+    return'<div id="ts-pr-'+f.name.replace(/[^a-z0-9]/gi,'_')+'" style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--border);font-size:12px">'
+      +'<span style="font-size:16px" id="ts-ic-'+f.name.replace(/[^a-z0-9]/gi,'_')+'">&#9679;</span>'
+      +'<span>'+f.name+'</span>'
+      +'</div>';
+  });
+  listEl.innerHTML=rows.join('');
+
+  var parsed=[];
+  for(var i=0;i<files.length;i++){
+    var f=files[i];
+    var iconId='ts-ic-'+f.name.replace(/[^a-z0-9]/gi,'_');
+    var ic=eid(iconId);
+    if(ic)ic.innerHTML='&#8987;'; // hourglass
+    var r=await ctParsePDF(f);
+    parsed.push(r);
+    if(ic)ic.innerHTML=r.error&&r.rawShifts.length===0?'&#10060;':'&#10003;';
+  }
+
+  // Validate periods
+  var periodWarn=ctValidatePeriods(parsed);
+  // Enrich
+  _tsEnriched=ctEnrichResults(parsed);
+
+  // Short pause so the tick list is visible, then move to stage 2
+  setTimeout(function(){
+    _tsStage=2;
+    eid('ts-stage-1').style.display='none';
+    eid('ts-stage-2').style.display='';
+    eid('ts-btn-back').style.display='none'; // no back from stage 2 to stage 1 (re-drop instead)
+    eid('ts-btn-next').style.display='';
+    renderTsStage2(periodWarn);
+  },400);
+}
+
+// Day-type chip: returns {label, color} for a YYYY-MM-DD date string
+function tsDayType(dateStr){
+  if(VIC_HOLIDAYS[dateStr])return{label:'PH',name:VIC_HOLIDAYS[dateStr],bg:'rgba(188,140,255,.2)',col:'#bc8cff'};
+  var p=dateStr.split('-');var d=new Date(parseInt(p[0]),parseInt(p[1])-1,parseInt(p[2]));
+  var dow=d.getDay();
+  if(dow===6)return{label:'Sat',name:null,bg:'rgba(59,130,246,.15)',col:'#60a5fa'};
+  if(dow===0)return{label:'Sun',name:null,bg:'rgba(16,185,129,.15)',col:'#34d399'};
+  return{label:'Wkday',name:null,bg:'var(--bg5)',col:'var(--text2)'};
+}
+
+// Compute per-employee hour/sleepover totals from included shifts
+function tsTotals(shifts){
+  var tot={wd:0,sat:0,sun:0,ph:0,sleep:0,activeMins:0};
+  shifts.forEach(function(s){
+    if(!s.included)return;
+    if(s.shiftKind==='sleepover'){tot.sleep++;tot.activeMins+=s.activeMins||0;return;}
+    var dt=tsDayType(s.date);
+    if(dt.label==='PH')tot.ph+=s.duration;
+    else if(dt.label==='Sat')tot.sat+=s.duration;
+    else if(dt.label==='Sun')tot.sun+=s.duration;
+    else tot.wd+=s.duration;
+  });
+  return tot;
+}
+
+// Count shifts that are included but still have unresolved employee / participant / shift type
+function tsBlockerCount(){
+  var n=0;
+  _tsEnriched.forEach(function(er){
+    if(er.empMatch.status==='ignored')return;
+    if(er.error&&!er.shifts.length)return; // parse-fail file
+    if(er.empMatch.dupError){n++;return;} // duplicate file
+    if(!er.empMatch.employee_id)n++;
+    (er.shifts||[]).forEach(function(s){
+      if(!s.included)return;
+      if(!s.participantId)n++;
+      if(!s.shiftTypeId)n++;
+    });
+  });
+  return n;
+}
+
+function tsUpdateFooter(){
+  var b=tsBlockerCount();
+  var bc=eid('ts-blocker-count');
+  var btn=eid('ts-btn-next');
+  if(b>0){bc.textContent=b+' issue'+(b!==1?'s':'')+' to resolve';btn.disabled=true;btn.style.opacity='.5';}
+  else{bc.textContent='';btn.disabled=false;btn.style.opacity='';}
+}
+
+function renderTsStage2(periodWarn){
+  eid('ts-modal-title').textContent='Review shifts';
+  var pw=eid('ts-period-warn');
+  if(periodWarn){pw.style.display='';pw.textContent=periodWarn;}else{pw.style.display='none';}
+
+  // Period header from first non-error result
+  var ph=eid('ts-period-header');
+  var sample=_tsEnriched.find(function(er){return er.periodStart&&er.periodEnd;});
+  if(sample){
+    var p0=sample.periodStart.split('-');var p1=sample.periodEnd.split('-');
+    var ms=new Date(+p0[0],+p0[1]-1,+p0[2]);var me=new Date(+p1[0],+p1[1]-1,+p1[2]);
+    ph.textContent='Fortnight '+ms.getDate()+' '+SHORT[ms.getMonth()]+' – '+me.getDate()+' '+SHORT[me.getMonth()]+' '+me.getFullYear();
+  }
+
+  var errors=[],ignored=[],cards=[];
+  _tsEnriched.forEach(function(er,idx){
+    if(er.empMatch.status==='ignored'){ignored.push(er);return;}
+    if(er.error&&!er.shifts.length){errors.push(er);return;}
+    cards.push({er:er,idx:idx});
+  });
+
+  var body=eid('ts-review-body');
+  body.innerHTML=cards.map(function(c){return renderTsEmpCard(c.er,c.idx);}).join('');
+
+  // Error section
+  var errSec=eid('ts-errors-section'),errList=eid('ts-errors-list');
+  if(errors.length){
+    errSec.style.display='';
+    errList.innerHTML=errors.map(function(er){
+      return'<div style="font-size:12px;color:var(--out);padding:4px 0">&#10060; '+er.fileName+' — '+(er.error||'unknown error')+'</div>';
+    }).join('');
+  }else errSec.style.display='none';
+
+  // Ignored section
+  var ignSec=eid('ts-ignored-section'),ignList=eid('ts-ignored-list');
+  if(ignored.length){
+    ignSec.style.display='';
+    ignList.innerHTML=ignored.map(function(er){
+      return'<div style="font-size:12px;color:var(--text3);padding:4px 0">'+er.employeeName+' (always ignored)</div>';
+    }).join('');
+  }else ignSec.style.display='none';
+
+  tsUpdateFooter();
+}
+
+function renderTsEmpCard(er,idx){
+  var empHeader='';
+  if(er.empMatch.dupError){
+    empHeader='<span style="color:var(--out);font-size:11px;font-weight:600">&#9888; Duplicate file — remove one export and re-import</span>';
+  }else if(er.empMatch.status==='mapped'){
+    var emp=(S.emps||[]).find(function(e){return e.id===er.empMatch.employee_id;});
+    empHeader='<span style="color:#34d399;font-size:11px">&#10003; '+( emp?emp.name:er.employeeName)+'</span>';
+  }else if(er.empMatch.status==='auto'){
+    var emp=(S.emps||[]).find(function(e){return e.id===er.empMatch.employee_id;});
+    empHeader='<span style="color:#f59e0b;font-size:11px">&#9654; Auto-matched: '+(emp?emp.name:er.employeeName)+'</span>'
+      +tsEmpDropdown(er,idx,er.empMatch.employee_id);
+  }else{
+    empHeader='<span style="color:var(--out);font-size:11px">Needs assignment</span>'
+      +tsEmpDropdown(er,idx,null);
+  }
+
+  var shiftRows=(er.shifts||[]).map(function(s,si){
+    return renderTsShiftRow(er,idx,s,si);
+  }).join('');
+
+  if(!shiftRows)shiftRows='<tr><td colspan="8" style="padding:10px;text-align:center;color:var(--text3);font-size:12px">No shifts parsed</td></tr>';
+
+  var tot=tsTotals(er.shifts||[]);
+  var footer='Wkday <b>'+tot.wd.toFixed(1)+'h</b> · Sat <b>'+tot.sat.toFixed(1)+'h</b>'
+    +' · Sun <b>'+tot.sun.toFixed(1)+'h</b> · PH <b>'+tot.ph.toFixed(1)+'h</b>'
+    +' · Sleepovers <b>'+tot.sleep+'</b>'
+    +(tot.sleep>0?' · Active mins <b>'+tot.activeMins+'</b>':'');
+
+  return'<div style="background:var(--bg3);border:1px solid var(--border);border-radius:var(--r);margin-bottom:12px;overflow:hidden">'
+    +'<div style="display:flex;align-items:center;gap:10px;padding:10px 12px;border-bottom:1px solid var(--border);background:var(--bg4)">'
+    +'<div style="font-weight:700;font-size:13px;flex:1">'+(er.employeeName||er.fileName)+'</div>'
+    +'<div style="display:flex;align-items:center;gap:8px">'+empHeader+'</div>'
+    +'</div>'
+    +'<div style="overflow-x:auto">'
+    +'<table style="width:100%;border-collapse:collapse;font-size:12px">'
+    +'<thead><tr style="background:var(--bg4)">'
+    +'<th style="padding:5px 8px;border-bottom:1px solid var(--border);width:24px"></th>'
+    +'<th style="padding:5px 8px;border-bottom:1px solid var(--border);text-align:left;font-size:10px;color:var(--text3);text-transform:uppercase;white-space:nowrap">Date</th>'
+    +'<th style="padding:5px 8px;border-bottom:1px solid var(--border);font-size:10px;color:var(--text3);text-transform:uppercase">Type</th>'
+    +'<th style="padding:5px 8px;border-bottom:1px solid var(--border);text-align:left;font-size:10px;color:var(--text3);text-transform:uppercase">Participant</th>'
+    +'<th style="padding:5px 8px;border-bottom:1px solid var(--border);text-align:left;font-size:10px;color:var(--text3);text-transform:uppercase;white-space:nowrap">Clock window</th>'
+    +'<th style="padding:5px 8px;border-bottom:1px solid var(--border);font-size:10px;color:var(--text3);text-transform:uppercase">Hrs</th>'
+    +'<th style="padding:5px 8px;border-bottom:1px solid var(--border);text-align:left;font-size:10px;color:var(--text3);text-transform:uppercase;white-space:nowrap">Shift type</th>'
+    +'<th style="padding:5px 8px;border-bottom:1px solid var(--border);font-size:10px;color:var(--text3);text-transform:uppercase;white-space:nowrap">Active min</th>'
+    +'</tr></thead>'
+    +'<tbody>'+shiftRows+'</tbody></table></div>'
+    +'<div style="padding:8px 12px;font-size:11px;color:var(--text3);background:var(--bg4);border-top:1px solid var(--border)">'+footer+'</div>'
+    +'</div>';
+}
+
+function tsEmpDropdown(er,idx,selectedId){
+  var opts=(S.emps||[]).filter(function(e){return e.active;}).map(function(e){
+    return'<option value="'+e.id+'"'+(e.id===selectedId?' selected':'')+'>'+e.name+'</option>';
+  }).join('');
+  return'<select style="font-size:11px;padding:3px 6px" onchange="tsSetEmployee('+idx+',this.value,\''+ctNormName(er.employeeName||er.fileName)+'\')">'
+    +'<option value="">-- assign employee --</option>'
+    +opts
+    +'<option value="__ignore__">Ignore this person (always)</option>'
+    +'</select>';
+}
+
+function tsSetEmployee(erIdx,empId,normName){
+  var er=_tsEnriched[erIdx];if(!er)return;
+  if(empId==='__ignore__'){
+    er.empMatch={status:'ignored',employee_id:null};
+    ctSaveNameMap(normName,null,true);
+  }else if(empId){
+    er.empMatch.employee_id=empId;
+    er.empMatch.status='mapped';
+    ctSaveNameMap(normName,empId,false);
+  }
+  refreshTsCard(erIdx);
+}
+
+function renderTsShiftRow(er,idx,s,si){
+  var dt=tsDayType(s.date);
+  var dayChip='<span style="background:'+dt.bg+';color:'+dt.col+';font-size:10px;font-weight:700;border-radius:8px;padding:2px 6px">'+dt.label+'</span>';
+  // Format date: "Wed 15 Jul"
+  var dp=s.date.split('-');var dateD=new Date(+dp[0],+dp[1]-1,+dp[2]);
+  var DOW2=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+  var dateLabel=DOW2[dateD.getDay()]+' '+dateD.getDate()+' '+SHORT[dateD.getMonth()];
+
+  // Participant cell
+  var ptCell='';
+  if(s.participantId){
+    var pt=(S.participants||[]).find(function(p){return p.id===s.participantId;});
+    ptCell=(pt?'<span style="font-size:11px">'+pt.name+'</span>':'?')
+      +'&nbsp;<button style="font-size:10px;background:none;border:none;color:var(--text3);cursor:pointer" onclick="tsOpenPtPicker('+idx+','+si+')">&#x270E;</button>';
+  }else{
+    ptCell=tsPtDropdown(idx,si,s.participantCandidates,s.participantStatus);
+  }
+
+  // Shift-type cell
+  var stPill='',stCell='';
+  if(s.shiftTypeId){
+    var st=(S.shiftTypes||[]).find(function(t){return t.id===s.shiftTypeId;});
+    var pillColor=s.shiftTypeStatus==='confident'?'#16a34a':s.shiftTypeStatus==='suggested'?'#d97706':'#dc2626';
+    var pillBg=s.shiftTypeStatus==='confident'?'rgba(22,163,74,.15)':s.shiftTypeStatus==='suggested'?'rgba(217,119,6,.15)':'rgba(220,38,38,.15)';
+    var pillLabel=s.shiftTypeStatus==='confident'?'Matched':s.shiftTypeStatus==='suggested'?'Check':'Assign';
+    stPill='<span style="background:'+pillBg+';color:'+pillColor+';font-size:10px;font-weight:700;border-radius:8px;padding:2px 6px;margin-right:4px">'+pillLabel+'</span>';
+    stCell=stPill+(st?st.name:'?')
+      +'&nbsp;<button style="font-size:10px;background:none;border:none;color:var(--text3);cursor:pointer" onclick="tsOpenStPicker('+idx+','+si+')">&#x270E;</button>';
+  }else{
+    stCell='<span style="background:rgba(220,38,38,.15);color:#dc2626;font-size:10px;font-weight:700;border-radius:8px;padding:2px 6px;margin-right:4px">Assign</span>'
+      +tsStDropdown(idx,si,s.participantId);
+  }
+
+  // Active minutes cell (only for sleepover)
+  var actCell=s.shiftKind==='sleepover'
+    ?'<input type="number" value="'+(s.activeMins||0)+'" min="0" max="480" step="5" style="width:60px;font-size:11px;padding:2px 4px" onchange="tsSetActiveMins('+idx+','+si+',+this.value)">'
+    :'<span style="color:var(--text3);font-size:11px">—</span>';
+
+  var rowStyle=!s.included?'opacity:.4;':'';
+  if(s.warning)rowStyle+='background:rgba(220,38,38,.05);';
+
+  return'<tr style="border-bottom:1px solid var(--border);'+rowStyle+'">'
+    +'<td style="padding:5px 8px"><input type="checkbox"'+(s.included?' checked':'')+' onchange="tsToggleShift('+idx+','+si+',this.checked)"></td>'
+    +'<td style="padding:5px 8px;white-space:nowrap">'+dateLabel+'</td>'
+    +'<td style="padding:5px 8px;text-align:center">'+dayChip+'</td>'
+    +'<td style="padding:5px 8px">'+ptCell+'</td>'
+    +'<td style="padding:5px 8px;font-family:monospace;white-space:nowrap">'+s['in']+' – '+s.out+(s.crossesMidnight?' &#8987;':'')+'</td>'
+    +'<td style="padding:5px 8px;text-align:center">'+s.duration.toFixed(1)+'</td>'
+    +'<td style="padding:5px 8px">'+stCell+'</td>'
+    +'<td style="padding:5px 8px">'+actCell+'</td>'
+    +'</tr>';
+}
+
+function tsPtDropdown(erIdx,si,candidates,status){
+  var opts=(S.participants||[]).map(function(p){
+    var sel=candidates.length&&candidates.find(function(c){return c.id===p.id;});
+    return'<option value="'+p.id+'"'+(sel?' selected':'')+'>'+p.name+'</option>';
+  }).join('');
+  return'<select style="font-size:11px;padding:3px 6px;max-width:140px" onchange="tsSetParticipant('+erIdx+','+si+',this.value)">'
+    +'<option value="">-- participant --</option>'
+    +opts
+    +'</select>';
+}
+
+function tsOpenPtPicker(erIdx,si){
+  // Re-render the shift's participant cell as a dropdown for reassignment
+  var er=_tsEnriched[erIdx];if(!er)return;
+  var s=er.shifts[si];if(!s)return;
+  s.participantId=null; // force dropdown
+  refreshTsCard(erIdx);
+}
+
+function tsSetParticipant(erIdx,si,ptId){
+  var er=_tsEnriched[erIdx];if(!er)return;
+  var s=er.shifts[si];if(!s)return;
+  s.participantId=ptId||null;
+  // Re-run shift-type matching for this shift
+  if(s.participantId){
+    var stRes=ctMatchShiftType(s,s.participantId);
+    s.shiftTypeId=stRes.shiftTypeId;s.shiftTypeStatus=stRes.status;s.shiftKind=stRes.shiftKind;
+  }else{
+    s.shiftTypeId=null;s.shiftTypeStatus='unmatched';s.shiftKind=null;
+  }
+  refreshTsCard(erIdx);
+}
+
+function tsStDropdown(erIdx,si,participantId){
+  var types=participantId?(S.shiftTypes||[]).filter(function(t){return t.participant_id===participantId&&t.active;}):[];
+  var opts=types.map(function(t){
+    return'<option value="'+t.id+'">'+t.name+'</option>';
+  }).join('');
+  return'<select style="font-size:11px;padding:3px 6px;max-width:160px" onchange="tsSetShiftType('+erIdx+','+si+',this.value)">'
+    +'<option value="">-- shift type --</option>'
+    +opts
+    +(participantId?'<option value="__new__">＋ New shift type…</option>':'')
+    +'</select>';
+}
+
+function tsOpenStPicker(erIdx,si){
+  var er=_tsEnriched[erIdx];if(!er)return;
+  var s=er.shifts[si];if(!s)return;
+  s.shiftTypeId=null;s.shiftTypeStatus='unmatched';
+  refreshTsCard(erIdx);
+}
+
+function tsSetShiftType(erIdx,si,stId){
+  var er=_tsEnriched[erIdx];if(!er)return;
+  var s=er.shifts[si];if(!s)return;
+  if(stId==='__new__'){
+    // Open inline shift-type creator
+    _tsNewSTContext={erIdx:erIdx,si:si};
+    var ptId=s.participantId;
+    var guessKind=(s.crossesMidnight||s.duration>=8)?'sleepover':'standard';
+    eid('ts-st-name').value='';
+    eid('ts-st-kind').value=guessKind;
+    eid('ts-st-start').value=s['in'];
+    eid('ts-st-end').value=s.out;
+    eid('ts-st-tol').value='60';
+    eid('ts-st-participant-id').value=ptId||'';
+    eid('ts-new-st-form').style.display='';
+    return;
+  }
+  s.shiftTypeId=stId||null;
+  if(stId){
+    var t=(S.shiftTypes||[]).find(function(t){return t.id===stId;});
+    s.shiftTypeStatus='confident';s.shiftKind=t?t.shift_kind:null;
+  }else{
+    s.shiftTypeStatus='unmatched';s.shiftKind=null;
+  }
+  refreshTsCard(erIdx);
+}
+
+async function tsSaveNewST(){
+  var ctx=_tsNewSTContext;if(!ctx)return;
+  var ptId=eid('ts-st-participant-id').value;
+  if(!ptId){showToast('No participant for this shift type','err');return;}
+  var name=(eid('ts-st-name').value||'').trim();
+  if(!name){showToast('Name required','err');return;}
+  var row={
+    participant_id:ptId,name:name,
+    start_time:eid('ts-st-start').value,
+    end_time:eid('ts-st-end').value,
+    shift_kind:eid('ts-st-kind').value,
+    tolerance_mins:parseInt(eid('ts-st-tol').value)||60,
+    active:true
+  };
+  setSync('saving');
+  var res=await sb2.from('shift_types').insert(row).select();
+  if(res.error){setSync('error');showToast(res.error.message,'err');return;}
+  if(!S.shiftTypes)S.shiftTypes=[];
+  S.shiftTypes.push(res.data[0]);
+  setSync('ok');
+  eid('ts-new-st-form').style.display='none';
+  // Re-match all shift types across the whole batch
+  ctRematchShiftTypes(_tsEnriched);
+  // Re-render all cards
+  renderTsStage2(null);
+  showToast('Shift type saved and batch re-matched','ok');
+}
+
+function tsCancelNewST(){
+  eid('ts-new-st-form').style.display='none';
+  _tsNewSTContext=null;
+}
+
+function tsToggleShift(erIdx,si,checked){
+  var er=_tsEnriched[erIdx];if(!er)return;
+  var s=er.shifts[si];if(!s)return;
+  s.included=checked;
+  refreshTsCard(erIdx);
+}
+
+function tsSetActiveMins(erIdx,si,mins){
+  var er=_tsEnriched[erIdx];if(!er)return;
+  var s=er.shifts[si];if(!s)return;
+  s.activeMins=mins||0;
+  // Update footer totals only — lightweight refresh
+  refreshTsCard(erIdx);
+}
+
+// Re-renders a single employee card in place (avoids full stage-2 re-render).
+function refreshTsCard(erIdx){
+  var er=_tsEnriched[erIdx];if(!er)return;
+  var html=renderTsEmpCard(er,erIdx);
+  // Replace the nth card div in the review body
+  var body=eid('ts-review-body');
+  var cards=body.children;
+  // Find the card at the right position (ignoring error/ignored entries)
+  var ci=0;
+  for(var i=0;i<_tsEnriched.length;i++){
+    var e=_tsEnriched[i];
+    if(e.empMatch.status==='ignored')continue;
+    if(e.error&&!e.shifts.length)continue;
+    if(i===erIdx){
+      if(cards[ci]){cards[ci].outerHTML=html;}
+      break;
+    }
+    ci++;
+  }
+  tsUpdateFooter();
+}
+
+function tsGoToConfirm(){
+  if(tsBlockerCount()>0)return;
+  _tsStage=3;
+  eid('ts-stage-2').style.display='none';
+  eid('ts-stage-3').style.display='';
+  eid('ts-new-st-form').style.display='none';
+  eid('ts-btn-back').style.display='';
+  eid('ts-btn-next').style.display='none';
+  eid('ts-blocker-count').textContent='';
+  renderTsStage3();
+}
+
+function tsBack(){
+  if(_tsStage===3){
+    _tsStage=2;
+    eid('ts-stage-3').style.display='none';
+    eid('ts-stage-2').style.display='';
+    eid('ts-btn-back').style.display='none';
+    eid('ts-btn-next').style.display='';
+    eid('ts-btn-create').style.display='none';
+    tsUpdateFooter();
+  }
+}
+
+function renderTsStage3(){
+  eid('ts-modal-title').textContent='Confirm pay runs';
+  var rows=[];
+  var dupWarnings=[];
+
+  _tsEnriched.forEach(function(er){
+    if(er.empMatch.status==='ignored')return;
+    if(er.error&&!er.shifts.length)return;
+    if(!er.empMatch.employee_id)return;
+
+    var emp=(S.emps||[]).find(function(e){return e.id===er.empMatch.employee_id;});
+    if(!emp)return;
+
+    var tot=tsTotals(er.shifts||[]);
+    var totalHrs=tot.wd+tot.sat+tot.sun+tot.ph;
+
+    // Estimate gross (approximate — full calc happens in ctCreatePayRuns)
+    var br=parseFloat(emp.base_rate)||0;
+    var sr=parseFloat(emp.sat_rate)||(br*1.5);
+    var ur=parseFloat(emp.sun_rate)||(br*2);
+    var pr=br*2.25;
+    var gross=+(tot.wd*br+tot.sat*sr+tot.sun*ur+tot.ph*pr
+      +tot.sleep*SCHADS_SLEEPOVER_ALLOWANCE).toFixed(2);
+    if(tot.sleep>0&&tot.activeMins>0){
+      var actHrs=Math.max(SCHADS_SLEEPOVER_ACTIVE_MIN_HRS,tot.activeMins/60);
+      gross=+(gross+tot.sleep*actHrs*(br*1.5)).toFixed(2);
+    }
+
+    // Duplicate run check
+    var dupRun=(S.runs||[]).find(function(r){
+      return r.employee_id===er.empMatch.employee_id
+        &&r.period_start===er.periodStart&&r.period_end===er.periodEnd;
+    });
+    var dupFlag='';
+    if(dupRun){
+      dupWarnings.push('<div style="color:#f59e0b;font-size:12px;margin-bottom:4px">&#9888; Pay run for <b>'+(emp?emp.name:er.employeeName)+'</b> covering this period already exists'
+        +' <label style="font-size:11px;cursor:pointer"><input type="checkbox" id="ts-dup-'+er.empMatch.employee_id+'" style="margin-left:6px"> Create anyway</label></div>');
+      er._dupRun=dupRun;
+    }else{
+      er._dupRun=null;
+    }
+
+    rows.push('<tr>'
+      +'<td style="padding:7px 10px;font-size:13px;font-weight:600">'+(emp?emp.name:er.employeeName)+'</td>'
+      +'<td style="padding:7px 10px;font-size:12px;color:var(--text2)">'+totalHrs.toFixed(1)+'h total</td>'
+      +'<td style="padding:7px 10px;font-size:12px;color:var(--text2)">'+tot.wd.toFixed(1)+'h wd / '+tot.sat.toFixed(1)+'h sat / '+tot.sun.toFixed(1)+'h sun / '+tot.ph.toFixed(1)+'h PH</td>'
+      +'<td style="padding:7px 10px;font-size:12px;color:#bc8cff">'+tot.sleep+' sleepovers'+(tot.sleep>0?' ('+tot.activeMins+' active min)':'')+'</td>'
+      +'<td style="padding:7px 10px;font-size:13px;font-weight:700;text-align:right;color:var(--green)">~'+fmt(gross)+'</td>'
+      +'</tr>');
+  });
+
+  var warnHtml=dupWarnings.length?'<div style="background:rgba(251,191,36,.08);border:1px solid rgba(251,191,36,.3);border-radius:var(--r);padding:10px 12px;margin-bottom:14px">'+dupWarnings.join('')+'</div>':'';
+
+  var included=_tsEnriched.filter(function(er){return er.empMatch.employee_id&&er.empMatch.status!=='ignored'&&(!er.error||er.shifts.length);});
+  eid('ts-btn-create').textContent='Create '+included.length+' draft pay run'+(included.length!==1?'s':'');
+  eid('ts-btn-create').style.display='';
+
+  eid('ts-confirm-body').innerHTML=warnHtml
+    +'<table style="width:100%;border-collapse:collapse;font-size:12px">'
+    +'<thead><tr style="background:var(--bg4)">'
+    +'<th style="padding:7px 10px;text-align:left;font-size:10px;color:var(--text3);text-transform:uppercase;border-bottom:1px solid var(--border)">Employee</th>'
+    +'<th style="padding:7px 10px;text-align:left;font-size:10px;color:var(--text3);text-transform:uppercase;border-bottom:1px solid var(--border)">Hours</th>'
+    +'<th style="padding:7px 10px;text-align:left;font-size:10px;color:var(--text3);text-transform:uppercase;border-bottom:1px solid var(--border)">Breakdown</th>'
+    +'<th style="padding:7px 10px;text-align:left;font-size:10px;color:var(--text3);text-transform:uppercase;border-bottom:1px solid var(--border)">Sleepovers</th>'
+    +'<th style="padding:7px 10px;text-align:right;font-size:10px;color:var(--text3);text-transform:uppercase;border-bottom:1px solid var(--border)">Est. gross</th>'
+    +'</tr></thead>'
+    +'<tbody>'+rows.join('')+'</tbody></table>';
+}
+
+// ────────────────────────────────────────────────────────────────────────────
 
 </script>
 </body>
