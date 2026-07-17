@@ -1052,6 +1052,7 @@ async function loadAll(){
     var r5=await sb2.from('participants').select('*').order('name',{ascending:true});
     S.participants=r5.error?[]:r5.data||[];
     S.participants.forEach(migrateLegacyPlan);
+    S.participants.forEach(migrateSilRates2026);
     // shift_types and timesheet_name_map — graceful degradation if Step 0 SQL not yet run.
     // Track whether the table itself is missing (vs merely empty) so the import UI
     // can point the operator at the Step 0 SQL instead of silently showing nothing.
@@ -5287,13 +5288,18 @@ var RATE_CARDS = {
     { day_type:'public_holiday', code:'01_012_0107_1_1', desc:'Assistance with Self-Care – Standard – Public Holiday',  rate:156.03 },
     { day_type:'travel_km',      code:'01_799_0107_1_1', desc:'Provider Travel – Non-labour ({km}km)',                       rate:0.99 }
   ],
+  // SIL rates: NDIS 2026-27 Pricing Schedule (effective 1 Jul 2026), National
+  // non-remote price limits.
   sil: [
-    { day_type:'weekday',        code:'01_801_0138_1_1', desc:'Supported Independent Living – Weekday Daytime',  rate:70.23 },
-    { day_type:'evening',        code:'01_802_0138_1_1', desc:'Supported Independent Living – Weekday Evening',  rate:77.38 },
-    { day_type:'night',          code:'01_803_0138_1_1', desc:'Supported Independent Living – Weekday Night',    rate:78.81 },
-    { day_type:'saturday',       code:'01_804_0138_1_1', desc:'Supported Independent Living – Saturday',         rate:98.83 },
-    { day_type:'sunday',         code:'01_805_0138_1_1', desc:'Supported Independent Living – Sunday',           rate:127.43 },
-    { day_type:'public_holiday', code:'01_806_0138_1_1', desc:'Supported Independent Living – Public Holiday',   rate:156.03 },
+    { day_type:'weekday',        code:'01_801_0138_1_1', desc:'Supported Independent Living – Weekday Daytime',  rate:73.58 },
+    { day_type:'evening',        code:'01_802_0138_1_1', desc:'Supported Independent Living – Weekday Evening',  rate:81.07 },
+    { day_type:'night',          code:'01_803_0138_1_1', desc:'Supported Independent Living – Weekday Night',    rate:82.57 },
+    { day_type:'saturday',       code:'01_804_0138_1_1', desc:'Supported Independent Living – Saturday',         rate:103.54 },
+    { day_type:'sunday',         code:'01_805_0138_1_1', desc:'Supported Independent Living – Sunday',           rate:133.50 },
+    { day_type:'public_holiday', code:'01_806_0138_1_1', desc:'Supported Independent Living – Public Holiday',   rate:163.46 },
+    // Billed per shift (unit "Each"), not per hour — _buildInvLines emits it
+    // with qty = number of shifts.
+    { day_type:'sleepover',      code:'01_832_0138_1_1', desc:'Supported Independent Living – Night-Time Sleepover', rate:311.79 },
     { day_type:'travel_km',      code:'01_799_0138_1_1', desc:'Provider Travel – Non-labour ({km}km)',           rate:1.00 }
   ],
   employment: [
@@ -5311,6 +5317,34 @@ var RATE_CARDS = {
 };
 var BL_CARD_LABELS = {core:'Core (0107)',sil:'SIL (0138)',employment:'Employment (0102)',community:'Community (0125)',custom:'Custom'};
 var BL_INV_PREFIXES = {sil:'INV-SIL-',core:'INV-CF-',employment:'INV-EMP-',community:'INV-COM-',custom:'INV-'};
+
+// ── SIL 2026-27 rate refresh ────────────────────────────────────────────────
+// Budget lines snapshot RATE_CARDS at creation, so existing SIL lines carry the
+// stale 2025-26 amounts. Bump a line's rate to the 2026-27 figure ONLY when it
+// still equals the old default for that exact code (operator-customised rates
+// are never touched), and add the previously-missing sleepover row. In-memory;
+// persisted on next participant save, same as migrateLegacyPlan.
+var SIL_2026_27_RATE_BUMPS = [
+  { day_type:'weekday',        code:'01_801_0138_1_1', from:70.23,  to:73.58 },
+  { day_type:'evening',        code:'01_802_0138_1_1', from:77.38,  to:81.07 },
+  { day_type:'night',          code:'01_803_0138_1_1', from:78.81,  to:82.57 },
+  { day_type:'saturday',       code:'01_804_0138_1_1', from:98.83,  to:103.54 },
+  { day_type:'sunday',         code:'01_805_0138_1_1', from:127.43, to:133.50 },
+  { day_type:'public_holiday', code:'01_806_0138_1_1', from:156.03, to:163.46 }
+];
+function migrateSilRates2026(pt) {
+  (pt && pt.budget_lines || []).forEach(function(bl) {
+    if(bl.rate_card !== 'sil' || !Array.isArray(bl.rates)) return;
+    SIL_2026_27_RATE_BUMPS.forEach(function(b) {
+      var r = bl.rates.find(function(x){ return x.day_type===b.day_type && x.code===b.code; });
+      if(r && Math.abs(parseFloat(r.rate) - b.from) < 0.005) r.rate = b.to;
+    });
+    if(!bl.rates.some(function(x){ return x.day_type==='sleepover'; })) {
+      var slDefault = (RATE_CARDS.sil||[]).find(function(x){ return x.day_type==='sleepover'; });
+      if(slDefault) bl.rates.push(JSON.parse(JSON.stringify(slDefault)));
+    }
+  });
+}
 
 // ── Budget-line migration ────────────────────────────────────────────────────
 // On load, synthesise one Core Flexible budget line from legacy ndis_plan data
@@ -5743,10 +5777,14 @@ function _buildInvLines(bl, periodStart, periodEnd, travelKm, travelMin, opts) {
     var slOutsideHrs = slOpts.outside_hours||0;
     var slActiveMin  = slOpts.active_minutes||0;
     var slDayType    = slOpts.day_type||'weekday';
-    var slCode = NDIS_SLEEPOVER_CODES[card] || NDIS_SLEEPOVER_CODES['core'];
-    var slDesc = 'Inactive Overnight Support (Sleepover) — '+slShifts+' shift'+(slShifts!==1?'s':'');
-    var slAmt  = +(slShifts * NDIS_SLEEPOVER_SHIFT_RATE).toFixed(2);
-    lines.push({ date:svcRangeStr, day:'—', desc:slDesc, code:slCode, qty:slShifts, rate:NDIS_SLEEPOVER_SHIFT_RATE, amt:slAmt });
+    // Prefer the budget line's own per-shift sleepover rate (unit "Each");
+    // fall back to the legacy global code/rate for cards without one.
+    var slRi = blRate(bl, 'sleepover');
+    var slCode = slRi ? slRi.code : (NDIS_SLEEPOVER_CODES[card] || NDIS_SLEEPOVER_CODES['core']);
+    var slRate = slRi ? slRi.rate : NDIS_SLEEPOVER_SHIFT_RATE;
+    var slDesc = (slRi && slRi.desc ? slRi.desc : 'Inactive Overnight Support (Sleepover)')+' — '+slShifts+' shift'+(slShifts!==1?'s':'');
+    var slAmt  = +(slShifts * slRate).toFixed(2);
+    lines.push({ date:svcRangeStr, day:'—', desc:slDesc, code:slCode, qty:slShifts, rate:slRate, amt:slAmt });
     // Hours outside the 8-hr span — billed at the applicable active support rate
     if(slOutsideHrs > 0){
       var slOutRi = blRate(bl, slDayType) || blRate(bl, 'weekday') || blRate(bl, 'any_day');
