@@ -1964,7 +1964,14 @@ async function savePayRun(){
           block_id: cb.dataset.blockId || null,
           participant_id: cb.dataset.participantId || null,
           shift_kind: cb.dataset.kind || null,
-          pay_amt: cb.dataset.payAmt!==undefined ? (parseFloat(cb.dataset.payAmt)||0) : null
+          pay_amt: cb.dataset.payAmt!==undefined ? (parseFloat(cb.dataset.payAmt)||0) : null,
+          // Flat-rated (sleepover) shifts: capture the full split so the payslip
+          // can render flat + active as separate correctly-priced lines.
+          flat_amt: cb.dataset.flatAmt!==undefined ? (parseFloat(cb.dataset.flatAmt)||0) : null,
+          active_hrs: cb.dataset.activeHrs!==undefined ? (parseFloat(cb.dataset.activeHrs)||0) : null,
+          active_rate: cb.dataset.activeRate!==undefined ? (parseFloat(cb.dataset.activeRate)||0) : null,
+          active_date: cb.dataset.activeDate || null,
+          active_type: cb.dataset.activeType || null
         });
       });
       if(rows.length>0) dayBreakdown=rows;
@@ -2666,22 +2673,21 @@ function genPayslip(id) {
       // later roster edits. Falls back to roster reconstruction for old pay
       // runs that pre-date the column or were saved before it was added.
       // Extract sleepover meta entry before rendering regular day lines
-      var sleepMeta = null;
+      var sleepMeta = null, perShiftSleep = false;
       if(Array.isArray(run.day_breakdown)){
         var sMeta = run.day_breakdown.filter(function(d){ return d.type==='sleepover_meta'; });
         if(sMeta.length) sleepMeta = sMeta[0];
+        // New-format rows carry their own flat/active split — they render as
+        // per-shift lines below, so the aggregate sleepover_meta rows must not
+        // also render (that would double-display the same pay).
+        perShiftSleep = run.day_breakdown.some(function(d){ return d && d.flat_amt!=null && d.worked; });
       }
       if(Array.isArray(run.day_breakdown) && run.day_breakdown.length>0){
+        var fmtDmy=function(ds){var dt=new Date(ds);return String(dt.getDate()).padStart(2,'0')+'/'+String(dt.getMonth()+1).padStart(2,'0')+'/'+dt.getFullYear();};
         run.day_breakdown.forEach(function(d){
           if(d.type==='sleepover_meta'||d.type==='import_meta') return; // handled separately below
           if(!d.worked) return; // unticked days don't appear on paystub
-          if(d.shift_kind==='sleepover'||d.isSleep) return; // rendered via the sleepover allowance rows, not as hourly lines
           var ds=d.date, isH=!!VIC_HOLIDAYS[ds];
-          var rate, rType;
-          if(d.type==='holiday' || isH){ rate=phr; rType='Public Holiday'; }
-          else if(d.type==='saturday'){ rate=sr; rType='Saturday'; }
-          else if(d.type==='sunday'){ rate=ur; rType='Sunday'; }
-          else { rate=br; rType='Weekday'; }
           var shiftLabel = d.shift_label || '';
           if(!shiftLabel && d.block_id){
             var bl = (S.scheduleBlocks||[]).find(function(b){ return b.id===d.block_id; });
@@ -2691,18 +2697,43 @@ function genPayslip(id) {
             shiftLabel = String(d.line_label).replace(/\s+\d+(\.\d+)?h\s*@.*$/,'').replace(/\s+flat\s+\$.*$/i,'').trim();
           }
           if(!shiftLabel){
-            shiftLabel = d.shift_kind==='sleepover' ? 'Sleepover' : 'Shift';
+            shiftLabel = (d.shift_kind==='sleepover'||d.flat_amt!=null) ? 'Sleepover' : 'Shift';
           }
+          var dt=new Date(ds);
+          var dn=(d.dow||DN[dt.getDay()]).slice(0,3);
+          if(d.flat_amt!=null){
+            // Flat-rated (sleepover) shift: two lines — inactive flat + active
+            // hours at the ordinary rate of the calendar day they fall on.
+            var totHrs=parseFloat(d.hrs)||0;
+            var aHrs=parseFloat(d.active_hrs)||0;
+            var inactiveHrs=Math.max(0,totHrs-aHrs);
+            dayLines.push({date:fmtDmy(ds),day:dn,hrs:inactiveHrs,rate:0,rateLabel:'flat',
+              type:shiftLabel+' — Sleepover (inactive)',amt:+parseFloat(d.flat_amt).toFixed(2),hol:null});
+            if(aHrs>0){
+              var aDate=d.active_date||ds;
+              var aDt=new Date(aDate);
+              var aType=d.active_type||'weekday';
+              var aTypeName=aType==='holiday'?'Public Holiday':aType.charAt(0).toUpperCase()+aType.slice(1);
+              var aRate=parseFloat(d.active_rate)||0;
+              dayLines.push({date:fmtDmy(aDate),day:DN[aDt.getDay()].slice(0,3),hrs:aHrs,rate:aRate,
+                type:shiftLabel+' — Active — '+aTypeName,amt:+(aHrs*aRate).toFixed(2),
+                hol:aType==='holiday'?(VIC_HOLIDAYS[aDate]||null):null});
+            }
+            return;
+          }
+          if(d.shift_kind==='sleepover'||d.isSleep) return; // legacy rows: rendered via the sleepover allowance rows, not as hourly lines
+          var rate, rType;
+          if(d.type==='holiday' || isH){ rate=phr; rType='Public Holiday'; }
+          else if(d.type==='saturday'){ rate=sr; rType='Saturday'; }
+          else if(d.type==='sunday'){ rate=ur; rType='Sunday'; }
+          else { rate=br; rType='Weekday'; }
           var rowType = shiftLabel + ' — ' + rType;
           var hrs=parseFloat(d.hrs)||0;
           // Prefer the exact amount captured at processing time (covers manual
           // per-block rates); fall back to profile rate × hours for older rows.
           var amt=(d.pay_amt!=null&&!isNaN(parseFloat(d.pay_amt)))?+parseFloat(d.pay_amt).toFixed(2):+(hrs*rate).toFixed(2);
           if(hrs>0&&d.pay_amt!=null)rate=+(amt/hrs).toFixed(2);
-          var dt=new Date(ds);
-          var dStr=String(dt.getDate()).padStart(2,'0')+'/'+String(dt.getMonth()+1).padStart(2,'0')+'/'+dt.getFullYear();
-          var dn=(d.dow||DN[dt.getDay()]).slice(0,3);
-          dayLines.push({date:dStr,day:dn,hrs:hrs,rate:rate,type:rowType,amt:amt,hol:isH?VIC_HOLIDAYS[ds]:null});
+          dayLines.push({date:fmtDmy(ds),day:dn,hrs:hrs,rate:rate,type:rowType,amt:amt,hol:isH?VIC_HOLIDAYS[ds]:null});
         });
       } else {
         // Legacy fallback: reconstruct from current roster for old pay runs
@@ -2718,7 +2749,7 @@ function genPayslip(id) {
   var superLabel='Super ('+superPct+'%)';
   // Build sleepover payslip rows if present
   var sleepRows='';
-  if(sleepMeta && sleepMeta.shifts>0){
+  if(sleepMeta && sleepMeta.shifts>0 && !perShiftSleep){
     var br2=parseFloat(emp.pay_rate)||0;
     var sleepFlatRate=resolveSleepoverFlatRate(emp);
     var sAllow=+(sleepMeta.shifts*sleepFlatRate).toFixed(2);
@@ -2738,7 +2769,7 @@ function genPayslip(id) {
         +'<td style="padding:6px 10px;border-bottom:1px solid #f0f0f0;font-size:12px;text-align:right;font-weight:600;color:#7c3aed">$'+sActAmt.toFixed(2)+'</td></tr>';
     }
   }
-  var dr=dayLines.map(function(d){var bg=d.hol?'rgba(248,81,73,0.06)':d.type==='Saturday'||d.type==='Sunday'?'rgba(210,153,34,0.06)':'transparent';if(d.salary){return '<tr style="background:'+bg+'"><td style="padding:6px 10px;border-bottom:1px solid #f0f0f0;font-size:12px">'+d.date+'</td><td style="padding:6px 10px;border-bottom:1px solid #f0f0f0;font-size:12px;font-weight:600">'+d.day+'</td><td style="padding:6px 10px;border-bottom:1px solid #f0f0f0;font-size:12px;color:'+(d.hol?'#dc2626':'#555')+'">'+d.type+(d.hol?' ('+d.hol+')':'')+'</td><td colspan="3" style="padding:6px 10px;border-bottom:1px solid #f0f0f0;font-size:12px;text-align:center;font-weight:600;color:#15803d">Worked</td></tr>';}return '<tr style="background:'+bg+'"><td style="padding:6px 10px;border-bottom:1px solid #f0f0f0;font-size:12px">'+d.date+'</td><td style="padding:6px 10px;border-bottom:1px solid #f0f0f0;font-size:12px;font-weight:600">'+d.day+'</td><td style="padding:6px 10px;border-bottom:1px solid #f0f0f0;font-size:12px;color:'+(d.hol?'#dc2626':'#555')+'">'+d.type+(d.hol?' ('+d.hol+')':'')+'</td><td style="padding:6px 10px;border-bottom:1px solid #f0f0f0;font-size:12px;text-align:right">'+d.hrs.toFixed(1)+'h</td><td style="padding:6px 10px;border-bottom:1px solid #f0f0f0;font-size:12px;text-align:right">$'+d.rate.toFixed(2)+'</td><td style="padding:6px 10px;border-bottom:1px solid #f0f0f0;font-size:12px;text-align:right;font-weight:600">$'+d.amt.toFixed(2)+'</td></tr>';}).join('');
+  var dr=dayLines.map(function(d){var bg=d.hol?'rgba(248,81,73,0.06)':/Saturday|Sunday/.test(d.type)?'rgba(210,153,34,0.06)':'transparent';if(d.salary){return '<tr style="background:'+bg+'"><td style="padding:6px 10px;border-bottom:1px solid #f0f0f0;font-size:12px">'+d.date+'</td><td style="padding:6px 10px;border-bottom:1px solid #f0f0f0;font-size:12px;font-weight:600">'+d.day+'</td><td style="padding:6px 10px;border-bottom:1px solid #f0f0f0;font-size:12px;color:'+(d.hol?'#dc2626':'#555')+'">'+d.type+(d.hol?' ('+d.hol+')':'')+'</td><td colspan="3" style="padding:6px 10px;border-bottom:1px solid #f0f0f0;font-size:12px;text-align:center;font-weight:600;color:#15803d">Worked</td></tr>';}return '<tr style="background:'+bg+'"><td style="padding:6px 10px;border-bottom:1px solid #f0f0f0;font-size:12px">'+d.date+'</td><td style="padding:6px 10px;border-bottom:1px solid #f0f0f0;font-size:12px;font-weight:600">'+d.day+'</td><td style="padding:6px 10px;border-bottom:1px solid #f0f0f0;font-size:12px;color:'+(d.hol?'#dc2626':'#555')+'">'+d.type+(d.hol?' ('+d.hol+')':'')+'</td><td style="padding:6px 10px;border-bottom:1px solid #f0f0f0;font-size:12px;text-align:right">'+d.hrs.toFixed(1)+'h</td><td style="padding:6px 10px;border-bottom:1px solid #f0f0f0;font-size:12px;text-align:right">'+(d.rateLabel?d.rateLabel:'$'+d.rate.toFixed(2))+'</td><td style="padding:6px 10px;border-bottom:1px solid #f0f0f0;font-size:12px;text-align:right;font-weight:600">$'+d.amt.toFixed(2)+'</td></tr>';}).join('');
   var h='<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Payslip - '+emp.name+'</title><style>body{font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;margin:0;padding:0;background:#fff;color:#1a1a1a}.page{max-width:720px;margin:0 auto;padding:40px}@media print{.page{padding:20px}}</style></head><body><div class="page"><div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:28px;padding-bottom:20px;border-bottom:2px solid #1a1a1a"><div><div style="font-size:18px;font-weight:700;margin-bottom:4px">Northern Star Support Services</div><div style="font-size:12px;color:#555;line-height:1.6">Falaax Group Pty Ltd<br>ABN: 22 671 393 070<br>12 Dimboola Rd, Broadmeadows VIC 3064<br>Phone: 03 7057 1645</div></div><div style="text-align:right"><div style="font-size:11px;color:#888;text-transform:uppercase;letter-spacing:.05em">Payslip</div><div style="font-size:18px;font-weight:700">'+refNo+'</div><div style="font-size:12px;color:#888;margin-top:6px">Paid: '+paidDate+'</div></div></div><div style="background:#f8f9fa;border:1px solid #e5e5e5;border-radius:8px;padding:16px;margin-bottom:20px"><div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:13px"><div><span style="color:#888">Name:</span> <b>'+emp.name+'</b></div><div><span style="color:#888">Role:</span> '+(emp.role||'--')+'</div><div><span style="color:#888">Employment:</span> '+(emp.employment_type||'--')+'</div><div><span style="color:#888">Period:</span> '+periodStart+' to '+periodEnd+'</div></div></div><div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:#888;margin-bottom:8px">Days Worked</div><table style="width:100%;border-collapse:collapse;margin-bottom:20px"><thead><tr style="background:#f0f0f0"><th style="padding:8px 10px;text-align:left;font-size:10px;font-weight:700;text-transform:uppercase;color:#666">Date</th><th style="padding:8px 10px;text-align:left;font-size:10px;font-weight:700;text-transform:uppercase;color:#666">Day</th><th style="padding:8px 10px;text-align:left;font-size:10px;font-weight:700;text-transform:uppercase;color:#666">Type</th><th style="padding:8px 10px;text-align:right;font-size:10px;font-weight:700;text-transform:uppercase;color:#666">Hours</th><th style="padding:8px 10px;text-align:right;font-size:10px;font-weight:700;text-transform:uppercase;color:#666">Rate</th><th style="padding:8px 10px;text-align:right;font-size:10px;font-weight:700;text-transform:uppercase;color:#666">Amount</th></tr></thead><tbody>'+dr+sleepRows+'</tbody></table><div style="display:flex;justify-content:flex-end;margin-bottom:20px"><div style="width:280px"><div style="display:flex;justify-content:space-between;padding:6px 0;font-size:13px"><span>Gross pay</span><span style="font-weight:600">$'+gross.toFixed(2)+'</span></div>'+(tax>0?'<div style="display:flex;justify-content:space-between;padding:6px 0;font-size:13px;color:#dc2626"><span>PAYG tax withheld</span><span>-$'+tax.toFixed(2)+'</span></div>':'<div style="display:flex;justify-content:space-between;padding:6px 0;font-size:13px;color:#888"><span>PAYG tax</span><span>Not withheld</span></div>')+'<div style="display:flex;justify-content:space-between;padding:6px 0;font-size:13px;color:#d97706"><span>'+superLabel+'</span><span>$'+sup.toFixed(2)+'</span></div><div style="display:flex;justify-content:space-between;padding:10px 0;font-size:16px;font-weight:700;border-top:2px solid #1a1a1a;margin-top:4px;color:#15803d"><span>Net pay to bank</span><span>$'+net.toFixed(2)+'</span></div></div></div>'+(bsb?'<div style="background:#f0f9f4;border:2px solid #22c55e;border-radius:10px;padding:16px;text-align:center;margin-bottom:20px"><div style="font-size:11px;font-weight:700;text-transform:uppercase;color:#16a34a;margin-bottom:6px">Deposited to your account</div><div style="font-size:13px;color:#15803d">BSB: '+bsb+' | Account: '+acctMask+'</div><div style="font-size:24px;font-weight:700;color:#15803d;margin-top:8px">$'+net.toFixed(2)+'</div></div>':'')+'<div style="margin-top:30px;padding-top:16px;border-top:1px solid #e5e5e5;font-size:11px;color:#aaa;text-align:center;line-height:1.6">Northern Star Support Services - Falaax Group Pty Ltd - ABN 22 671 393 070</div></div></body></html>';
   var w=window.open('','_blank');if(!w){showToast('Popup blocked — allow popups for this site','err');return;}w.document.write(h);w.document.close();w.focus();setTimeout(function(){w.print();},500);
 }
@@ -3610,6 +3641,39 @@ function resolveBlockRate(block, employeeId){
   if(block.flat_rate_source==='manual') flat = parseFloat(block.manual_flat_rate)||null;
   else if(emp){ flat = resolveSleepoverFlatRate(emp); }
   return {hourly:hourly, flat:flat};
+}
+
+function computeSleepoverSplitForDate(block, emp, date){
+  // Splits a flat-rated (sleepover) shift into its two paid components:
+  //  1. the inactive portion, paid as a flat amount (employee profile rate via
+  //     resolveBlockRate → resolveSleepoverFlatRate, or the block's manual flat)
+  //  2. the active portion, paid hourly at the employee's ordinary rate for the
+  //     CALENDAR DAY the active segment actually falls on. The active segment is
+  //     anchored to the end of the shift (handover), so a Saturday 21:00–06:00
+  //     sleepover's active hour lands on Sunday and prices at the Sunday rate.
+  //     If the segment straddles midnight, the day holding the majority of it
+  //     wins (tie goes to the handover day).
+  var rate = resolveBlockRate(block, emp ? emp.id : null);
+  var flatAmt = parseFloat(rate.flat)||0;
+  var split = getScheduleBlockHoursForDate(block, date);
+  var activeHrs = parseFloat(split.activeHours)||0;
+  if(activeHrs<=0 && isOvernightScheduleBlock(block)) activeHrs = parseFloat(block.active_hours)||0;
+  var activeDay = new Date(date);
+  if(activeHrs>0 && isOvernightScheduleBlock(block)){
+    var startAbs = getTimeMinutes(block.start_time)||0;
+    var endAbs = getTimeMinutes(block.end_time)||0;
+    if(endAbs<=startAbs) endAbs += 1440;
+    var activeStartAbs = endAbs - activeHrs*60;
+    var minsAfterMidnight = Math.max(0, endAbs - Math.max(activeStartAbs, 1440));
+    var minsBeforeMidnight = Math.max(0, Math.min(endAbs, 1440) - activeStartAbs);
+    if(minsAfterMidnight >= minsBeforeMidnight) activeDay.setDate(activeDay.getDate()+1);
+  }
+  var activeType = getDayTypeForDate(activeDay);
+  var activeRate = getEmployeeDayRate(emp, activeType);
+  var activeAmt = +(activeHrs*activeRate).toFixed(2);
+  return {flatAmt:flatAmt, activeHrs:activeHrs, activeRate:activeRate, activeAmt:activeAmt,
+          activeDate:fmtDate(activeDay), activeType:activeType,
+          payAmt:+(flatAmt+activeAmt).toFixed(2)};
 }
 
 function scheduleBlockAppliesToEmployee(block, empId){
@@ -5076,27 +5140,16 @@ function buildDayGrid(empId, periodStart, periodEnd) {
       var cType = getDayTypeForDate(cur);
       var payAmt = 0;
       var lineLabel = '';
+      var soData = '';
       if((b.shift_kind==='sleepover' || b.rate_mode==='flat' || b.rate_mode==='both') && (split.flatHours>0 || split.activeHours>0 || rate.flat!=null)){
-        var flatAmt = parseFloat(rate.flat)||0;
-        var activeHrs = parseFloat(split.activeHours)||0;
-        if(activeHrs<=0 && isOvernightScheduleBlock(b)){
-          // Sleepover active hours are billed on the start-day card, even if
-          // the active segment occurs after midnight.
-          activeHrs = parseFloat(b.active_hours)||0;
+        var so = computeSleepoverSplitForDate(b, emp, cur);
+        payAmt = so.payAmt;
+        lineLabel = (b.name||'Sleepover') + ' flat $' + so.flatAmt.toFixed(2) + (so.activeHrs>0 ? ' + ' + so.activeHrs.toFixed(1) + 'h @ $' + so.activeRate.toFixed(2) : '');
+        if(so.activeHrs>0 && splitSummary.indexOf(so.activeHrs.toFixed(1)+'h active')===-1){
+          splitSummary.push(so.activeHrs.toFixed(1)+'h active');
         }
-        var activeDay = new Date(cur);
-        if(isOvernightScheduleBlock(b) && activeHrs>0){
-          activeDay.setDate(activeDay.getDate()+1);
-        }
-        var activeType = getDayTypeForDate(activeDay);
-        var activeRate = getEmployeeDayRate(emp, activeType);
-        var activeAmt = +(activeHrs * activeRate).toFixed(2);
-        payAmt = +(flatAmt + activeAmt).toFixed(2);
-        lineLabel = (b.name||'Sleepover') + ' flat $' + flatAmt.toFixed(2) + (activeHrs>0 ? ' + ' + activeHrs.toFixed(1) + 'h @ $' + activeRate.toFixed(2) : '');
-        if(activeHrs>0 && splitSummary.indexOf(parseFloat(activeHrs).toFixed(1)+'h active')===-1){
-          splitSummary.push(parseFloat(activeHrs).toFixed(1)+'h active');
-        }
-        activeMins = activeHrs * 60;
+        activeMins = so.activeHrs * 60;
+        soData = ' data-flat-amt="'+so.flatAmt.toFixed(2)+'" data-active-hrs="'+so.activeHrs.toFixed(2)+'" data-active-rate="'+so.activeRate.toFixed(2)+'" data-active-date="'+so.activeDate+'" data-active-type="'+so.activeType+'"';
       } else {
         var dayRate = getEmployeeDayRate(emp, cType);
         payAmt = +(hrs * dayRate).toFixed(2);
@@ -5106,7 +5159,7 @@ function buildDayGrid(empId, periodStart, periodEnd) {
       var checked = !!lastPattern[key];
       return '<label style="display:block;background:var(--bg4);border:1px solid var(--border2);border-radius:var(--r);padding:8px;margin-bottom:8px;cursor:pointer;opacity:'+(checked?'1':'0.5')+'">'
         + '<div style="display:flex;align-items:flex-start;gap:8px">'
-        + '<input type="checkbox" class="pr-day-cb" '+(checked?'checked':'')+' data-date="'+ds+'" data-dow="'+DS[dow]+'" data-dow-idx="'+dow+'" data-hrs="'+hrs.toFixed(2)+'" data-type="'+cType+'" data-kind="'+(b.shift_kind||'standard')+'" data-active-mins="'+activeMins.toFixed(0)+'" data-pay-amt="'+payAmt.toFixed(2)+'" data-line-label="'+lineLabel.replace(/"/g,'&quot;')+'" data-shift-label="'+String(b.name||'Shift').replace(/"/g,'&quot;')+'" data-block-id="'+(b.id||'')+'" data-participant-id="'+(b.participant_id||'')+'" onchange="prDayToggle()" style="appearance:none;-webkit-appearance:none;width:16px;height:16px;border-radius:50%;border:2px solid #58a6ff;background:transparent;margin-top:2px;cursor:pointer">'
+        + '<input type="checkbox" class="pr-day-cb" '+(checked?'checked':'')+' data-date="'+ds+'" data-dow="'+DS[dow]+'" data-dow-idx="'+dow+'" data-hrs="'+hrs.toFixed(2)+'" data-type="'+cType+'" data-kind="'+(b.shift_kind||'standard')+'" data-active-mins="'+activeMins.toFixed(0)+'" data-pay-amt="'+payAmt.toFixed(2)+'" data-line-label="'+lineLabel.replace(/"/g,'&quot;')+'" data-shift-label="'+String(b.name||'Shift').replace(/"/g,'&quot;')+'" data-block-id="'+(b.id||'')+'" data-participant-id="'+(b.participant_id||'')+'"'+soData+' onchange="prDayToggle()" style="appearance:none;-webkit-appearance:none;width:16px;height:16px;border-radius:50%;border:2px solid #58a6ff;background:transparent;margin-top:2px;cursor:pointer">'
         + '<div style="flex:1">'
         + '<div style="font-size:12px;font-weight:700;color:var(--text)">'+(b.name||'Shift')+'</div>'
         + '<div style="font-size:11px;color:var(--text3);margin-top:2px">'+(b.start_time||'')+'–'+(b.end_time||'')+' · '+hrs.toFixed(1)+'h</div>'
