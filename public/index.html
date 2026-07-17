@@ -577,6 +577,31 @@ input[type=number]{text-align:right}
         </div>
       </div>
 
+      <!-- Shift types (Connecteam import) -->
+      <div id="pt-shift-types-section" class="field" style="border-top:1px solid var(--border);padding-top:12px;margin-top:4px">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+          <label style="margin:0;color:#bc8cff;font-weight:600">Shift types <span style="font-size:10px;font-weight:400;color:var(--text3)">(for Connecteam timesheet import)</span></label>
+          <button id="pt-add-shift-type-btn" class="btn btn-outline" style="font-size:11px;padding:4px 10px" onclick="openAddShiftTypeForm()">+ Add shift type</button>
+        </div>
+        <div id="pt-shift-types-body"></div>
+        <div id="pt-add-shift-type-form" style="display:none;background:var(--bg4);border:1px solid var(--border2);border-radius:var(--r);padding:12px;margin-top:8px">
+          <div class="form-row">
+            <div class="field"><label>Name</label><input type="text" id="st-name" placeholder="e.g. Evening Support" style="width:100%"></div>
+            <div class="field"><label>Kind</label><select id="st-kind" onchange="onShiftKindChange()" style="width:100%"><option value="standard">Standard</option><option value="sleepover">Sleepover</option><option value="travel">Travel</option></select></div>
+          </div>
+          <div class="form-row">
+            <div class="field"><label>Start time</label><input type="time" id="st-start" style="width:100%"></div>
+            <div class="field"><label>End time</label><input type="time" id="st-end" style="width:100%"></div>
+            <div class="field"><label>Tolerance (mins)</label><input type="number" id="st-tolerance" value="60" min="0" max="240" style="width:100%"></div>
+          </div>
+          <div id="st-sleep-hint" style="display:none;font-size:10px;color:#bc8cff;margin-bottom:8px">Paid as SCHADS flat allowance + active minutes OT &#8212; same as existing payroll logic.</div>
+          <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:8px">
+            <button class="btn btn-outline" style="font-size:11px" onclick="closeAddShiftTypeForm()">Cancel</button>
+            <button class="btn btn-primary" style="font-size:11px" onclick="saveNewShiftType()">Add shift type</button>
+          </div>
+        </div>
+      </div>
+
       <!-- Budget lines repeater -->
       <div class="field" style="border-top:1px solid var(--border);padding-top:12px;margin-top:4px">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
@@ -756,7 +781,7 @@ var SCHADS_SLEEPOVER_ALLOWANCE = 58.69;
 // Minimum overtime hours paid for any active work performed during a sleepover shift.
 var SCHADS_SLEEPOVER_ACTIVE_MIN_HRS = 1;
 var pendingExportPlatform = null;
-var S = {tx:[],emps:[],runs:[],participants:[],dd:{description:[],type:[]},curMonth:new Date().getMonth(),editEmpId:null,ddField:null,ddTargetId:null,ch:{},wiseTransfers:[],invoiceLedger:[],_lastGenInvoice:null};
+var S = {tx:[],emps:[],runs:[],participants:[],dd:{description:[],type:[]},curMonth:new Date().getMonth(),editEmpId:null,ddField:null,ddTargetId:null,ch:{},wiseTransfers:[],invoiceLedger:[],_lastGenInvoice:null,shiftTypes:[],tsNameMap:[]};
 
 function eid(id){return document.getElementById(id);}
 function fmt(n){var v=parseFloat(n);if(!v&&v!==0)return'--';return'$'+Math.abs(v).toLocaleString('en-AU',{minimumFractionDigits:2,maximumFractionDigits:2});}
@@ -953,6 +978,9 @@ async function loadAll(){
     var r5=await sb2.from('participants').select('*').order('name',{ascending:true});
     S.participants=r5.error?[]:r5.data||[];
     S.participants.forEach(migrateLegacyPlan);
+    // shift_types and timesheet_name_map — graceful degradation if Step 0 SQL not yet run
+    try{var stRes=await sb2.from('shift_types').select('*').order('created_at',{ascending:true});if(stRes.error){S.shiftTypes=[];console.warn('[loadAll] shift_types:',stRes.error.message);}else{S.shiftTypes=stRes.data||[];}}catch(e){S.shiftTypes=[];console.warn('[loadAll] shift_types load error:',e);}
+    try{var nmRes=await sb2.from('timesheet_name_map').select('*').order('created_at',{ascending:true});if(nmRes.error){S.tsNameMap=[];console.warn('[loadAll] timesheet_name_map:',nmRes.error.message);}else{S.tsNameMap=nmRes.data||[];}}catch(e){S.tsNameMap=[];console.warn('[loadAll] timesheet_name_map load error:',e);}
     setSync('ok');
     eid('errBox').style.display='none';
     renderDash();
@@ -3269,6 +3297,9 @@ function openParticipantModal(id){
   document.getElementById('m-participant')._editId = id;
   // Render per-quarter overrides grid (no-op if required plan fields are empty)
   renderPtQuarterOverrides();
+  // Render shift types section (disabled with note if new participant not yet saved)
+  renderShiftTypes(id || null);
+  closeAddShiftTypeForm();
 }
 
 // In-progress per-quarter overrides while the modal is open. Populated from
@@ -3530,6 +3561,129 @@ async function saveParticipant(){
   setSync('ok'); closeM('m-participant'); renderParticipants();
   showToast(dirty ? 'Participant saved (cleaned hidden characters from pasted data)' : 'Participant saved', 'ok');
 }
+
+// ── Shift Types (Connecteam import) ─────────────────────────────────────────
+
+function renderShiftTypes(participantId){
+  var body=eid('pt-shift-types-body');
+  if(!body)return;
+  var addBtn=eid('pt-add-shift-type-btn');
+  if(!participantId){
+    body.innerHTML='<div style="color:var(--text3);font-size:12px;padding:8px 0">Save the participant first, then add shift types.</div>';
+    if(addBtn){addBtn.disabled=true;addBtn.style.opacity='0.5';}
+    return;
+  }
+  if(addBtn){addBtn.disabled=false;addBtn.style.opacity='';}
+  var types=(S.shiftTypes||[]).filter(function(t){return t.participant_id===participantId;});
+  if(types.length===0){
+    body.innerHTML='<div style="color:var(--text3);font-size:12px;padding:8px 0">'
+      +'<div>No shift types yet.</div>'
+      +'<div style="margin-top:6px;opacity:.6">e.g. Evening Support 17:00–21:00 · Standard</div>'
+      +'<div style="opacity:.6">e.g. Night Sleepover 21:00–06:00 · Sleepover</div>'
+      +'</div>';
+    return;
+  }
+  var kindBadge={
+    standard:'<span style="background:#1d4ed8;color:#bfdbfe;font-size:10px;font-weight:700;border-radius:10px;padding:2px 8px">Standard</span>',
+    sleepover:'<span style="background:rgba(188,140,255,.2);color:#bc8cff;font-size:10px;font-weight:700;border-radius:10px;padding:2px 8px">Sleepover</span>',
+    travel:'<span style="background:#064e3b;color:#6ee7b7;font-size:10px;font-weight:700;border-radius:10px;padding:2px 8px">Travel</span>'
+  };
+  var rows=types.map(function(t){
+    var stParts=t.start_time.split(':');var etParts=t.end_time.split(':');
+    var startMins=parseInt(stParts[0])*60+parseInt(stParts[1]);
+    var endMins=parseInt(etParts[0])*60+parseInt(etParts[1]);
+    var win=t.start_time+'–'+t.end_time+(endMins<=startMins?' (overnight)':'');
+    return '<tr style="border-bottom:1px solid var(--border)">'
+      +'<td style="padding:7px 8px;font-size:12px;font-weight:600">'+t.name+'</td>'
+      +'<td style="padding:7px 8px;font-size:12px;color:var(--text2);font-family:monospace">'+win+'</td>'
+      +'<td style="padding:7px 8px">'+(kindBadge[t.shift_kind]||t.shift_kind)+'</td>'
+      +'<td style="padding:7px 8px;font-size:12px;color:var(--text3)">±'+t.tolerance_mins+'m</td>'
+      +'<td style="padding:7px 8px;text-align:right">'
+      +'<button class="btn-icon" title="Delete" onclick="deleteShiftType(\''+t.id+'\')" style="color:var(--out);border-color:var(--out-dim)">&#x2715;</button>'
+      +'</td>'
+      +'</tr>';
+  }).join('');
+  body.innerHTML='<table style="width:100%;border-collapse:collapse;font-size:12px">'
+    +'<thead><tr style="background:var(--bg4)">'
+    +'<th style="padding:6px 8px;text-align:left;font-size:10px;color:var(--text3);text-transform:uppercase;border-bottom:1px solid var(--border)">Name</th>'
+    +'<th style="padding:6px 8px;text-align:left;font-size:10px;color:var(--text3);text-transform:uppercase;border-bottom:1px solid var(--border)">Window</th>'
+    +'<th style="padding:6px 8px;text-align:left;font-size:10px;color:var(--text3);text-transform:uppercase;border-bottom:1px solid var(--border)">Kind</th>'
+    +'<th style="padding:6px 8px;text-align:left;font-size:10px;color:var(--text3);text-transform:uppercase;border-bottom:1px solid var(--border)">Tolerance</th>'
+    +'<th style="border-bottom:1px solid var(--border)"></th>'
+    +'</tr></thead>'
+    +'<tbody>'+rows+'</tbody></table>';
+}
+
+function openAddShiftTypeForm(){
+  var f=eid('pt-add-shift-type-form');
+  if(!f)return;
+  f.style.display='block';
+  eid('st-name').value='';
+  eid('st-kind').value='standard';
+  eid('st-start').value='';
+  eid('st-end').value='';
+  eid('st-tolerance').value='60';
+  eid('st-sleep-hint').style.display='none';
+}
+
+function closeAddShiftTypeForm(){
+  var f=eid('pt-add-shift-type-form');
+  if(f)f.style.display='none';
+}
+
+function onShiftKindChange(){
+  var hint=eid('st-sleep-hint');
+  if(hint)hint.style.display=(eid('st-kind').value==='sleepover')?'block':'none';
+}
+
+async function saveNewShiftType(){
+  var participantId=eid('m-participant')._editId;
+  if(!participantId){showToast('Save the participant first','err');return;}
+  var name=(eid('st-name').value||'').trim();
+  if(!name){showToast('Name required','err');return;}
+  var startTime=eid('st-start').value;
+  if(!startTime){showToast('Start time required','err');return;}
+  var endTime=eid('st-end').value;
+  if(!endTime){showToast('End time required','err');return;}
+  var row={
+    participant_id:participantId,
+    name:name,
+    start_time:startTime,
+    end_time:endTime,
+    shift_kind:eid('st-kind').value,
+    tolerance_mins:parseInt(eid('st-tolerance').value)||60,
+    active:true
+  };
+  setSync('saving');
+  var res=await sb2.from('shift_types').insert(row).select();
+  if(res.error){
+    setSync('error');
+    if(/shift_types.*does not exist/i.test(res.error.message||'')||/relation.*shift_types/i.test(res.error.message||'')){
+      showToast('shift_types table missing — run Step 0 SQL in Supabase','err');
+    }else{showToast(res.error.message,'err');}
+    return;
+  }
+  if(!S.shiftTypes)S.shiftTypes=[];
+  S.shiftTypes.push(res.data[0]);
+  setSync('ok');
+  closeAddShiftTypeForm();
+  renderShiftTypes(participantId);
+  showToast('Shift type added','ok');
+}
+
+async function deleteShiftType(id){
+  var t=(S.shiftTypes||[]).find(function(x){return x.id===id;});
+  if(!confirm('Delete shift type "'+(t?t.name:id)+'"?'))return;
+  setSync('saving');
+  var res=await sb2.from('shift_types').delete().eq('id',id);
+  if(res.error){setSync('error');showToast(res.error.message,'err');return;}
+  S.shiftTypes=(S.shiftTypes||[]).filter(function(x){return x.id!==id;});
+  setSync('ok');
+  renderShiftTypes(eid('m-participant')._editId||null);
+  showToast('Shift type deleted','ok');
+}
+
+// ────────────────────────────────────────────────────────────────────────────
 
 async function delParticipant(id){
   var p=(S.participants||[]).find(function(x){return x.id===id;});
