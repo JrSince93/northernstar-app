@@ -695,7 +695,17 @@ input[type=number]{text-align:right}
       Select a participant and budget line above.
     </div>
   </div>
-  <div class="modal-footer"><button class="btn btn-outline" onclick="closeM('m-ndis-inv')">Cancel</button><button class="btn btn-outline" onclick="genMyPlaceCSV()" style="border-color:var(--in-dim);color:var(--in)">&#x2B07; myplace CSV</button><button class="btn btn-primary" onclick="genNDISInvoice()" style="background:#6B2D7B">&#x1F5A8; PDF Invoice</button></div>
+  <div class="modal-footer">
+    <button class="btn btn-outline" onclick="closeM('m-ndis-inv')">Cancel</button>
+    <span style="flex:1"></span>
+    <div id="ndis-inv-gen-choice" style="display:none;align-items:center;gap:8px">
+      <span style="font-size:11px;color:var(--text3)">Generate as:</span>
+      <button class="btn btn-primary" onclick="invGenerate('pdf')" style="background:#6B2D7B">&#x1F5A8; PDF</button>
+      <button class="btn btn-outline" onclick="invGenerate('csv')" style="border-color:var(--in-dim);color:var(--in)">&#x2B07; CSV</button>
+      <button class="btn btn-primary" onclick="invGenerate('both')" style="background:#6B2D7B;border:1px solid var(--in-dim);box-shadow:inset 0 -2px 0 var(--in)">Both</button>
+    </div>
+    <button id="ndis-inv-gen-btn" class="btn btn-primary" onclick="toggleInvGenChoice()" style="background:#6B2D7B">Generate&hellip;</button>
+  </div>
 </div></div></div>
 
 <!-- Invoice Ledger Confirm Modal (shown after uploading invoice to participant archive) -->
@@ -5593,7 +5603,25 @@ function openNDISInvoiceModal() {
   eid('ndis-inv-start').value = fmtDate(lastMon);
   eid('ndis-inv-end').value = fmtDate(lastSun);
   ndisInvLoadBudgetLines();
+  toggleInvGenChoice(false);
   eid('m-ndis-inv').style.display = 'block';
+}
+
+// ── Single Generate button → inline PDF / CSV / Both choice ─────────────────
+// Pure trigger UI: the actual generation stays in genNDISInvoice() /
+// genMyPlaceCSV(), unchanged, including their own validation and toasts.
+function toggleInvGenChoice(force){
+  var choice=eid('ndis-inv-gen-choice'), btn=eid('ndis-inv-gen-btn');
+  if(!choice||!btn)return;
+  var show=force!==undefined?!!force:choice.style.display==='none';
+  choice.style.display=show?'flex':'none';
+  btn.style.display=show?'none':'';
+}
+
+function invGenerate(kind){
+  toggleInvGenChoice(false);
+  if(kind==='pdf'||kind==='both') genNDISInvoice();
+  if(kind==='csv'||kind==='both') genMyPlaceCSV();
 }
 
 function ndisInvLoadBudgetLines() {
