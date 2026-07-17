@@ -340,7 +340,7 @@ input[type=number]{text-align:right}
     <div class="form-row"><div class="field"><label>Email</label><input type="email" id="e-email"></div><div class="field"><label>Phone</label><input type="text" id="e-phone" placeholder="04xx xxx xxx"></div></div>
     <div class="form-row"><div class="field"><label>Employment type</label><select id="e-etype"><option>Casual</option><option>Part-time</option><option>Full-time</option><option>Contractor</option><option>Employee-Director</option></select></div><div class="field"><label>Pay type</label><select id="e-ptype" onchange="togglePayTypeFields()"><option value="hourly">Hourly</option><option value="salary">Salary</option></select></div></div>
     <div class="form-row"><div class="field"><label id="e-rate-label">Weekday rate ($/hr)</label><input type="number" id="e-rate" placeholder="32.00" step="0.01" oninput="autoFillRates()"></div><div class="field"><label>Start date</label><input type="date" id="e-start"></div></div>
-    <div class="form-row" id="e-penalty-rates-row"><div class="field"><label style="color:#d29922">Saturday rate ($/hr)</label><input type="number" id="e-sat-rate" placeholder="auto 1.5x" step="0.01"></div><div class="field"><label style="color:#f85149">Sunday rate ($/hr)</label><input type="number" id="e-sun-rate" placeholder="auto 2x" step="0.01"></div><div class="field"><label style="color:#bc8cff">Public holiday ($/hr)</label><input type="number" id="e-ph-rate" placeholder="auto 2.25x" step="0.01"></div></div>
+    <div class="form-row" id="e-penalty-rates-row"><div class="field"><label style="color:#d29922">Saturday rate ($/hr)</label><input type="number" id="e-sat-rate" placeholder="auto 1.5x" step="0.01"></div><div class="field"><label style="color:#f85149">Sunday rate ($/hr)</label><input type="number" id="e-sun-rate" placeholder="auto 2x" step="0.01"></div><div class="field"><label style="color:#bc8cff">Public holiday ($/hr)</label><input type="number" id="e-ph-rate" placeholder="auto 2.25x" step="0.01"></div><div class="field"><label style="color:#6b21a8">Sleepover flat rate ($/shift)</label><input type="number" id="e-sleep-rate" placeholder="auto 58.69" step="0.01"></div></div>
     <div id="e-penalty-rates-help" style="font-size:10px;color:var(--text3);margin-top:-4px;margin-bottom:4px">Leave blank to auto-calculate from weekday rate (SCHADS Award)</div>
     <div class="form-row"><div class="field"><label>Tax File Number</label><input type="text" id="e-tfn" placeholder="123 456 789"></div><div class="field"><label>Super fund</label><input type="text" id="e-super" placeholder="AustralianSuper"></div></div>
     <div class="field"><label>ABN (if contractor)</label><input type="text" id="e-abn" placeholder="12 345 678 901"></div>    <div class="form-row"><div class="field"><label>BSB</label><input type="text" id="e-bsb" placeholder="062-000"></div><div class="field"><label>Account number</label><input type="text" id="e-acct" placeholder="12345678"></div></div>
@@ -375,9 +375,9 @@ input[type=number]{text-align:right}
       <div id="pr-hol-notice" style="font-size:11px;color:var(--in);margin-top:6px;font-style:italic"></div>
       <div style="font-size:10px;color:var(--text3);margin-top:4px">Holiday hours are added on top of regular hours. "Hours worked" = non-holiday hours only.</div>
     </div>
-    <div id="pr-day-grid" style="display:none;background:var(--bg4);border:1px solid var(--border2);border-radius:var(--r);padding:12px">
-      <div style="font-size:10px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:.04em;margin-bottom:8px">Day-by-day hours (uncheck sick days)</div>
-      <div id="pr-day-grid-body" style="display:grid;grid-template-columns:repeat(7,1fr);gap:4px"></div>
+    <div id="pr-day-grid" style="display:none;background:var(--bg4);border:1px solid var(--border2);border-radius:var(--r);padding:12px;overflow:auto">
+      <div style="font-size:10px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:.04em;margin-bottom:8px">Pay period shift board (select worked shifts)</div>
+      <div id="pr-day-grid-body" style="display:grid;grid-template-columns:repeat(7,minmax(140px,1fr));gap:8px;min-width:980px"></div>
       <div style="display:flex;justify-content:space-between;margin-top:8px;font-size:11px;color:var(--text3)"><span>Total: <b id="pr-day-total" style="color:var(--text)">0</b>h</span></div>
     </div>
     <!-- Sleepover shifts (SCHADS Award) — always visible for hourly pay runs -->
@@ -533,53 +533,40 @@ input[type=number]{text-align:right}
         <div id="pt-worker-select" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:8px;margin-top:4px"></div>
       </div>
 
-      <!-- Weekly roster Sun-Sat -->
+      <!-- Weekly schedule blocks Mon-Sun -->
       <div class="field">
-        <label>Weekly support schedule</label>
-        <div style="overflow-x:auto;margin-top:6px">
-          <table style="width:100%;border-collapse:collapse;font-size:12px;min-width:480px">
-            <thead>
-              <tr>
-                <th style="padding:8px;background:var(--bg4);border:1px solid var(--border);text-align:left;font-size:10px;color:var(--text3);text-transform:uppercase">Worker</th>
-                <th style="padding:8px;background:var(--bg4);border:1px solid var(--border);text-align:center;font-size:10px;color:var(--text3);text-transform:uppercase">Sun</th>
-                <th style="padding:8px;background:var(--bg4);border:1px solid var(--border);text-align:center;font-size:10px;color:var(--text3);text-transform:uppercase">Mon</th>
-                <th style="padding:8px;background:var(--bg4);border:1px solid var(--border);text-align:center;font-size:10px;color:var(--text3);text-transform:uppercase">Tue</th>
-                <th style="padding:8px;background:var(--bg4);border:1px solid var(--border);text-align:center;font-size:10px;color:var(--text3);text-transform:uppercase">Wed</th>
-                <th style="padding:8px;background:var(--bg4);border:1px solid var(--border);text-align:center;font-size:10px;color:var(--text3);text-transform:uppercase">Thu</th>
-                <th style="padding:8px;background:var(--bg4);border:1px solid var(--border);text-align:center;font-size:10px;color:var(--text3);text-transform:uppercase">Fri</th>
-                <th style="padding:8px;background:var(--bg4);border:1px solid var(--border);text-align:center;font-size:10px;color:var(--text3);text-transform:uppercase">Sat</th>
-                <th style="padding:8px;background:var(--bg4);border:1px solid var(--border);text-align:center;font-size:10px;color:var(--text3);text-transform:uppercase">Hrs</th>
-              </tr>
-            </thead>
-            <tbody id="pt-roster-body"></tbody>
-          </table>
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:6px">
+          <label style="margin:0">Weekly support schedule</label>
+          <button class="btn btn-outline" onclick="openScheduleBlockForm()">+ Add shift</button>
         </div>
-        <div style="font-size:11px;color:var(--text3);margin-top:6px">Enter hours per day per worker. Total will auto-calculate.</div>
+        <div id="pt-schedule-block-form" style="display:none;background:var(--bg5);border:1px solid var(--border2);border-radius:var(--r);padding:10px;margin-bottom:10px">
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px">
+            <div class="field"><label>Name</label><input type="text" id="sb-name" placeholder="Morning support"></div>
+            <div class="form-row" style="grid-column:1 / -1"><div class="field"><label>Start time</label><input type="time" id="sb-start"></div><div class="field"><label>End time</label><input type="time" id="sb-end"></div></div>
+            <div class="field" style="grid-column:1 / -1"><label>Days of week</label><div id="sb-days" style="display:flex;gap:6px;flex-wrap:wrap"></div></div>
+            <div class="field"><label>Kind</label><select id="sb-kind"><option value="standard">standard</option><option value="sleepover">sleepover</option><option value="travel">travel</option></select></div>
+            <div class="field"><label>Rate mode</label><select id="sb-rate-mode" onchange="toggleScheduleRateInputs()"><option value="hourly">hourly</option><option value="flat">flat</option><option value="both">both</option></select></div>
+            <div class="field"><label>Tolerance (mins)</label><input type="number" id="sb-tolerance" min="0" step="5" value="60"></div>
+            <div class="field" id="sb-hourly-wrap"><label>Hourly source</label><select id="sb-hourly-source"><option value="employee">Employee profile</option><option value="manual">Manual $ input</option></select></div>
+            <div class="field" id="sb-manual-hourly-wrap"><label>Manual hourly rate</label><input type="number" id="sb-manual-hourly" placeholder="0.00" step="0.01"></div>
+            <div class="field" id="sb-flat-wrap"><label>Flat source</label><select id="sb-flat-source"><option value="employee">Employee profile</option><option value="manual">Manual $ input</option></select></div>
+            <div class="field" id="sb-manual-flat-wrap"><label>Manual flat rate</label><input type="number" id="sb-manual-flat" placeholder="0.00" step="0.01"></div>
+            <div class="field" id="sb-flat-hours-wrap"><label>Flat hours</label><input type="number" id="sb-flat-hours" placeholder="0" min="0" step="0.5"></div>
+            <div class="field" id="sb-active-hours-wrap"><label>Active hours</label><input type="number" id="sb-active-hours" placeholder="0" min="0" step="0.5"></div>
+            <div class="field" id="sb-flat-range-wrap" style="grid-column:1 / -1"><label>Flat time range</label><div class="form-row"><div class="field"><input type="time" id="sb-flat-start" placeholder="Flat start"></div><div class="field"><input type="time" id="sb-flat-end" placeholder="Flat end"></div></div></div>
+            <div class="field" id="sb-active-range-wrap" style="grid-column:1 / -1"><label>Active time range</label><div class="form-row"><div class="field"><input type="time" id="sb-active-start" placeholder="Active start"></div><div class="field"><input type="time" id="sb-active-end" placeholder="Active end"></div></div></div>
+          </div>
+          <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:10px">
+            <button class="btn btn-outline" type="button" onclick="closeScheduleBlockForm()">Cancel</button>
+            <button class="btn btn-primary" type="button" onclick="saveScheduleBlock()">Save shift</button>
+          </div>
+        </div>
+        <div id="pt-schedule-grid-wrap" style="border:1px solid var(--border2);border-radius:var(--r);background:var(--bg4);padding:6px;overflow:auto;max-height:360px">
+          <div id="pt-schedule-grid" style="display:grid;grid-template-columns:repeat(7,minmax(140px,1fr));gap:8px;min-width:980px"></div>
+        </div>
       </div>
 
       <div class="field"><label>Notes</label><textarea id="pt-notes" placeholder="Support needs, preferences, goals..." style="height:60px"></textarea></div>
-
-      <!-- Sleepover configuration -->
-      <div class="field" style="border-top:1px solid var(--border);padding-top:10px;margin-top:4px">
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
-          <label style="margin:0;color:#bc8cff;font-weight:600">Sleepover shifts <span style="font-size:10px;font-weight:400;color:var(--text3)">(inactive overnight — excluded from active hour totals)</span></label>
-          <span id="pt-sleep-badge" style="font-size:10px;background:rgba(188,140,255,.15);color:#bc8cff;padding:2px 8px;border-radius:10px;font-weight:600;display:none"></span>
-        </div>
-        <div style="font-size:10px;color:var(--text3);margin-bottom:8px">Tick which nights this participant has sleepovers. Billed at the NDIS flat sleepover rate — NOT as active hourly support.</div>
-        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px">
-          <label style="display:flex;flex-direction:column;align-items:center;gap:3px;cursor:pointer;background:var(--bg4);border:1px solid var(--border2);border-radius:var(--r);padding:5px 9px;min-width:42px"><input type="checkbox" class="cb-circle pt-sleep-day-cb" data-dow="0" onchange="updateSleepBadge()"><span style="font-size:10px;color:var(--text2)">Sun</span></label>
-          <label style="display:flex;flex-direction:column;align-items:center;gap:3px;cursor:pointer;background:var(--bg4);border:1px solid var(--border2);border-radius:var(--r);padding:5px 9px;min-width:42px"><input type="checkbox" class="cb-circle pt-sleep-day-cb" data-dow="1" onchange="updateSleepBadge()"><span style="font-size:10px;color:var(--text2)">Mon</span></label>
-          <label style="display:flex;flex-direction:column;align-items:center;gap:3px;cursor:pointer;background:var(--bg4);border:1px solid var(--border2);border-radius:var(--r);padding:5px 9px;min-width:42px"><input type="checkbox" class="cb-circle pt-sleep-day-cb" data-dow="2" onchange="updateSleepBadge()"><span style="font-size:10px;color:var(--text2)">Tue</span></label>
-          <label style="display:flex;flex-direction:column;align-items:center;gap:3px;cursor:pointer;background:var(--bg4);border:1px solid var(--border2);border-radius:var(--r);padding:5px 9px;min-width:42px"><input type="checkbox" class="cb-circle pt-sleep-day-cb" data-dow="3" onchange="updateSleepBadge()"><span style="font-size:10px;color:var(--text2)">Wed</span></label>
-          <label style="display:flex;flex-direction:column;align-items:center;gap:3px;cursor:pointer;background:var(--bg4);border:1px solid var(--border2);border-radius:var(--r);padding:5px 9px;min-width:42px"><input type="checkbox" class="cb-circle pt-sleep-day-cb" data-dow="4" onchange="updateSleepBadge()"><span style="font-size:10px;color:var(--text2)">Thu</span></label>
-          <label style="display:flex;flex-direction:column;align-items:center;gap:3px;cursor:pointer;background:var(--bg4);border:1px solid var(--border2);border-radius:var(--r);padding:5px 9px;min-width:42px"><input type="checkbox" class="cb-circle pt-sleep-day-cb" data-dow="5" onchange="updateSleepBadge()"><span style="font-size:10px;color:var(--text2)">Fri</span></label>
-          <label style="display:flex;flex-direction:column;align-items:center;gap:3px;cursor:pointer;background:var(--bg4);border:1px solid var(--border2);border-radius:var(--r);padding:5px 9px;min-width:42px"><input type="checkbox" class="cb-circle pt-sleep-day-cb" data-dow="6" onchange="updateSleepBadge()"><span style="font-size:10px;color:var(--text2)">Sat</span></label>
-        </div>
-        <div class="form-row">
-          <div class="field"><label>Active min per shift <span style="font-size:10px;color:var(--text3)">(during 8-hr span; &gt;120 triggers overflow billing)</span></label><input type="number" id="pt-sleep-active-min" value="0" min="0" max="480" step="5" placeholder="0" style="width:100%"></div>
-          <div class="field"><label>Hrs outside 8-hr span per shift <span style="font-size:10px;color:var(--text3)">(billed at active support rate)</span></label><input type="number" id="pt-sleep-outside-hrs" value="0" min="0" max="8" step="0.5" placeholder="0" style="width:100%"></div>
-        </div>
-      </div>
 
       <!-- Shift types (Connecteam import) -->
       <div id="pt-shift-types-section" class="field" style="border-top:1px solid var(--border);padding-top:12px;margin-top:4px">
@@ -856,7 +843,7 @@ var SCHADS_SLEEPOVER_ALLOWANCE = 58.69;
 // Minimum overtime hours paid for any active work performed during a sleepover shift.
 var SCHADS_SLEEPOVER_ACTIVE_MIN_HRS = 1;
 var pendingExportPlatform = null;
-var S = {tx:[],emps:[],runs:[],participants:[],dd:{description:[],type:[]},curMonth:new Date().getMonth(),editEmpId:null,ddField:null,ddTargetId:null,ch:{},wiseTransfers:[],invoiceLedger:[],_lastGenInvoice:null,shiftTypes:[],tsNameMap:[]};
+var S = {tx:[],emps:[],runs:[],participants:[],dd:{description:[],type:[]},curMonth:new Date().getMonth(),editEmpId:null,ddField:null,ddTargetId:null,ch:{},wiseTransfers:[],invoiceLedger:[],_lastGenInvoice:null,shiftTypes:[],scheduleBlocks:[],tsNameMap:[]};
 
 function eid(id){return document.getElementById(id);}
 function fmt(n){var v=parseFloat(n);if(!v&&v!==0)return'--';return'$'+Math.abs(v).toLocaleString('en-AU',{minimumFractionDigits:2,maximumFractionDigits:2});}
@@ -1056,7 +1043,8 @@ async function loadAll(){
     // shift_types and timesheet_name_map — graceful degradation if Step 0 SQL not yet run.
     // Track whether the table itself is missing (vs merely empty) so the import UI
     // can point the operator at the Step 0 SQL instead of silently showing nothing.
-    S._shiftTypesTableMissing=false;S._nameMapTableMissing=false;
+    S._shiftTypesTableMissing=false;S._nameMapTableMissing=false;S._scheduleBlocksTableMissing=false;
+    try{var sbRes=await sb2.from('schedule_blocks').select('*').order('created_at',{ascending:true});if(sbRes.error){S.scheduleBlocks=[];if(tsTableMissing(sbRes.error))S._scheduleBlocksTableMissing=true;console.warn('[loadAll] schedule_blocks:',sbRes.error.message);}else{S.scheduleBlocks=sbRes.data||[];}}catch(e){S.scheduleBlocks=[];console.warn('[loadAll] schedule_blocks load error:',e);}
     try{var stRes=await sb2.from('shift_types').select('*').order('created_at',{ascending:true});if(stRes.error){S.shiftTypes=[];if(tsTableMissing(stRes.error))S._shiftTypesTableMissing=true;console.warn('[loadAll] shift_types:',stRes.error.message);}else{S.shiftTypes=stRes.data||[];}}catch(e){S.shiftTypes=[];console.warn('[loadAll] shift_types load error:',e);}
     try{var nmRes=await sb2.from('timesheet_name_map').select('*').order('created_at',{ascending:true});if(nmRes.error){S.tsNameMap=[];if(tsTableMissing(nmRes.error))S._nameMapTableMissing=true;console.warn('[loadAll] timesheet_name_map:',nmRes.error.message);}else{S.tsNameMap=nmRes.data||[];}}catch(e){S.tsNameMap=[];console.warn('[loadAll] timesheet_name_map load error:',e);}
     setSync('ok');
@@ -1238,10 +1226,7 @@ function renderDash(){
       ptEl.innerHTML=S.participants.map(function(p){
         var st=getParticipantStatus(p);
         var hasCfl=cfls.some(function(c){return(p.assigned_workers||[]).some(function(wid){var emp=S.emps.find(function(e){return e.id===wid;});return emp&&emp.name===c.worker;});});
-        var roster=p.roster||{};var rostered=0;
-        var scP=(p.sleepover_config)||{};var slDaysP=Array.isArray(scP.days)?scP.days:[];
-        var slDayNamesP=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'].filter(function(_,i){return slDaysP.indexOf(i)!==-1;});
-        (p.assigned_workers||[]).forEach(function(wid){var wr=roster[wid]||{};['Sun','Mon','Tue','Wed','Thu','Fri','Sat'].forEach(function(d){if(slDayNamesP.indexOf(d)===-1)rostered+=parseFloat(wr[d]||0);});});
+        var rostered = getParticipantScheduleHours(p);
         return '<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)">'
           +'<div style="width:10px;height:10px;border-radius:50%;background:'+stC[st]+';flex-shrink:0"></div>'
           +'<div style="flex:1"><div style="font-size:12px;font-weight:600">'+p.name+'</div>'
@@ -1465,6 +1450,7 @@ function renderEmps(){
       +'<div class="td-muted">'+(e.pay_type==='salary'?'per year':'per hour')+'</div>'
       +(e.sat_rate?'<div class="td-muted">Sat $'+parseFloat(e.sat_rate).toFixed(2)+'</div>':'')
       +(e.sun_rate?'<div class="td-muted">Sun $'+parseFloat(e.sun_rate).toFixed(2)+'</div>':'')
+      +(e.sleepover_flat_rate?'<div class="td-muted">Sleepover $'+parseFloat(e.sleepover_flat_rate).toFixed(2)+'</div>':'')
       +'</div>'
       +(ptNames.length>0?'<div style="display:flex;flex-direction:column;align-items:center;gap:3px;margin-right:8px">'+ptNames.map(function(n){return'<span style="background:var(--purple-bg);color:var(--purple);font-size:10px;padding:2px 6px;border-radius:20px;white-space:nowrap">'+n+'</span>';}).join('')+'</div>':'')
       +'<span class="badge '+(e.active?'badge-green':'badge-gray')+'" style="margin-right:8px">'+(e.active?'Active':'Inactive')+'</span>'
@@ -1527,7 +1513,7 @@ async function saveEmp(){
   // Sanitize all free-text fields against invisible Unicode (bidi marks,
   // ZWSP, BOM) that ride along when pasting from PDFs/Word. These are
   // invisible everywhere but break TFN/ABN/BSB validation downstream.
-  var row={name:stripInvisibles(eid('e-name').value),role:stripInvisibles(eid('e-role').value),email:stripInvisibles(eid('e-email').value),phone:stripInvisibles(eid('e-phone').value),employment_type:eid('e-etype').value,pay_type:eid('e-ptype').value,pay_rate:parseFloat(eid('e-rate').value)||0,start_date:eid('e-start').value||null,tax_file_number:stripInvisibles(eid('e-tfn').value),super_fund:stripInvisibles(eid('e-super').value),bank_bsb:stripInvisibles(eid('e-bsb').value),bank_account:stripInvisibles(eid('e-acct').value),abn:stripInvisibles(eid('e-abn').value),sat_rate:eid('e-ptype').value==='salary'?null:(parseFloat(eid('e-sat-rate').value)||null),sun_rate:eid('e-ptype').value==='salary'?null:(parseFloat(eid('e-sun-rate').value)||null),ph_rate:eid('e-ptype').value==='salary'?null:(parseFloat(eid('e-ph-rate').value)||null),active:true};
+  var row={name:stripInvisibles(eid('e-name').value),role:stripInvisibles(eid('e-role').value),email:stripInvisibles(eid('e-email').value),phone:stripInvisibles(eid('e-phone').value),employment_type:eid('e-etype').value,pay_type:eid('e-ptype').value,pay_rate:parseFloat(eid('e-rate').value)||0,start_date:eid('e-start').value||null,tax_file_number:stripInvisibles(eid('e-tfn').value),super_fund:stripInvisibles(eid('e-super').value),bank_bsb:stripInvisibles(eid('e-bsb').value),bank_account:stripInvisibles(eid('e-acct').value),abn:stripInvisibles(eid('e-abn').value),sat_rate:eid('e-ptype').value==='salary'?null:(parseFloat(eid('e-sat-rate').value)||null),sun_rate:eid('e-ptype').value==='salary'?null:(parseFloat(eid('e-sun-rate').value)||null),ph_rate:eid('e-ptype').value==='salary'?null:(parseFloat(eid('e-ph-rate').value)||null),sleepover_flat_rate:parseFloat(eid('e-sleep-rate').value)||null,active:true};
   if(!row.name){showToast('Name required','err');return;}
   setSync('saving');
   var res;
@@ -1538,7 +1524,7 @@ async function saveEmp(){
 }
 
 function openPayModal(){
-  var html='';S.emps.filter(function(e){return e.active;}).forEach(function(e){html+='<option value="'+e.id+'" data-rate="'+e.pay_rate+'" data-type="'+e.pay_type+'">'+e.name+'</option>';});eid('pr-emp').innerHTML=html;
+  var html='';S.emps.filter(function(e){return e.active;}).forEach(function(e){html+='<option value="'+e.id+'" data-rate="'+e.pay_rate+'" data-type="'+e.pay_type+'" data-sleep-rate="'+resolveSleepoverFlatRate(e)+'">'+e.name+'</option>';});eid('pr-emp').innerHTML=html;
   ['pr-s','pr-e','pr-hrs','pr-rate'].forEach(function(id){eid(id).value='';});
   ['pp-g','pp-t','pp-s','pp-n'].forEach(function(id){eid(id).textContent='--';});
   eid('pr-payg-on').checked=true;eid('pr-super-on').checked=true;
@@ -1613,16 +1599,24 @@ function checkPeriodHolidays(){
       return '<span style="background:rgba(248,81,73,0.15);color:#f85149;padding:2px 8px;border-radius:20px;font-size:11px;margin-right:4px">'+h.name+' ('+h.date+')' +'</span>';
     }).join('');
 
-    // Auto-calculate holiday hours from roster
+    // Auto-calculate holiday hours from schedule blocks
     var empId=eid('pr-emp').value;
     var emp=S.emps.find(function(e){return e.id===empId;});
     var autoHolHrs=0;
     if(empId && S.participants){
-      S.participants.forEach(function(p){
-        if(!p.assigned_workers||p.assigned_workers.indexOf(empId)===-1) return;
-        var empRoster=(p.roster||{})[empId]||{};
-        holidayDates.forEach(function(h){
-          autoHolHrs+=parseFloat(empRoster[h.day]||0);
+      holidayDates.forEach(function(h){
+        var dayName = h.day;
+        var dayIdx = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'].indexOf(dayName);
+        if(dayIdx === -1) return;
+        S.participants.forEach(function(p){
+          if(!p.assigned_workers||p.assigned_workers.indexOf(empId)===-1) return;
+          var blocks = getParticipantScheduleBlocks(p);
+          blocks.forEach(function(b){
+            if(!scheduleBlockAppliesToEmployee(b, empId)) return;
+            if(!(Array.isArray(b.days_of_week) && b.days_of_week.indexOf(dayIdx) !== -1)) return;
+            if(b.shift_kind === 'sleepover') return; // paid flat, not as holiday hours
+            autoHolHrs += getScheduleBlockDurationHours(b);
+          });
         });
       });
     }
@@ -1656,55 +1650,25 @@ function checkPeriodHolidays(){
 }
 
 function getHoursByDayType(empId, periodStart, periodEnd) {
-  // Returns {weekday, saturday, sunday, wdDays, satDays, sunDays} from roster
+  // Returns {weekday, saturday, sunday, wdDays, satDays, sunDays} from schedule blocks
   var result = {weekday:0, saturday:0, sunday:0, wdDays:0, satDays:0, sunDays:0};
   if(!empId || !periodStart || !periodEnd) return result;
-  // Parse as local dates to avoid UTC timezone offset issues (important for AU timezone)
+  var scheduled = getScheduleHoursForEmployee(empId, periodStart, periodEnd);
+  var DAYS=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
   var ps = periodStart.split('-');
   var pe = periodEnd.split('-');
   var start = new Date(parseInt(ps[0]), parseInt(ps[1])-1, parseInt(ps[2]));
   var end   = new Date(parseInt(pe[0]), parseInt(pe[1])-1, parseInt(pe[2]));
-
-  // Try roster-based calculation first
-  var hasRoster = false;
-  var rosterByDay = {Sun:0,Mon:0,Tue:0,Wed:0,Thu:0,Fri:0,Sat:0};
-  if(S.participants){
-    S.participants.forEach(function(p){
-      if(!p.assigned_workers || p.assigned_workers.indexOf(empId)===-1) return;
-      var wr = (p.roster||{})[empId]||{};
-      Object.keys(wr).forEach(function(d){
-        var h = parseFloat(wr[d]||0);
-        if(h>0){ rosterByDay[d]=(rosterByDay[d]||0)+h; hasRoster=true; }
-      });
-    });
-  }
-
-  var DAYS=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
   var cur = new Date(start);
-
-  if(hasRoster){
-    // Use roster hours per day name, walk through the period
-    while(cur <= end){
-      var ds = fmtDate(cur);
-      if(VIC_HOLIDAYS[ds]){ cur.setDate(cur.getDate()+1); continue; } // skip holidays
-      var dayName = DAYS[cur.getDay()];
-      var hrs = rosterByDay[dayName]||0;
-      if(cur.getDay()===6){ result.saturday+=hrs; if(hrs>0)result.satDays++; }
-      else if(cur.getDay()===0){ result.sunday+=hrs; if(hrs>0)result.sunDays++; }
-      else { result.weekday+=hrs; if(hrs>0)result.wdDays++; }
-      cur.setDate(cur.getDate()+1);
-    }
-  } else {
-    // No roster — just count non-holiday days by type so caller can distribute evenly
-    while(cur <= end){
-      var ds2 = fmtDate(cur);
-      if(!VIC_HOLIDAYS[ds2]){
-        if(cur.getDay()===6) result.satDays++;
-        else if(cur.getDay()===0) result.sunDays++;
-        else result.wdDays++;
-      }
-      cur.setDate(cur.getDate()+1);
-    }
+  while(cur <= end){
+    var ds = fmtDate(cur);
+    if(VIC_HOLIDAYS[ds]){ cur.setDate(cur.getDate()+1); continue; }
+    var dayName = DAYS[cur.getDay()];
+    var hrs = scheduled[dayName]||0;
+    if(cur.getDay()===6){ result.saturday += hrs; if(hrs>0)result.satDays++; }
+    else if(cur.getDay()===0){ result.sunday += hrs; if(hrs>0)result.sunDays++; }
+    else { result.weekday += hrs; if(hrs>0)result.wdDays++; }
+    cur.setDate(cur.getDate()+1);
   }
   return result;
 }
@@ -1723,6 +1687,7 @@ function computePay(input){
   var satRate =input.satRate !=null?+input.satRate :+(baseRate*1.5).toFixed(2);
   var sunRate =input.sunRate !=null?+input.sunRate :+(baseRate*2).toFixed(2);
   var holRate =input.holRate !=null?+input.holRate :+(baseRate*2.25).toFixed(2);
+  var sleepoverFlatRate = input.sleepoverFlatRate !=null ? +input.sleepoverFlatRate : SCHADS_SLEEPOVER_ALLOWANCE;
   var wdHrs  =+input.wdHrs ||0;
   var satHrs =+input.satHrs||0;
   var sunHrs =+input.sunHrs||0;
@@ -1745,7 +1710,7 @@ function computePay(input){
   if(holHrs>0){var hg=+(holHrs*holRate).toFixed(2);gross+=hg;breakdown.push({label:'Public holiday',hrs:holHrs,rate:holRate,amt:hg});}
 
   if(sleepShifts>0){
-    var sleepAllow=+(sleepShifts*SCHADS_SLEEPOVER_ALLOWANCE).toFixed(2);
+    var sleepAllow=+(sleepShifts*sleepoverFlatRate).toFixed(2);
     gross+=sleepAllow;
     breakdown.push({label:'Sleepover allowance ('+sleepShifts+' shift'+(sleepShifts!==1?'s':'')+')',hrs:'',rate:'',amt:sleepAllow,isSleep:true});
     var sleepOTRate=+(baseRate*1.5).toFixed(2);
@@ -1788,6 +1753,7 @@ function calcPay(){
   var emp=S.emps.find(function(e){return e.id===empId;});
   var satRate=emp&&emp.sat_rate?parseFloat(emp.sat_rate):(baseRate*1.5);
   var sunRate=emp&&emp.sun_rate?parseFloat(emp.sun_rate):(baseRate*2);
+  var sleepoverFlatRate=resolveSleepoverFlatRate(emp);
 
   // ── Salary path — does not use computePay ──
   if(empType==='salary'){
@@ -1814,6 +1780,59 @@ function calcPay(){
   var wdHrs=0,satHrs=0,sunHrs=0;
   var wdLabel='Weekday',satLabel='Saturday',sunLabel='Sunday';
   var manualHrs=parseFloat(eid('pr-hrs').value)||0;
+
+  if(periodStart&&periodEnd){
+    var directGrid=eid('pr-day-grid');
+    var directChecked=(directGrid&&directGrid.style.display!=='none')?document.querySelectorAll('#pr-day-grid .pr-day-cb:checked'):[];
+    if(directChecked.length>0 && directChecked[0].dataset.payAmt!==undefined){
+      var directGross=0;
+      var lines={};
+      var dHol=0,dWd=0,dSat=0,dSun=0,dSleep=0,dSleepMin=0;
+      directChecked.forEach(function(cb){
+        var amt=parseFloat(cb.dataset.payAmt)||0;
+        var lbl=cb.dataset.lineLabel||'Shift';
+        directGross += amt;
+        lines[lbl]=(lines[lbl]||0)+amt;
+        var h=parseFloat(cb.dataset.hrs)||0;
+        var t=cb.dataset.type||'weekday';
+        var k=cb.dataset.kind||'standard';
+        if(k==='sleepover'){
+          dSleep += 1;
+          dSleepMin += parseFloat(cb.dataset.activeMins||0)||0;
+        } else {
+          if(t==='holiday') dHol += h;
+          else if(t==='saturday') dSat += h;
+          else if(t==='sunday') dSun += h;
+          else dWd += h;
+        }
+      });
+      if(eid('pr-hrs')) eid('pr-hrs').value=(dWd+dSat+dSun).toFixed(1);
+      if(eid('pr-hol-hrs')) eid('pr-hol-hrs').value=dHol>0?dHol.toFixed(1):'';
+      if(eid('pr-sleep-shifts')) eid('pr-sleep-shifts').value=dSleep;
+      if(eid('pr-sleep-active-min')) eid('pr-sleep-active-min').value=Math.round(dSleepMin);
+
+      var dbEl2=eid('pp-day-breakdown');
+      if(dbEl2){
+        var lineHtml='';
+        Object.keys(lines).forEach(function(key){
+          lineHtml += '<div class="pay-line" style="font-size:11px;color:var(--text3)"><span>'+key+'</span><span style="color:var(--text2)">'+fmt(lines[key])+'</span></div>';
+        });
+        dbEl2.innerHTML=lineHtml;
+      }
+      directGross=+directGross.toFixed(2);
+      var annualEq2=directGross*26;
+      var periodTax2=paygOn?+(paygCalc(annualEq2)/26).toFixed(2):0;
+      var sup2=superOn?+(directGross*getSuperRate(periodEnd||tod())).toFixed(2):0;
+      var net2=+(directGross-periodTax2).toFixed(2);
+      eid('pp-g').textContent=fmt(directGross);
+      eid('pp-t').textContent=paygOn?'-'+fmt(periodTax2):'Off';
+      eid('pp-s').textContent=superOn?fmt(sup2):'Off';
+      eid('pp-n').textContent=fmt(net2);
+      if(eid('pp-tax-row'))eid('pp-tax-row').style.opacity=paygOn?'1':'0.35';
+      if(eid('pp-super-row'))eid('pp-super-row').style.opacity=superOn?'1':'0.35';
+      return{gross:directGross,tax:periodTax2,sup:sup2,net:net2};
+    }
+  }
 
   if(periodStart&&periodEnd){
     var grid=eid('pr-day-grid');
@@ -1877,6 +1896,7 @@ function calcPay(){
     wdHrs:wdHrs,satHrs:satHrs,sunHrs:sunHrs,
     holHrs:holHrs,holRate:holRate,
     sleepShifts:sleepShifts,sleepActiveMins:sleepActMin,
+    sleepoverFlatRate:sleepoverFlatRate,
     paygOn:paygOn,superOn:superOn,periodEnd:periodEnd||tod(),
     wdLabel:wdLabel,satLabel:satLabel,sunLabel:sunLabel
   });
@@ -1906,13 +1926,21 @@ async function savePayRun(){
   if(!sel.value||!s||!e){showToast('Fill all fields','err');return;}
   var p=calcPay();
   var emp2=S.emps.find(function(e){return e.id===sel.value;});
-  var dayHrs2=getHoursByDayType(sel.value,s,e);
-  var totalRostered2=dayHrs2.weekday+dayHrs2.saturday+dayHrs2.sunday;
-  var hrs=totalRostered2>0?+(totalRostered2).toFixed(1):parseFloat(eid('pr-hrs').value)||0;
+  var hrs=parseFloat(eid('pr-hrs').value)||0;
+  var selectedHourCbs=document.querySelectorAll('#pr-day-grid .pr-day-cb:checked');
+  if(selectedHourCbs && selectedHourCbs.length){
+    var selectedNonHol=0;
+    selectedHourCbs.forEach(function(cb){
+      if((cb.dataset.kind||'standard')==='sleepover') return;
+      if((cb.dataset.type||'weekday')==='holiday') return;
+      selectedNonHol += parseFloat(cb.dataset.hrs)||0;
+    });
+    if(selectedNonHol>0) hrs=+selectedNonHol.toFixed(1);
+  }
 
-  // Capture the day grid selections so the payslip can show exactly what was
+  // Capture the checked shift selections so the payslip can show exactly what was
   // paid for, instead of regenerating from a roster that may have changed
-  // since this pay run was processed. Format: array of {date,dow,hrs,type}.
+  // since this pay run was processed. Format: array of {date,dow,hrs,type,block_id,participant_id}.
   // Hourly only — salary employees don't use the day grid.
   var dayBreakdown = null;
   var empSel=opt;
@@ -1920,28 +1948,25 @@ async function savePayRun(){
   if(empType!=='salary'){
     var grid=eid('pr-day-grid');
     if(grid && grid.style.display!=='none'){
-      var DOW=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
-      var cbs=document.querySelectorAll('#pr-day-grid .pr-day-cb');
+      var cbs=document.querySelectorAll('#pr-day-grid .pr-day-cb:checked');
       var rows=[];
-      // Walk the period in date order, matching each calendar day to the
-      // checkbox at the same index (the grid is rendered in chronological
-      // order, one cb per day).
-      var ps=s.split('-'),pe=e.split('-');
-      var st=new Date(parseInt(ps[0]),parseInt(ps[1])-1,parseInt(ps[2]));
-      var en=new Date(parseInt(pe[0]),parseInt(pe[1])-1,parseInt(pe[2]));
-      var idx=0,cur=new Date(st);
-      while(cur<=en && idx<cbs.length){
-        var cb=cbs[idx];
-        var ds=fmtDate(cur);
+      cbs.forEach(function(cb){
+        var ds=cb.dataset.date||'';
         rows.push({
           date: ds,
-          dow: DOW[cur.getDay()],
-          worked: cb.checked,
+          dow: cb.dataset.dow || '',
+          dow_idx: cb.dataset.dowIdx!==undefined ? parseInt(cb.dataset.dowIdx) : null,
+          worked: true,
           hrs: parseFloat(cb.dataset.hrs)||0,
-          type: cb.dataset.type||'weekday'
+          type: cb.dataset.type||'weekday',
+          line_label: cb.dataset.lineLabel || null,
+          shift_label: cb.dataset.shiftLabel || null,
+          block_id: cb.dataset.blockId || null,
+          participant_id: cb.dataset.participantId || null,
+          shift_kind: cb.dataset.kind || null,
+          pay_amt: cb.dataset.payAmt!==undefined ? (parseFloat(cb.dataset.payAmt)||0) : null
         });
-        idx++;cur.setDate(cur.getDate()+1);
-      }
+      });
       if(rows.length>0) dayBreakdown=rows;
     }
   }
@@ -2648,20 +2673,36 @@ function genPayslip(id) {
       }
       if(Array.isArray(run.day_breakdown) && run.day_breakdown.length>0){
         run.day_breakdown.forEach(function(d){
-          if(d.type==='sleepover_meta') return; // handled separately below
+          if(d.type==='sleepover_meta'||d.type==='import_meta') return; // handled separately below
           if(!d.worked) return; // unticked days don't appear on paystub
+          if(d.shift_kind==='sleepover'||d.isSleep) return; // rendered via the sleepover allowance rows, not as hourly lines
           var ds=d.date, isH=!!VIC_HOLIDAYS[ds];
           var rate, rType;
           if(d.type==='holiday' || isH){ rate=phr; rType='Public Holiday'; }
           else if(d.type==='saturday'){ rate=sr; rType='Saturday'; }
           else if(d.type==='sunday'){ rate=ur; rType='Sunday'; }
           else { rate=br; rType='Weekday'; }
+          var shiftLabel = d.shift_label || '';
+          if(!shiftLabel && d.block_id){
+            var bl = (S.scheduleBlocks||[]).find(function(b){ return b.id===d.block_id; });
+            if(bl && bl.name) shiftLabel = bl.name;
+          }
+          if(!shiftLabel && d.line_label){
+            shiftLabel = String(d.line_label).replace(/\s+\d+(\.\d+)?h\s*@.*$/,'').replace(/\s+flat\s+\$.*$/i,'').trim();
+          }
+          if(!shiftLabel){
+            shiftLabel = d.shift_kind==='sleepover' ? 'Sleepover' : 'Shift';
+          }
+          var rowType = shiftLabel + ' — ' + rType;
           var hrs=parseFloat(d.hrs)||0;
-          var amt=+(hrs*rate).toFixed(2);
+          // Prefer the exact amount captured at processing time (covers manual
+          // per-block rates); fall back to profile rate × hours for older rows.
+          var amt=(d.pay_amt!=null&&!isNaN(parseFloat(d.pay_amt)))?+parseFloat(d.pay_amt).toFixed(2):+(hrs*rate).toFixed(2);
+          if(hrs>0&&d.pay_amt!=null)rate=+(amt/hrs).toFixed(2);
           var dt=new Date(ds);
           var dStr=String(dt.getDate()).padStart(2,'0')+'/'+String(dt.getMonth()+1).padStart(2,'0')+'/'+dt.getFullYear();
           var dn=(d.dow||DN[dt.getDay()]).slice(0,3);
-          dayLines.push({date:dStr,day:dn,hrs:hrs,rate:rate,type:rType,amt:amt,hol:isH?VIC_HOLIDAYS[ds]:null});
+          dayLines.push({date:dStr,day:dn,hrs:hrs,rate:rate,type:rowType,amt:amt,hol:isH?VIC_HOLIDAYS[ds]:null});
         });
       } else {
         // Legacy fallback: reconstruct from current roster for old pay runs
@@ -2679,11 +2720,12 @@ function genPayslip(id) {
   var sleepRows='';
   if(sleepMeta && sleepMeta.shifts>0){
     var br2=parseFloat(emp.pay_rate)||0;
-    var sAllow=+(sleepMeta.shifts*SCHADS_SLEEPOVER_ALLOWANCE).toFixed(2);
+    var sleepFlatRate=resolveSleepoverFlatRate(emp);
+    var sAllow=+(sleepMeta.shifts*sleepFlatRate).toFixed(2);
     sleepRows+='<tr style="background:rgba(188,140,255,0.07)">'
       +'<td colspan="3" style="padding:6px 10px;border-bottom:1px solid #f0f0f0;font-size:12px;color:#6b21a8;font-weight:600">Sleepover allowance — '+sleepMeta.shifts+' shift'+(sleepMeta.shifts!==1?'s':'')+'</td>'
       +'<td style="padding:6px 10px;border-bottom:1px solid #f0f0f0;font-size:12px;text-align:right;color:#6b21a8">'+(sleepMeta.shifts)+' sh</td>'
-      +'<td style="padding:6px 10px;border-bottom:1px solid #f0f0f0;font-size:12px;text-align:right;color:#6b21a8">$'+SCHADS_SLEEPOVER_ALLOWANCE.toFixed(2)+'</td>'
+      +'<td style="padding:6px 10px;border-bottom:1px solid #f0f0f0;font-size:12px;text-align:right;color:#6b21a8">$'+sleepFlatRate.toFixed(2)+'</td>'
       +'<td style="padding:6px 10px;border-bottom:1px solid #f0f0f0;font-size:12px;text-align:right;font-weight:600;color:#6b21a8">$'+sAllow.toFixed(2)+'</td></tr>';
     if(sleepMeta.active_minutes>0){
       var sActHrs=Math.max(SCHADS_SLEEPOVER_ACTIVE_MIN_HRS,+(sleepMeta.active_minutes/60).toFixed(2));
@@ -3172,13 +3214,13 @@ function confirmPayRunPeriod(){
   closePayRunCalendar();
   checkPeriodHolidays();
   var empS=eid('pr-emp');buildDayGrid(empS?empS.value:null,eid('pr-s').value,eid('pr-e').value);
-  // Pre-fill hours from participant roster
+  // Pre-fill hours from participant schedule blocks
   var empSel=eid('pr-emp');
   if(empSel&&empSel.value){
     var suggested=prefillHoursFromRoster(empSel.value,eid('pr-s').value,eid('pr-e').value);
     if(suggested>0&&!eid('pr-hrs').value){
       eid('pr-hrs').value=suggested;
-      showToast('Hours pre-filled from participant roster: '+suggested,'ok');
+      showToast('Hours pre-filled from schedule blocks: '+suggested,'ok');
     }
   }
   calcPay();
@@ -3207,21 +3249,16 @@ function renderParticipants(){
       return emp ? emp.name : null;
     }).filter(Boolean);
 
-    var roster = p.roster || {};
-    var totalHrs = 0;
-    S.emps.forEach(function(e){
-      if((p.assigned_workers||[]).indexOf(e.id)===-1) return;
-      DAYS.forEach(function(d){
-        totalHrs += parseFloat((roster[e.id]||{})[d]||0);
-      });
-    });
+    var ptBlocks = getParticipantScheduleBlocks(p);
+    var totalHrs = getParticipantScheduleHours(p);
 
-    // Weekly chart bars
-    var dayTotals = DAYS.map(function(d){
+    // Weekly chart bars — active (non-sleepover) scheduled hours per day
+    var dayTotals = DAYS.map(function(d, di){
       var t=0;
-      S.emps.forEach(function(e){
-        if((p.assigned_workers||[]).indexOf(e.id)!==-1)
-          t+=parseFloat((roster[e.id]||{})[d]||0);
+      ptBlocks.forEach(function(b){
+        if(b.shift_kind==='sleepover') return;
+        if(Array.isArray(b.days_of_week) && b.days_of_week.indexOf(di)!==-1)
+          t += getScheduleBlockDurationHours(b);
       });
       return t;
     });
@@ -3299,25 +3336,6 @@ function renderParticipants(){
   el.innerHTML = html;
 }
 
-function collectSleepoverConfig(){
-  var days=[];
-  document.querySelectorAll('.pt-sleep-day-cb').forEach(function(cb){
-    if(cb.checked) days.push(parseInt(cb.dataset.dow));
-  });
-  days.sort(function(a,b){return a-b;});
-  var activeMin=parseFloat((eid('pt-sleep-active-min')||{value:'0'}).value)||0;
-  var outsideHrs=parseFloat((eid('pt-sleep-outside-hrs')||{value:'0'}).value)||0;
-  return {days:days,active_minutes:activeMin,outside_hours:outsideHrs};
-}
-
-function updateSleepBadge(){
-  var checked=document.querySelectorAll('.pt-sleep-day-cb:checked').length;
-  var badge=eid('pt-sleep-badge');
-  if(!badge)return;
-  if(checked>0){badge.textContent=checked+' night'+(checked!==1?'s':'');badge.style.display='inline';}
-  else badge.style.display='none';
-}
-
 function openParticipantModal(id){
   var p = id ? (S.participants||[]).find(function(x){ return x.id===id; }) : null;
   document.getElementById('pt-modal-title').textContent = id ? 'Edit participant' : 'Add participant';
@@ -3356,16 +3374,6 @@ function openParticipantModal(id){
   _blScratch = JSON.parse(JSON.stringify(Array.isArray(p&&p.budget_lines)?p.budget_lines:[]));
   renderBudgetLinesInModal();
 
-  // Populate sleepover config
-  var sc = (p && p.sleepover_config) || {};
-  var scDays = Array.isArray(sc.days) ? sc.days : [];
-  document.querySelectorAll('.pt-sleep-day-cb').forEach(function(cb){
-    cb.checked = scDays.indexOf(parseInt(cb.dataset.dow)) !== -1;
-  });
-  if(eid('pt-sleep-active-min')) eid('pt-sleep-active-min').value = sc.active_minutes != null ? sc.active_minutes : 0;
-  if(eid('pt-sleep-outside-hrs')) eid('pt-sleep-outside-hrs').value = sc.outside_hours != null ? sc.outside_hours : 0;
-  updateSleepBadge();
-
   // Build worker checkboxes
   var assignedWorkers = p&&p.assigned_workers||[];
   var wHtml = S.emps.filter(function(e){ return e.active; }).map(function(e){
@@ -3377,8 +3385,7 @@ function openParticipantModal(id){
   }).join('');
   document.getElementById('pt-worker-select').innerHTML = wHtml || '<div style="color:var(--text3);font-size:12px">No active employees — add employees first</div>';
 
-  // Build roster table
-  buildRosterTable(p&&p.roster||{}, assignedWorkers);
+  renderScheduleBlocks(id || null);
 
   document.getElementById('m-participant').style.display = 'block';
   document.getElementById('m-participant')._editId = id;
@@ -3520,11 +3527,7 @@ function collectPtNdisPlan(){
 
 function toggleWorkerAssign(label, wid){
   var cb = label.querySelector('input');
-  // Rebuild roster when workers change
   setTimeout(function(){
-    var assigned = getAssignedWorkers();
-    var existingRoster = getRosterValues();
-    buildRosterTable(existingRoster, assigned);
     label.style.borderColor = cb.checked ? 'var(--blue)' : 'var(--border2)';
   }, 10);
 }
@@ -3536,65 +3539,12 @@ function getAssignedWorkers(){
   return ids;
 }
 
-function getRosterValues(){
-  var roster = {};
-  var rows = document.querySelectorAll('#pt-roster-body tr');
-  rows.forEach(function(row){
-    var wid = row.dataset.wid;
-    if(!wid) return;
-    roster[wid] = {};
-    DAYS.forEach(function(d){
-      var inp = row.querySelector('[data-day="'+d+'"]');
-      if(inp) roster[wid][d] = parseFloat(inp.value)||0;
-    });
-  });
-  return roster;
-}
-
-function buildRosterTable(existingRoster, assignedWorkers){
-  var tbody = document.getElementById('pt-roster-body');
-  if(assignedWorkers.length === 0){
-    tbody.innerHTML = '<tr><td colspan="9" style="padding:12px;text-align:center;color:var(--text3);font-size:12px">Select workers above to set their schedule</td></tr>';
-    return;
-  }
-  var html = '';
-  assignedWorkers.forEach(function(wid){
-    var emp = S.emps.find(function(e){ return e.id===wid; });
-    if(!emp) return;
-    var wr = existingRoster[wid]||{};
-    html += '<tr data-wid="'+wid+'">'
-      +'<td style="padding:6px 8px;border:1px solid var(--border);font-size:12px;font-weight:600;white-space:nowrap">'+emp.name+'</td>';
-    DAYS.forEach(function(d){
-      var isWeekend = (d==='Sun'||d==='Sat');
-      html += '<td style="padding:4px;border:1px solid var(--border);background:'+(isWeekend?'rgba(248,81,73,0.06)':'')+'">'
-        +'<input type="number" data-day="'+d+'" value="'+(wr[d]||'')+'" placeholder="0" min="0" max="24" step="0.5" '
-        +'oninput="updateRosterTotal(this)" '
-        +'style="width:100%;padding:4px;text-align:center;font-size:12px;background:transparent;border:none;border-bottom:1px solid var(--border2);border-radius:0;color:var(--text)">'
-        +'</td>';
-    });
-    var rowTotal = DAYS.reduce(function(s,d){ return s+(parseFloat(wr[d])||0); },0);
-    html += '<td style="padding:6px 8px;border:1px solid var(--border);text-align:center;font-weight:700;color:var(--blue);font-size:12px" id="rt-'+wid+'">'+rowTotal.toFixed(1)+'</td>';
-    html += '</tr>';
-  });
-  tbody.innerHTML = html;
-}
-
-function updateRosterTotal(inp){
-  var row = inp.closest('tr');
-  var wid = row.dataset.wid;
-  var total = 0;
-  row.querySelectorAll('input[data-day]').forEach(function(i){ total+=parseFloat(i.value)||0; });
-  var cell = document.getElementById('rt-'+wid);
-  if(cell) cell.textContent = total.toFixed(1);
-}
-
 async function saveParticipant(){
   var id = document.getElementById('m-participant')._editId;
   var rawName = document.getElementById('pt-name').value;
   var name = stripInvisibles(rawName);
   if(!name){ showToast('Name required','err'); return; }
   var assigned = getAssignedWorkers();
-  var roster = getRosterValues();
   // Capture pre-clean values so we can warn the user if anything was scrubbed
   var rawNdis    = document.getElementById('pt-ndis').value;
   var rawPhone   = document.getElementById('pt-phone').value;
@@ -3612,10 +3562,11 @@ async function saveParticipant(){
     weekly_hours: parseFloat(document.getElementById('pt-hours').value)||null,
     notes: stripInvisibles(rawNotes),
     assigned_workers: assigned,
-    roster: roster,
+    // Legacy per-worker roster is intentionally not written any more — schedule
+    // blocks (schedule_blocks table) replaced it. Old pay run payslips still
+    // read p.roster as a fallback, so the stored value must be preserved.
     ndis_plan: collectPtNdisPlan(),
     budget_lines: collectBudgetLines(),
-    sleepover_config: collectSleepoverConfig(),
     active: true
   };
   setSync('saving');
@@ -3628,9 +3579,9 @@ async function saveParticipant(){
     if(!res.error){ if(!S.participants)S.participants=[];var inserted=res.data[0];migrateLegacyPlan(inserted);S.participants.push(inserted); }
   }
   // Graceful fallback when ndis_plan or budget_lines column not yet added
-  if(res.error && (/ndis_plan/i.test(res.error.message||'')||/budget_lines/i.test(res.error.message||'')||/sleepover_config/i.test(res.error.message||''))) {
-    console.warn('[saveParticipant] ndis_plan/budget_lines/sleepover_config column missing — saving without them. Run: ALTER TABLE participants ADD COLUMN sleepover_config JSONB;');
-    delete row.ndis_plan; delete row.budget_lines; delete row.sleepover_config;
+  if(res.error && (/ndis_plan/i.test(res.error.message||'')||/budget_lines/i.test(res.error.message||''))) {
+    console.warn('[saveParticipant] ndis_plan/budget_lines column missing — saving without them.');
+    delete row.ndis_plan; delete row.budget_lines;
     if(id){
       res = await sb2.from('participants').update(row).eq('id',id).select();
       if(!res.error) S.participants = S.participants.map(function(p){ return p.id===id?res.data[0]:p; });
@@ -3647,6 +3598,529 @@ async function saveParticipant(){
   if(res.error){ setSync('error'); showToast(res.error.message,'err'); return; }
   setSync('ok'); closeM('m-participant'); renderParticipants();
   showToast(dirty ? 'Participant saved (cleaned hidden characters from pasted data)' : 'Participant saved', 'ok');
+}
+
+function resolveBlockRate(block, employeeId){
+  if(!block) return {hourly:null,flat:null};
+  var emp = employeeId ? (S.emps||[]).find(function(e){return e.id===employeeId;}) : null;
+  var hourly = null;
+  var flat = null;
+  if(block.hourly_rate_source==='manual') hourly = parseFloat(block.manual_hourly_rate)||null;
+  else if(emp){ hourly = parseFloat(emp.pay_rate)||null; }
+  if(block.flat_rate_source==='manual') flat = parseFloat(block.manual_flat_rate)||null;
+  else if(emp){ flat = resolveSleepoverFlatRate(emp); }
+  return {hourly:hourly, flat:flat};
+}
+
+function scheduleBlockAppliesToEmployee(block, empId){
+  // An empty assigned_employee_ids list means the block applies to all of the
+  // participant's assigned workers; a non-empty list restricts it.
+  if(!block || !empId) return false;
+  var ids = block.assigned_employee_ids;
+  if(!Array.isArray(ids) || ids.length === 0) return true;
+  return ids.indexOf(empId) !== -1;
+}
+
+function getParticipantScheduleBlocks(participant){
+  if(!participant || !participant.id) return [];
+  return (S.scheduleBlocks||[]).filter(function(b){
+    return b.participant_id===participant.id && b.active!==false;
+  });
+}
+
+function getParticipantSleepoverBlocks(participant){
+  var blocks = getParticipantScheduleBlocks(participant);
+  return blocks.filter(function(b){ return b && b.shift_kind === 'sleepover'; });
+}
+
+function getParticipantSleepoverShiftCount(participant){
+  var blocks = getParticipantSleepoverBlocks(participant);
+  if(!blocks.length) return 0;
+  var seen = {};
+  blocks.forEach(function(b){
+    (Array.isArray(b.days_of_week) ? b.days_of_week : []).forEach(function(d){ seen[d] = true; });
+  });
+  return Object.keys(seen).length;
+}
+
+function getScheduleBlockDurationHours(block){
+  if(!block || !block.start_time || !block.end_time) return 0;
+  var st = block.start_time.split(':');
+  var en = block.end_time.split(':');
+  var startMins = parseInt(st[0])*60 + parseInt(st[1]||0);
+  var endMins = parseInt(en[0])*60 + parseInt(en[1]||0);
+  if(endMins <= startMins) endMins += 1440;
+  return (endMins - startMins) / 60;
+}
+
+function isOvernightScheduleBlock(block){
+  if(!block || !block.start_time || !block.end_time) return false;
+  var st = block.start_time.split(':');
+  var en = block.end_time.split(':');
+  var startMins = parseInt(st[0])*60 + parseInt(st[1]||0);
+  var endMins = parseInt(en[0])*60 + parseInt(en[1]||0);
+  return endMins <= startMins;
+}
+
+function getScheduleBlockHoursForDate(block, date){
+  if(!block || !block.start_time || !block.end_time || !date) return {hrs:0, flatHours:0, activeHours:0};
+  var dur = getScheduleBlockDurationHours(block);
+  var flatHours = parseFloat(block.flat_hours)||0;
+  var activeHours = parseFloat(block.active_hours)||0;
+  if(!isOvernightScheduleBlock(block)) return {hrs:dur, flatHours:flatHours, activeHours:activeHours};
+  var dayIdx = date.getDay();
+  var startsHere = Array.isArray(block.days_of_week) && block.days_of_week.indexOf(dayIdx)!==-1;
+  var spillsIntoHere = Array.isArray(block.days_of_week) && block.days_of_week.some(function(d){ return ((d+1)%7) === dayIdx; });
+  if(startsHere && spillsIntoHere){
+    return {hrs:dur, flatHours:flatHours, activeHours:activeHours};
+  }
+  if(startsHere){
+    return {hrs:dur, flatHours:flatHours, activeHours:0};
+  }
+  if(spillsIntoHere){
+    return {hrs:dur, flatHours:0, activeHours:activeHours};
+  }
+  return {hrs:0, flatHours:0, activeHours:0};
+}
+
+function getScheduleBlocksForEmployeeOnDate(empId, date){
+  if(!empId || !date || !S.participants || !S.scheduleBlocks) return [];
+  var dayIdx = date.getDay();
+  return (S.scheduleBlocks||[]).filter(function(block){
+    if(!block || block.active===false) return false;
+    if(!Array.isArray(block.days_of_week)) return false;
+    var participant = (S.participants||[]).find(function(p){ return p.id===block.participant_id; });
+    if(!participant || !Array.isArray(participant.assigned_workers) || participant.assigned_workers.indexOf(empId)===-1) return false;
+    if(!scheduleBlockAppliesToEmployee(block, empId)) return false;
+    var startsOnDate = block.days_of_week.indexOf(dayIdx)!==-1;
+    var overnight = isOvernightScheduleBlock(block);
+    var spillsIntoDate = overnight && block.days_of_week.some(function(d){ return ((d+1)%7) === dayIdx; });
+    return startsOnDate || spillsIntoDate;
+  });
+}
+
+function getScheduleStartBlocksForEmployeeOnDate(empId, date){
+  if(!empId || !date || !S.participants || !S.scheduleBlocks) return [];
+  var dayIdx = date.getDay();
+  return (S.scheduleBlocks||[]).filter(function(block){
+    if(!block || block.active===false) return false;
+    if(!Array.isArray(block.days_of_week) || block.days_of_week.indexOf(dayIdx)===-1) return false;
+    var participant = (S.participants||[]).find(function(p){ return p.id===block.participant_id; });
+    if(!participant || !Array.isArray(participant.assigned_workers) || participant.assigned_workers.indexOf(empId)===-1) return false;
+    if(!scheduleBlockAppliesToEmployee(block, empId)) return false;
+    return true;
+  });
+}
+
+function getEmployeeDayRate(emp, dayType){
+  if(!emp) return 0;
+  var base = parseFloat(emp.pay_rate)||0;
+  if(dayType==='holiday') return parseFloat(emp.ph_rate)||+(base*2.25).toFixed(2);
+  if(dayType==='saturday') return parseFloat(emp.sat_rate)||+(base*1.5).toFixed(2);
+  if(dayType==='sunday') return parseFloat(emp.sun_rate)||+(base*2).toFixed(2);
+  return base;
+}
+
+function getDayTypeForDate(date){
+  if(!date) return 'weekday';
+  var ds = fmtDate(date);
+  if(VIC_HOLIDAYS[ds]) return 'holiday';
+  var d = date.getDay();
+  if(d===6) return 'saturday';
+  if(d===0) return 'sunday';
+  return 'weekday';
+}
+
+function getScheduleHoursForEmployeeOnDate(empId, date){
+  var blocks = getScheduleBlocksForEmployeeOnDate(empId, date);
+  if(!blocks.length) return 0;
+  return blocks.reduce(function(sum, block){ return sum + getScheduleBlockDurationHours(block); }, 0);
+}
+
+function getParticipantScheduleHours(participant){
+  var blocks = getParticipantScheduleBlocks(participant);
+  if(!blocks.length) return 0;
+  return blocks.reduce(function(sum, block){
+    if(block && block.shift_kind === 'sleepover') return sum;
+    var count = Array.isArray(block.days_of_week) ? block.days_of_week.length : 0;
+    return sum + (count * getScheduleBlockDurationHours(block));
+  }, 0);
+}
+
+function getScheduleHoursForEmployee(empId, periodStart, periodEnd){
+  if(!empId || !periodStart || !periodEnd || !S.participants) return {Sun:0,Mon:0,Tue:0,Wed:0,Thu:0,Fri:0,Sat:0};
+  var result = {Sun:0,Mon:0,Tue:0,Wed:0,Thu:0,Fri:0,Sat:0};
+  var ps = periodStart.split('-');
+  var pe = periodEnd.split('-');
+  var start = new Date(parseInt(ps[0]), parseInt(ps[1])-1, parseInt(ps[2]));
+  var end = new Date(parseInt(pe[0]), parseInt(pe[1])-1, parseInt(pe[2]));
+  var DAYS = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+  var cur = new Date(start);
+  while(cur <= end){
+    var ds = fmtDate(cur);
+    if(VIC_HOLIDAYS[ds]){ cur.setDate(cur.getDate()+1); continue; }
+    var dayName = DAYS[cur.getDay()];
+    S.participants.forEach(function(p){
+      if(!p.assigned_workers || p.assigned_workers.indexOf(empId) === -1) return;
+      var blocks = getParticipantScheduleBlocks(p);
+      blocks.forEach(function(b){
+        if(!scheduleBlockAppliesToEmployee(b, empId)) return;
+        if(!(Array.isArray(b.days_of_week) && b.days_of_week.indexOf(cur.getDay()) !== -1)) return;
+        if(b.shift_kind === 'sleepover') return;
+        result[dayName] += getScheduleBlockDurationHours(b);
+      });
+    });
+    cur.setDate(cur.getDate()+1);
+  }
+  return result;
+}
+
+function openScheduleBlockForm(id){
+  var block = id ? (S.scheduleBlocks||[]).find(function(b){return b.id===id;}) : null;
+  var form = eid('pt-schedule-block-form');
+  if(!form) return;
+  form.style.display='block';
+  eid('sb-name').value = block ? (block.name||'') : '';
+  eid('sb-start').value = block ? (block.start_time||'') : '';
+  eid('sb-end').value = block ? (block.end_time||'') : '';
+  eid('sb-kind').value = block ? (block.shift_kind||'standard') : 'standard';
+  eid('sb-rate-mode').value = block ? (block.rate_mode||'hourly') : 'hourly';
+  eid('sb-tolerance').value = block ? (block.tolerance_mins||60) : 60;
+  eid('sb-hourly-source').value = block ? (block.hourly_rate_source||'employee') : 'employee';
+  eid('sb-manual-hourly').value = block ? (block.manual_hourly_rate||'') : '';
+  eid('sb-flat-source').value = block ? (block.flat_rate_source||'employee') : 'employee';
+  eid('sb-manual-flat').value = block ? (block.manual_flat_rate||'') : '';
+  eid('sb-flat-hours').value = block ? (block.flat_hours != null ? block.flat_hours : '') : '';
+  eid('sb-active-hours').value = block ? (block.active_hours != null ? block.active_hours : '') : '';
+  var shiftDur = getScheduleBlockDurationHours(block || {start_time:eid('sb-start').value,end_time:eid('sb-end').value});
+  var flatHours = block && block.flat_hours != null ? parseFloat(block.flat_hours) : 0;
+  var activeHours = block && block.active_hours != null ? parseFloat(block.active_hours) : 0;
+  var inferredFlatStart = block ? (block.start_time || '') : '';
+  var inferredFlatEnd = block && flatHours > 0 ? addTimeMinutes(block.start_time || '00:00', Math.round(flatHours*60)) : '';
+  var inferredActiveStart = block && activeHours > 0 ? subtractTimeMinutes(block.end_time || '00:00', Math.round(activeHours*60)) : '';
+  var inferredActiveEnd = block ? (block.end_time || '') : '';
+  eid('sb-flat-start').value = inferredFlatStart;
+  eid('sb-flat-end').value = inferredFlatEnd;
+  eid('sb-active-start').value = inferredActiveStart;
+  eid('sb-active-end').value = inferredActiveEnd;
+  var selectedDays = Array.isArray(block&&block.days_of_week) ? block.days_of_week : [];
+  var daysWrap = eid('sb-days');
+  daysWrap.innerHTML = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'].map(function(day, idx){
+    var jsIdx = idx === 6 ? 0 : idx + 1;
+    return '<button type="button" class="btn btn-outline" data-dow="'+jsIdx+'" style="padding:4px 8px;min-width:38px" onclick="toggleScheduleDay(this)">'+day+'</button>';
+  }).join('');
+  daysWrap.querySelectorAll('[data-dow]').forEach(function(btn){
+    btn.classList.toggle('btn-primary', selectedDays.indexOf(parseInt(btn.dataset.dow))!==-1);
+    btn.classList.toggle('btn-outline', selectedDays.indexOf(parseInt(btn.dataset.dow))===-1);
+  });
+  toggleScheduleRateInputs();
+  form._editId = id || null;
+}
+
+function closeScheduleBlockForm(){
+  var form = eid('pt-schedule-block-form');
+  if(form){form.style.display='none';form._editId=null;}
+}
+
+function toggleScheduleDay(btn){
+  btn.classList.toggle('btn-primary');
+  btn.classList.toggle('btn-outline');
+}
+
+function getTimeMinutes(value){
+  if(!value) return null;
+  var parts = String(value).split(':');
+  if(parts.length < 2) return null;
+  return parseInt(parts[0]||0)*60 + parseInt(parts[1]||0);
+}
+
+function getTimeRangeHours(startValue, endValue){
+  var start = getTimeMinutes(startValue);
+  var end = getTimeMinutes(endValue);
+  if(start===null || end===null) return 0;
+  var span = end - start;
+  if(span <= 0) span += 24 * 60;
+  return +(span / 60).toFixed(2);
+}
+
+function syncFlatActiveSplitFromInputs(){
+  var mode = eid('sb-rate-mode').value;
+  var showFlat = mode==='flat' || mode==='both';
+  if(!showFlat){
+    eid('sb-flat-hours').value = '';
+    eid('sb-active-hours').value = '';
+    return;
+  }
+  // Time ranges take precedence when filled in; otherwise keep any hours the
+  // user typed directly into the flat/active hour inputs.
+  var flatHours = getTimeRangeHours(eid('sb-flat-start').value, eid('sb-flat-end').value);
+  var activeHours = getTimeRangeHours(eid('sb-active-start').value, eid('sb-active-end').value);
+  if(flatHours > 0) eid('sb-flat-hours').value = flatHours;
+  if(activeHours > 0) eid('sb-active-hours').value = activeHours;
+}
+
+function toggleScheduleRateInputs(){
+  var mode = eid('sb-rate-mode').value;
+  var hourlyWrap = eid('sb-hourly-wrap');
+  var manualHourlyWrap = eid('sb-manual-hourly-wrap');
+  var flatWrap = eid('sb-flat-wrap');
+  var manualFlatWrap = eid('sb-manual-flat-wrap');
+  var flatHoursWrap = eid('sb-flat-hours-wrap');
+  var activeHoursWrap = eid('sb-active-hours-wrap');
+  var flatRangeWrap = eid('sb-flat-range-wrap');
+  var activeRangeWrap = eid('sb-active-range-wrap');
+  var showHourly = mode==='hourly' || mode==='both';
+  var showFlat = mode==='flat' || mode==='both';
+  if(hourlyWrap) hourlyWrap.style.display = showHourly ? '' : 'none';
+  if(manualHourlyWrap) manualHourlyWrap.style.display = showHourly ? '' : 'none';
+  if(flatWrap) flatWrap.style.display = showFlat ? '' : 'none';
+  if(manualFlatWrap) manualFlatWrap.style.display = showFlat ? '' : 'none';
+  if(flatHoursWrap) flatHoursWrap.style.display = showFlat ? '' : 'none';
+  if(activeHoursWrap) activeHoursWrap.style.display = showFlat ? '' : 'none';
+  if(flatRangeWrap) flatRangeWrap.style.display = showFlat ? '' : 'none';
+  if(activeRangeWrap) activeRangeWrap.style.display = showFlat ? '' : 'none';
+  syncFlatActiveSplitFromInputs();
+}
+
+function addTimeMinutes(value, minutes){
+  var parts = String(value||'00:00').split(':');
+  var total = parseInt(parts[0]||0)*60 + parseInt(parts[1]||0) + minutes;
+  while(total >= 24*60) total -= 24*60;
+  var hh = String(Math.floor(total/60)).padStart(2,'0');
+  var mm = String(total%60).padStart(2,'0');
+  return hh+':'+mm;
+}
+
+function subtractTimeMinutes(value, minutes){
+  var parts = String(value||'00:00').split(':');
+  var total = parseInt(parts[0]||0)*60 + parseInt(parts[1]||0) - minutes;
+  while(total < 0) total += 24*60;
+  var hh = String(Math.floor(total/60)).padStart(2,'0');
+  var mm = String(total%60).padStart(2,'0');
+  return hh+':'+mm;
+}
+
+function getScheduleBlockDays(){
+  var days = [];
+  eid('sb-days').querySelectorAll('[data-dow]').forEach(function(btn){
+    if(btn.classList.contains('btn-primary')) days.push(parseInt(btn.dataset.dow));
+  });
+  return days;
+}
+
+function getScheduleVisualOrderStore(){
+  try {
+    var raw = localStorage.getItem('nsss_schedule_visual_order') || '{}';
+    var parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch(e) {
+    return {};
+  }
+}
+
+function saveScheduleVisualOrderStore(store){
+  try { localStorage.setItem('nsss_schedule_visual_order', JSON.stringify(store || {})); } catch(e) {}
+}
+
+function getScheduleDayOrderKey(participantId, dayIdx){
+  return String(participantId||'') + '|' + String(dayIdx);
+}
+
+function getOrderedScheduleDayBlocks(participantId, dayIdx, blocks){
+  var list = (blocks || []).slice();
+  list.sort(function(a,b){
+    var at = String(a.start_time||'');
+    var bt = String(b.start_time||'');
+    if(at !== bt) return at < bt ? -1 : 1;
+    return String(a.name||'').localeCompare(String(b.name||''));
+  });
+  var store = getScheduleVisualOrderStore();
+  var key = getScheduleDayOrderKey(participantId, dayIdx);
+  var order = Array.isArray(store[key]) ? store[key] : [];
+  if(!order.length) return list;
+  var rank = {};
+  order.forEach(function(id, idx){ rank[id] = idx; });
+  list.sort(function(a,b){
+    var ai = rank[a.id], bi = rank[b.id];
+    var ah = ai === undefined ? 9999 : ai;
+    var bh = bi === undefined ? 9999 : bi;
+    if(ah !== bh) return ah - bh;
+    var at = String(a.start_time||'');
+    var bt = String(b.start_time||'');
+    if(at !== bt) return at < bt ? -1 : 1;
+    return String(a.name||'').localeCompare(String(b.name||''));
+  });
+  return list;
+}
+
+function scheduleBlockDragStart(ev, participantId, dayIdx, blockId){
+  if(!ev || !ev.dataTransfer) return;
+  ev.dataTransfer.setData('text/plain', JSON.stringify({participantId:participantId, dayIdx:dayIdx, blockId:blockId}));
+  ev.dataTransfer.effectAllowed = 'move';
+}
+
+function scheduleBlockDragOver(ev){
+  if(ev) ev.preventDefault();
+}
+
+function scheduleBlockDrop(ev, participantId, dayIdx, targetBlockId){
+  if(!ev) return;
+  ev.preventDefault();
+  var payloadRaw = '';
+  try { payloadRaw = ev.dataTransfer ? ev.dataTransfer.getData('text/plain') : ''; } catch(e) {}
+  if(!payloadRaw) return;
+  var payload;
+  try { payload = JSON.parse(payloadRaw); } catch(e) { return; }
+  if(!payload || payload.participantId !== participantId || payload.dayIdx !== dayIdx) return;
+  var draggedId = payload.blockId;
+  if(!draggedId) return;
+
+  var blocks = (S.scheduleBlocks||[]).filter(function(b){
+    return b && b.participant_id===participantId && b.active!==false && Array.isArray(b.days_of_week) && b.days_of_week.indexOf(dayIdx)!==-1;
+  });
+  var currentOrder = getOrderedScheduleDayBlocks(participantId, dayIdx, blocks).map(function(b){ return b.id; });
+  var fromIdx = currentOrder.indexOf(draggedId);
+  if(fromIdx === -1) return;
+  currentOrder.splice(fromIdx, 1);
+  if(targetBlockId){
+    var toIdx = currentOrder.indexOf(targetBlockId);
+    if(toIdx === -1) currentOrder.push(draggedId);
+    else currentOrder.splice(toIdx, 0, draggedId);
+  } else {
+    currentOrder.push(draggedId);
+  }
+
+  var store = getScheduleVisualOrderStore();
+  store[getScheduleDayOrderKey(participantId, dayIdx)] = currentOrder;
+  saveScheduleVisualOrderStore(store);
+  renderScheduleBlocks(participantId);
+}
+
+function renderScheduleBlocks(participantId){
+  var grid = eid('pt-schedule-grid');
+  if(!grid) return;
+  if(!participantId){
+    grid.innerHTML = '<div style="grid-column:1 / -1;color:var(--text3);font-size:12px;padding:10px;border:1px dashed var(--border);border-radius:var(--r)">Save the participant first, then add schedule blocks.</div>';
+    return;
+  }
+  var dayNames = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+  var blocks = (S.scheduleBlocks||[]).filter(function(b){return b.participant_id===participantId && b.active!==false;});
+  grid.innerHTML = dayNames.map(function(day, index){
+    var dayIdx = index === 6 ? 0 : index + 1;
+    var dayBlocksRaw = blocks.filter(function(b){ return Array.isArray(b.days_of_week) && b.days_of_week.indexOf(dayIdx)!==-1; });
+    var dayBlocks = getOrderedScheduleDayBlocks(participantId, dayIdx, dayBlocksRaw);
+    return '<div style="background:var(--bg5);border:1px solid var(--border2);border-radius:var(--r);padding:8px;min-height:180px" ondragover="scheduleBlockDragOver(event)" ondrop="scheduleBlockDrop(event,\''+participantId+'\','+dayIdx+',null)">'
+      + '<div style="font-size:10px;color:var(--text3);font-weight:700;text-transform:uppercase;margin-bottom:8px">'+day+'</div>'
+      + (dayBlocks.length ? dayBlocks.map(function(b){
+          var rate = resolveBlockRate(b, null);
+          var rateSummary = [];
+          if(b.rate_mode==='hourly' || b.rate_mode==='both'){ if(rate.hourly!=null) rateSummary.push('$'+parseFloat(rate.hourly).toFixed(2)+'/hr'); }
+          if(b.rate_mode==='flat' || b.rate_mode==='both'){ if(rate.flat!=null) rateSummary.push('$'+parseFloat(rate.flat).toFixed(2)+' flat'); }
+          var splitSummary = [];
+          if(b.rate_mode==='flat' || b.rate_mode==='both'){
+            var flatHours = (b.flat_hours != null && b.flat_hours !== '') ? parseFloat(b.flat_hours) : null;
+            var activeHours = (b.active_hours != null && b.active_hours !== '') ? parseFloat(b.active_hours) : null;
+            if(flatHours != null) splitSummary.push(flatHours+'h flat');
+            if(activeHours != null) splitSummary.push(activeHours+'h active');
+          }
+          return '<div draggable="true" ondragstart="scheduleBlockDragStart(event,\''+participantId+'\','+dayIdx+',\''+b.id+'\')" ondragover="scheduleBlockDragOver(event)" ondrop="scheduleBlockDrop(event,\''+participantId+'\','+dayIdx+',\''+b.id+'\')" style="background:var(--bg4);border:1px solid var(--border2);border-radius:var(--r);padding:8px;margin-bottom:8px;cursor:grab">'
+            + '<div style="font-size:12px;font-weight:700">'+(b.name||'Shift')+'</div>'
+            + '<div style="font-size:11px;color:var(--text3);margin-top:2px">'+b.start_time+'–'+b.end_time+'</div>'
+            + '<div style="font-size:11px;color:var(--text3);margin-top:4px">'+(rateSummary.join(' · ')||'Rate pending')+'</div>'
+            + (splitSummary.length ? '<div style="font-size:10px;color:#bc8cff;margin-top:4px">'+splitSummary.join(' · ')+'</div>' : '')
+            + '<div style="display:flex;gap:4px;justify-content:flex-end;margin-top:8px">'
+            + '<button class="btn-icon" onclick="openScheduleBlockForm(\''+b.id+'\')" title="Edit">&#9998;</button>'
+            + '<button class="btn-icon" onclick="deleteScheduleBlock(\''+b.id+'\')" title="Delete" style="color:var(--out);border-color:var(--out-dim)">&#x2715;</button>'
+            + '</div>'
+            + '</div>';
+        }).join('') : '<div style="font-size:11px;color:var(--text3)">No shifts</div>' )
+      + '</div>';
+  }).join('');
+}
+
+async function saveScheduleBlock(){
+  var participantId = eid('m-participant')._editId;
+  if(!participantId){showToast('Save the participant first','err');return;}
+  syncFlatActiveSplitFromInputs();
+  var row = {
+    participant_id: participantId,
+    name: (eid('sb-name').value||'').trim(),
+    start_time: eid('sb-start').value,
+    end_time: eid('sb-end').value,
+    days_of_week: getScheduleBlockDays(),
+    shift_kind: eid('sb-kind').value,
+    rate_mode: eid('sb-rate-mode').value,
+    hourly_rate_source: eid('sb-hourly-source').value,
+    manual_hourly_rate: parseFloat(eid('sb-manual-hourly').value)||null,
+    flat_rate_source: eid('sb-flat-source').value,
+    manual_flat_rate: parseFloat(eid('sb-manual-flat').value)||null,
+    flat_hours: parseFloat(eid('sb-flat-hours').value)||null,
+    active_hours: parseFloat(eid('sb-active-hours').value)||null,
+    tolerance_mins: parseInt(eid('sb-tolerance').value)||60,
+    assigned_employee_ids: [],
+    active: true
+  };
+  if(!row.name || !row.start_time || !row.end_time || !row.days_of_week.length){showToast('Name, time range and at least one day are required','err');return;}
+
+  async function upsertScheduleBlockWithColumnFallback(baseRow, editId){
+    var payload = Object.assign({}, baseRow);
+    var removedCols = [];
+    var attempts = 0;
+    var res = null;
+    while(attempts < 8){
+      attempts++;
+      if(editId){
+        res = await sb2.from('schedule_blocks').update(payload).eq('id', editId).select();
+      } else {
+        res = await sb2.from('schedule_blocks').insert(payload).select();
+      }
+      if(!res || !res.error) return {res:res, removedCols:removedCols};
+      var msg = String(res.error.message || '');
+      var colMatch = msg.match(/Could not find the '([^']+)' column of 'schedule_blocks'/i);
+      if(!colMatch) break;
+      var missingCol = colMatch[1];
+      if(!Object.prototype.hasOwnProperty.call(payload, missingCol)) break;
+      delete payload[missingCol];
+      removedCols.push(missingCol);
+    }
+    return {res:res, removedCols:removedCols};
+  }
+
+  setSync('saving');
+  var editId = eid('pt-schedule-block-form')._editId || null;
+  var saveResult = await upsertScheduleBlockWithColumnFallback(row, editId);
+  var res = saveResult.res;
+  var removedCols = saveResult.removedCols || [];
+
+  if(!res.error){
+    if(editId){
+      S.scheduleBlocks = (S.scheduleBlocks||[]).map(function(b){return b.id===editId ? res.data[0] : b;});
+    } else {
+      if(!S.scheduleBlocks)S.scheduleBlocks=[];
+      S.scheduleBlocks.push(res.data[0]);
+    }
+  }
+  if(res.error){setSync('error');showToast(res.error.message||'Unable to save schedule block','err');return;}
+  setSync('ok');
+  closeScheduleBlockForm();
+  renderScheduleBlocks(participantId);
+  if(removedCols.indexOf('active_hours')!==-1 || removedCols.indexOf('flat_hours')!==-1){
+    showToast('Shift saved, but DB is missing flat/active hour columns. Run the SQL migration to store split hours.','err');
+  } else {
+    showToast('Shift saved','ok');
+  }
+}
+
+async function deleteScheduleBlock(id){
+  var block = (S.scheduleBlocks||[]).find(function(b){return b.id===id;});
+  if(!block || !confirm('Delete shift "'+(block.name||'Untitled')+'"?')) return;
+  setSync('saving');
+  var res = await sb2.from('schedule_blocks').delete().eq('id', id);
+  if(res.error){setSync('error');showToast(res.error.message,'err');return;}
+  S.scheduleBlocks = (S.scheduleBlocks||[]).filter(function(b){return b.id!==id;});
+  setSync('ok');
+  renderScheduleBlocks(eid('m-participant')._editId||null);
+  showToast('Shift deleted','ok');
 }
 
 // ── Shift Types (Connecteam import) ─────────────────────────────────────────
@@ -4310,6 +4784,14 @@ function autoFillRates() {
   if (!phEl.value)  phEl.placeholder  = 'auto ' + (base * 2.25).toFixed(2);
 }
 
+function resolveSleepoverFlatRate(emp){
+  if(emp && emp.sleepover_flat_rate!==null && emp.sleepover_flat_rate!==undefined && emp.sleepover_flat_rate!==''){
+    var v=parseFloat(emp.sleepover_flat_rate);
+    if(!isNaN(v)) return v;
+  }
+  return SCHADS_SLEEPOVER_ALLOWANCE;
+}
+
 function getEmpRate(emp, dayType) {
   // dayType: 'weekday','saturday','sunday','holiday'
   var base = parseFloat(emp.pay_rate) || 0;
@@ -4319,60 +4801,54 @@ function getEmpRate(emp, dayType) {
   return base;
 }
 
-// ── Feature 2: Pre-fill hours from participant roster ──
+// ── Feature 2: Pre-fill hours from participant schedule blocks ──
 function prefillHoursFromRoster(empId, periodStart, periodEnd) {
   if (!periodStart || !periodEnd || !S.participants) return 0;
-  var totalHrs = 0;
-  var ps2=periodStart.split('-'),pe2=periodEnd.split('-');
-  var start = new Date(parseInt(ps2[0]),parseInt(ps2[1])-1,parseInt(ps2[2]));
-  var end   = new Date(parseInt(pe2[0]),parseInt(pe2[1])-1,parseInt(pe2[2]));
-  S.participants.forEach(function(p) {
-    if (!p.assigned_workers || p.assigned_workers.indexOf(empId) === -1) return;
-    var roster = p.roster || {};
-    var empRoster = roster[empId] || {};
-    var cur = new Date(start);
-    while (cur <= end) {
-      var ds = fmtDate(cur);
-      // Skip public holidays — those are entered separately
-      if (!VIC_HOLIDAYS[ds]) {
-        var dayName = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][cur.getDay()];
-        totalHrs += parseFloat(empRoster[dayName] || 0);
-      }
-      cur.setDate(cur.getDate() + 1);
-    }
-  });
+  var byDay = getScheduleHoursForEmployee(empId, periodStart, periodEnd);
+  var totalHrs = Object.keys(byDay).reduce(function(sum, day){ return sum + (parseFloat(byDay[day]) || 0); }, 0);
   return +totalHrs.toFixed(1);
 }
 
 // ── Feature 3: Conflict detection ──
 function detectRosterConflicts() {
   var conflicts = [];
-  var empDayMap = {}; // empId -> day -> [participantNames]
-  if (!S.participants) return conflicts;
-  S.participants.forEach(function(p) {
-    (p.assigned_workers || []).forEach(function(wid) {
-      var roster = (p.roster || {})[wid] || {};
-      Object.keys(roster).forEach(function(day) {
-        if (!parseFloat(roster[day])) return;
-        if (!empDayMap[wid]) empDayMap[wid] = {};
-        if (!empDayMap[wid][day]) empDayMap[wid][day] = [];
-        empDayMap[wid][day].push(p.name);
+  var byWorkerDay = {};
+  if (!S.participants || !S.scheduleBlocks) return conflicts;
+  (S.scheduleBlocks || []).forEach(function(block) {
+    if (!block || block.active === false) return;
+    var participant = (S.participants || []).find(function(p) { return p.id === block.participant_id; });
+    if (!participant) return;
+    var assignees = (Array.isArray(block.assigned_employee_ids) && block.assigned_employee_ids.length)
+      ? block.assigned_employee_ids
+      : (participant.assigned_workers || []);
+    if (!assignees.length) return;
+    var startMins = block.start_time ? (parseInt(block.start_time.split(':')[0])*60 + parseInt(block.start_time.split(':')[1] || 0)) : 0;
+    var endMins = block.end_time ? (parseInt(block.end_time.split(':')[0])*60 + parseInt(block.end_time.split(':')[1] || 0)) : 0;
+    if (endMins <= startMins) endMins += 1440;
+    (block.days_of_week || []).forEach(function(dayIdx) {
+      var dayName = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][dayIdx] || String(dayIdx);
+      assignees.forEach(function(wid) {
+        var key = wid + '|' + dayName;
+        if (!byWorkerDay[key]) byWorkerDay[key] = [];
+        byWorkerDay[key].push({ participant: participant.name, start: startMins, end: endMins });
       });
     });
   });
-  // Find days with multiple participants for same worker
-  Object.keys(empDayMap).forEach(function(wid) {
-    var emp = S.emps.find(function(e) { return e.id === wid; });
-    Object.keys(empDayMap[wid]).forEach(function(day) {
-      var names = empDayMap[wid][day];
-      if (names.length > 1) {
-        conflicts.push({
-          worker: emp ? emp.name : wid,
-          day: day,
-          participants: names
-        });
+  Object.keys(byWorkerDay).forEach(function(key) {
+    var parts = key.split('|');
+    var wid = parts[0];
+    var day = parts[1];
+    var items = byWorkerDay[key];
+    for (var i = 0; i < items.length; i++) {
+      for (var j = i + 1; j < items.length; j++) {
+        if (items[i].start < items[j].end && items[i].end > items[j].start) {
+          var names = [items[i].participant, items[j].participant].filter(function(v, idx, arr){ return arr.indexOf(v) === idx; });
+          var emp = S.emps.find(function(e) { return e.id === wid; });
+          conflicts.push({ worker: emp ? emp.name : wid, day: day, participants: names });
+          break;
+        }
       }
-    });
+    }
   });
   return conflicts;
 }
@@ -4380,17 +4856,10 @@ function detectRosterConflicts() {
 // ── Feature 4: Participant status for dashboard ──
 function getParticipantStatus(p) {
   if (!p.assigned_workers || p.assigned_workers.length === 0) return 'red';
-  var roster = p.roster || {};
-  var totalRostered = 0;
-  p.assigned_workers.forEach(function(wid) {
-    var wr = roster[wid] || {};
-    ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'].forEach(function(d) {
-      totalRostered += parseFloat(wr[d] || 0);
-    });
-  });
+  var totalScheduled = getParticipantScheduleHours(p);
   var target = parseFloat(p.weekly_hours) || 0;
-  if (!target) return totalRostered > 0 ? 'green' : 'red';
-  var pct = totalRostered / target;
+  if (!target) return totalScheduled > 0 ? 'green' : 'red';
+  var pct = totalScheduled / target;
   if (pct >= 0.9) return 'green';
   if (pct >= 0.5) return 'amber';
   return 'red';
@@ -4410,19 +4879,8 @@ function renderHoursUtilisation() {
     + '</tr></thead><tbody>';
 
   S.participants.forEach(function(p) {
-    var roster = p.roster || {};
-    var sc = (p.sleepover_config) || {};
-    var slDays = Array.isArray(sc.days) ? sc.days : [];
-    var slDayNames = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'].filter(function(_,i){ return slDays.indexOf(i)!==-1; });
-    var sleepShiftsPerWk = slDays.length;
-    var rostered = 0;
-    (p.assigned_workers || []).forEach(function(wid) {
-      var wr = roster[wid] || {};
-      ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'].forEach(function(d) {
-        // Exclude sleepover-marked days from active hours total
-        if(slDayNames.indexOf(d)===-1) rostered += parseFloat(wr[d] || 0);
-      });
-    });
+    var sleepShiftsPerWk = getParticipantSleepoverShiftCount(p);
+    var rostered = getParticipantScheduleHours(p);
 
     // Estimate delivered this month from pay runs
     var delivered = 0;
@@ -4548,44 +5006,149 @@ function doLogout(){sb2.auth.signOut().then(function(){location.reload();}).catc
 eid('loginPw').addEventListener('keydown',function(e){if(e.key==='Enter')doLogin();});
 eid('loginEmail').addEventListener('keydown',function(e){if(e.key==='Enter')eid('loginPw').focus();});
 eid('dd-val').addEventListener('keydown',function(e){if(e.key==='Enter')saveDDOpt();if(e.key==='Escape')closeM('m-dd');});
+function getDowIndexFromRow(row){
+  if(!row) return null;
+  if(row.dow_idx !== undefined && row.dow_idx !== null){
+    var dn = parseInt(row.dow_idx);
+    return isNaN(dn) ? null : dn;
+  }
+  if(row.date){
+    var p = String(row.date).split('-');
+    if(p.length===3){
+      var d = new Date(parseInt(p[0]), parseInt(p[1])-1, parseInt(p[2]));
+      if(!isNaN(d.getTime())) return d.getDay();
+    }
+  }
+  if(row.dow){
+    var map = {Sun:0,Mon:1,Tue:2,Wed:3,Thu:4,Fri:5,Sat:6,Su:0,Mo:1,Tu:2,We:3,Th:4,Fr:5,Sa:6};
+    if(map[row.dow] !== undefined) return map[row.dow];
+  }
+  return null;
+}
+
+function getLastPayRunShiftPattern(empId){
+  var rows = (S.runs||[]).filter(function(r){
+    return r && r.employee_id===empId && Array.isArray(r.day_breakdown) && r.day_breakdown.length>0;
+  });
+  if(!rows.length) return {};
+  rows.sort(function(a,b){ return String(b.period_end||'').localeCompare(String(a.period_end||'')); });
+  var latest = rows[0];
+  var pattern = {};
+  (latest.day_breakdown||[]).forEach(function(item){
+    if(!item || !item.block_id || item.worked===false) return;
+    var dowIdx = getDowIndexFromRow(item);
+    if(dowIdx===null) return;
+    pattern[item.block_id + '|' + dowIdx] = true;
+  });
+  return pattern;
+}
+
 function buildDayGrid(empId, periodStart, periodEnd) {
   var grid=eid('pr-day-grid'),body=eid('pr-day-grid-body');
   if(!grid||!body||!periodStart||!periodEnd){if(grid)grid.style.display='none';return;}
   var ps=periodStart.split('-'),pe=periodEnd.split('-');
   var start=new Date(parseInt(ps[0]),parseInt(ps[1])-1,parseInt(ps[2]));
   var end=new Date(parseInt(pe[0]),parseInt(pe[1])-1,parseInt(pe[2]));
-  var DN=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'],DS=['Su','Mo','Tu','We','Th','Fr','Sa'];
-  var rbd={Sun:0,Mon:0,Tue:0,Wed:0,Thu:0,Fri:0,Sat:0},hasRoster=false;
-  if(S.participants&&empId){S.participants.forEach(function(p){if(!p.assigned_workers||p.assigned_workers.indexOf(empId)===-1)return;var wr=(p.roster||{})[empId]||{};Object.keys(wr).forEach(function(d){var hv=parseFloat(wr[d]||0);if(hv>0){rbd[d]+=hv;hasRoster=true;}});});}
+  var DS=['Su','Mo','Tu','We','Th','Fr','Sa'];
+  var emp=(S.emps||[]).find(function(e){ return e.id===empId; });
+  var lastPattern = empId ? getLastPayRunShiftPattern(empId) : {};
   var html='',cur=new Date(start),idx=0;
   while(cur<=end){
-    var ds=fmtDate(cur),dow=cur.getDay(),dayN=DN[dow],isHol=!!VIC_HOLIDAYS[ds],isWk=dow===0||dow===6;
-    var hrs=hasRoster?(rbd[dayN]||0):8;
-    var working=hasRoster?(hrs>0):true;
+    var ds=fmtDate(cur),dow=cur.getDay(),isHol=!!VIC_HOLIDAYS[ds],isWk=dow===0||dow===6;
+    var blocks = empId ? getScheduleStartBlocksForEmployeeOnDate(empId, cur) : [];
     var bg=isHol?'rgba(248,81,73,0.15)':isWk?'rgba(210,153,34,0.1)':'rgba(88,166,255,0.06)';
     var bc=isHol?'#f85149':isWk?'#d29922':'var(--border2)';
     var lbl=isHol?VIC_HOLIDAYS[ds].split(' ')[0]:DS[dow];
     var dn=cur.getDate(),ms=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][cur.getMonth()];
-    var chk=working?' checked':'';
-    var clr=isHol?'#f85149':'#58a6ff';
-    html+='<div style="text-align:center"><label style="display:flex;flex-direction:column;align-items:center;gap:3px;background:'+bg+';border:1px solid '+bc+';border-radius:6px;padding:6px 2px;cursor:pointer;user-select:none;opacity:'+(working?'1':'0.4')+'">'
-      +'<input type="checkbox"'+chk+' class="pr-day-cb" data-hrs="'+hrs+'" data-type="'+(isHol?'holiday':isWk?(dow===6?'saturday':'sunday'):'weekday')+'" onchange="prDayToggle()" style="appearance:none;-webkit-appearance:none;width:20px;height:20px;border-radius:50%;border:2px solid '+clr+';background:'+(working?clr:'transparent')+';cursor:pointer">'
+    var dayCards = blocks.length ? blocks.map(function(b){
+      var split = getScheduleBlockHoursForDate(b, cur);
+      var hrs = split.hrs || getScheduleBlockDurationHours(b) || 0;
+      var rate = resolveBlockRate(b, empId);
+      var rateSummary = [];
+      if((b.rate_mode==='hourly' || b.rate_mode==='both') && rate.hourly!=null) rateSummary.push('$'+parseFloat(rate.hourly).toFixed(2)+'/hr');
+      if((b.rate_mode==='flat' || b.rate_mode==='both') && rate.flat!=null) rateSummary.push('$'+parseFloat(rate.flat).toFixed(2)+' flat');
+      var splitSummary = [];
+      if(b.rate_mode==='flat' || b.rate_mode==='both'){
+        if(split.flatHours) splitSummary.push(parseFloat(split.flatHours).toFixed(1)+'h flat');
+        if(split.activeHours) splitSummary.push(parseFloat(split.activeHours).toFixed(1)+'h active');
+      }
+      var activeMins = (split.activeHours || 0) * 60;
+      var cType = getDayTypeForDate(cur);
+      var payAmt = 0;
+      var lineLabel = '';
+      if((b.shift_kind==='sleepover' || b.rate_mode==='flat' || b.rate_mode==='both') && (split.flatHours>0 || split.activeHours>0 || rate.flat!=null)){
+        var flatAmt = parseFloat(rate.flat)||0;
+        var activeHrs = parseFloat(split.activeHours)||0;
+        if(activeHrs<=0 && isOvernightScheduleBlock(b)){
+          // Sleepover active hours are billed on the start-day card, even if
+          // the active segment occurs after midnight.
+          activeHrs = parseFloat(b.active_hours)||0;
+        }
+        var activeDay = new Date(cur);
+        if(isOvernightScheduleBlock(b) && activeHrs>0){
+          activeDay.setDate(activeDay.getDate()+1);
+        }
+        var activeType = getDayTypeForDate(activeDay);
+        var activeRate = getEmployeeDayRate(emp, activeType);
+        var activeAmt = +(activeHrs * activeRate).toFixed(2);
+        payAmt = +(flatAmt + activeAmt).toFixed(2);
+        lineLabel = (b.name||'Sleepover') + ' flat $' + flatAmt.toFixed(2) + (activeHrs>0 ? ' + ' + activeHrs.toFixed(1) + 'h @ $' + activeRate.toFixed(2) : '');
+        if(activeHrs>0 && splitSummary.indexOf(parseFloat(activeHrs).toFixed(1)+'h active')===-1){
+          splitSummary.push(parseFloat(activeHrs).toFixed(1)+'h active');
+        }
+        activeMins = activeHrs * 60;
+      } else {
+        var dayRate = getEmployeeDayRate(emp, cType);
+        payAmt = +(hrs * dayRate).toFixed(2);
+        lineLabel = (b.name||'Shift') + ' ' + hrs.toFixed(1) + 'h @ $' + dayRate.toFixed(2);
+      }
+      var key = String(b.id||'') + '|' + String(dow);
+      var checked = !!lastPattern[key];
+      return '<label style="display:block;background:var(--bg4);border:1px solid var(--border2);border-radius:var(--r);padding:8px;margin-bottom:8px;cursor:pointer;opacity:'+(checked?'1':'0.5')+'">'
+        + '<div style="display:flex;align-items:flex-start;gap:8px">'
+        + '<input type="checkbox" class="pr-day-cb" '+(checked?'checked':'')+' data-date="'+ds+'" data-dow="'+DS[dow]+'" data-dow-idx="'+dow+'" data-hrs="'+hrs.toFixed(2)+'" data-type="'+cType+'" data-kind="'+(b.shift_kind||'standard')+'" data-active-mins="'+activeMins.toFixed(0)+'" data-pay-amt="'+payAmt.toFixed(2)+'" data-line-label="'+lineLabel.replace(/"/g,'&quot;')+'" data-shift-label="'+String(b.name||'Shift').replace(/"/g,'&quot;')+'" data-block-id="'+(b.id||'')+'" data-participant-id="'+(b.participant_id||'')+'" onchange="prDayToggle()" style="appearance:none;-webkit-appearance:none;width:16px;height:16px;border-radius:50%;border:2px solid #58a6ff;background:transparent;margin-top:2px;cursor:pointer">'
+        + '<div style="flex:1">'
+        + '<div style="font-size:12px;font-weight:700;color:var(--text)">'+(b.name||'Shift')+'</div>'
+        + '<div style="font-size:11px;color:var(--text3);margin-top:2px">'+(b.start_time||'')+'–'+(b.end_time||'')+' · '+hrs.toFixed(1)+'h</div>'
+        + '<div style="font-size:10px;color:var(--text3);margin-top:3px">'+(rateSummary.join(' · ') || 'Rate pending')+'</div>'
+        + (splitSummary.length ? '<div style="font-size:10px;color:#bc8cff;margin-top:3px">'+splitSummary.join(' · ')+'</div>' : '')
+        + '<div style="font-size:10px;color:var(--in);margin-top:3px;font-weight:700">$'+payAmt.toFixed(2)+'</div>'
+        + '</div>'
+        + '</div>'
+        + '</label>';
+    }).join('') : '<div style="font-size:11px;color:var(--text3)">No shifts</div>';
+
+    html+='<div style="background:'+bg+';border:1px solid '+bc+';border-radius:6px;padding:8px;min-height:220px">'
       +'<div style="font-size:10px;font-weight:700;color:'+(isHol?'#f85149':isWk?'var(--gold)':'var(--text2)')+'">'+lbl+'</div>'
       +'<div style="font-size:12px;font-weight:600;color:var(--text)">'+dn+'</div>'
-      +'<div style="font-size:9px;color:var(--text3)">'+ms+'</div>'
-      +'<div style="font-size:10px;color:var(--text2);font-weight:600">'+(hrs>0?hrs+'h':'--')+'</div>'
-      +'</label></div>';
+      +'<div style="font-size:9px;color:var(--text3);margin-bottom:8px">'+ms+'</div>'
+      + dayCards
+      +'</div>';
     idx++;cur.setDate(cur.getDate()+1);
   }
   body.innerHTML=html;grid.style.display='block';
-  if(!document.getElementById('dcS')){var st=document.createElement('style');st.id='dcS';st.textContent='.pr-day-cb:checked{background:#58a6ff !important;border-color:#58a6ff !important}.pr-day-cb[data-type=holiday]:checked{background:#f85149 !important;border-color:#f85149 !important}.pr-day-cb:not(:checked){background:transparent !important}';document.head.appendChild(st);}
+  if(!document.getElementById('dcS')){var st=document.createElement('style');st.id='dcS';st.textContent='.pr-day-cb:checked{background:#58a6ff !important;border-color:#58a6ff !important;box-shadow:0 0 0 2px rgba(88,166,255,.2)}.pr-day-cb[data-type=holiday]:checked{background:#f85149 !important;border-color:#f85149 !important;box-shadow:0 0 0 2px rgba(248,81,73,.2)}';document.head.appendChild(st);}  
   prDayToggle();
 }
 function prDayToggle(){
-  var cbs=document.querySelectorAll('.pr-day-cb'),total=0,holH=0,wdH=0,satH=0,sunH=0;
-  cbs.forEach(function(cb){var lbl=cb.closest('label');if(lbl)lbl.style.opacity=cb.checked?'1':'0.4';if(!cb.checked)return;var h=parseFloat(cb.dataset.hrs)||0,t=cb.dataset.type;total+=h;if(t==='holiday')holH+=h;else if(t==='saturday')satH+=h;else if(t==='sunday')sunH+=h;else wdH+=h;});
+  var cbs=document.querySelectorAll('.pr-day-cb'),total=0,holH=0,wdH=0,satH=0,sunH=0,sleepShifts=0,sleepActiveMins=0;
+  cbs.forEach(function(cb){
+    var lbl=cb.closest('label');
+    if(lbl)lbl.style.opacity=cb.checked?'1':'0.4';
+    if(!cb.checked)return;
+    var h=parseFloat(cb.dataset.hrs)||0,t=cb.dataset.type,k=cb.dataset.kind||'standard';
+    total += h;
+    if(k === 'sleepover'){
+      sleepShifts += 1;
+      sleepActiveMins += parseFloat(cb.dataset.activeMins || 0) || 0;
+      return;
+    }
+    if(t==='holiday')holH+=h;else if(t==='saturday')satH+=h;else if(t==='sunday')sunH+=h;else wdH+=h;
+  });
   var el=eid('pr-day-total');if(el)el.textContent=total.toFixed(1);
   eid('pr-hrs').value=(wdH+satH+sunH).toFixed(1);
+  if(eid('pr-sleep-shifts')) eid('pr-sleep-shifts').value=sleepShifts;
+  if(eid('pr-sleep-active-min')) eid('pr-sleep-active-min').value=sleepActiveMins;
   if(eid('pr-hol-hrs'))eid('pr-hol-hrs').value=holH>0?holH:'';
   calcPay();
 }
@@ -4915,7 +5478,7 @@ function ndisInvLoadBudgetLines() {
   eid('ndis-inv-bl').innerHTML = active.length
     ? active.map(function(bl,i){ return '<option value="'+i+'">'+bl.name+' ('+BL_CARD_LABELS[bl.rate_card||'core']+')'+'</option>'; }).join('')
     : '<option value="">No budget lines — add one on the participant card</option>';
-  // Populate sleepover section from participant's sleepover_config
+  // Populate sleepover section from participant schedule blocks
   ndisInvPopulateSleepover(pt);
   ndisInvApplyBudgetLineDefaults();
 }
@@ -4923,33 +5486,36 @@ function ndisInvLoadBudgetLines() {
 function ndisInvPopulateSleepover(pt) {
   var sec = eid('ndis-inv-sleep-section');
   if(!sec) return;
-  var sc = (pt && pt.sleepover_config) || {};
-  var days = Array.isArray(sc.days) ? sc.days : [];
-  if(days.length === 0){
+  var blocks = getParticipantSleepoverBlocks(pt);
+  if(!blocks.length){
     sec.style.display = 'none';
     return;
   }
   sec.style.display = 'block';
   // Auto-count sleepover shifts in the current period
   calcNdisInvSleepCount();
-  if(eid('ii-sleep-outside-hrs')) eid('ii-sleep-outside-hrs').value = sc.outside_hours != null ? sc.outside_hours : 0;
-  if(eid('ii-sleep-active-min'))  eid('ii-sleep-active-min').value  = sc.active_minutes != null ? sc.active_minutes : 0;
 }
 
 function calcNdisInvSleepCount(){
   var ptId = eid('ndis-inv-pt').value;
   var pt = (S.participants||[]).find(function(p){ return p.id===ptId; });
-  var sc = (pt && pt.sleepover_config) || {};
-  var days = Array.isArray(sc.days) ? sc.days : [];
-  if(!days.length || !eid('ii-sleep-shifts')) return;
+  var blocks = getParticipantSleepoverBlocks(pt);
+  if(!blocks.length || !eid('ii-sleep-shifts')) return;
   var start = eid('ndis-inv-start').value;
   var end   = eid('ndis-inv-end').value;
   if(!start || !end){ eid('ii-sleep-shifts').value = 0; return; }
   var ps = start.split('-'), pe = end.split('-');
   var cur = new Date(parseInt(ps[0]),parseInt(ps[1])-1,parseInt(ps[2]));
   var endD = new Date(parseInt(pe[0]),parseInt(pe[1])-1,parseInt(pe[2]));
+  var sleepDays = {};
+  blocks.forEach(function(block){
+    (Array.isArray(block.days_of_week) ? block.days_of_week : []).forEach(function(dayIdx){ sleepDays[dayIdx] = true; });
+  });
   var count = 0;
-  while(cur <= endD){ if(days.indexOf(cur.getDay())!==-1) count++; cur.setDate(cur.getDate()+1); }
+  while(cur <= endD){
+    if(sleepDays[cur.getDay()]) count++;
+    cur.setDate(cur.getDate()+1);
+  }
   eid('ii-sleep-shifts').value = count;
 }
 
@@ -7075,8 +7641,9 @@ function renderTsStage3(){
     var sr=parseFloat(emp.sat_rate)||(br*1.5);
     var ur=parseFloat(emp.sun_rate)||(br*2);
     var pr=br*2.25;
+    var sleepoverFlatRate=resolveSleepoverFlatRate(emp);
     var gross=+(tot.wd*br+tot.sat*sr+tot.sun*ur+tot.ph*pr
-      +tot.sleep*SCHADS_SLEEPOVER_ALLOWANCE).toFixed(2);
+      +tot.sleep*sleepoverFlatRate).toFixed(2);
     if(tot.sleep>0&&tot.activeMins>0){
       var actHrs=Math.max(SCHADS_SLEEPOVER_ACTIVE_MIN_HRS,tot.activeMins/60);
       gross=+(gross+tot.sleep*actHrs*(br*1.5)).toFixed(2);
@@ -7176,6 +7743,7 @@ async function tsCreatePayRuns(){
       wdHrs:tot.wd,satHrs:tot.sat,sunHrs:tot.sun,
       holHrs:tot.ph,holRate:br*2.25,
       sleepShifts:tot.sleep,sleepActiveMins:0,sleepPerShiftMins:perShiftMins,
+      sleepoverFlatRate:sleepoverFlatRate,
       paygOn:true,superOn:true,
       periodEnd:er.periodEnd
     });
