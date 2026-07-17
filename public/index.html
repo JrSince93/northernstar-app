@@ -3653,6 +3653,24 @@ function resolveBlockRate(block, employeeId){
   return {hourly:hourly, flat:flat};
 }
 
+function sleepoverActiveSegmentDay(date, startTime, endTime, activeHrs){
+  // Returns the calendar day the active segment of a sleepover-style shift
+  // actually falls on. The segment is anchored to the end of the shift
+  // (handover); when it straddles midnight, the day holding the majority of
+  // it wins (tie goes to the handover day).
+  var activeDay = new Date(date);
+  if(!(activeHrs>0)) return activeDay;
+  var startAbs = getTimeMinutes(startTime)||0;
+  var endAbs = getTimeMinutes(endTime)||0;
+  if(endAbs<=startAbs) endAbs += 1440;
+  if(endAbs<=1440) return activeDay; // shift ends on its start day
+  var activeStartAbs = endAbs - activeHrs*60;
+  var minsAfterMidnight = Math.max(0, endAbs - Math.max(activeStartAbs, 1440));
+  var minsBeforeMidnight = Math.max(0, Math.min(endAbs, 1440) - activeStartAbs);
+  if(minsAfterMidnight >= minsBeforeMidnight) activeDay.setDate(activeDay.getDate()+1);
+  return activeDay;
+}
+
 function computeSleepoverSplitForDate(block, emp, date){
   // Splits a flat-rated (sleepover) shift into its two paid components:
   //  1. the inactive portion, paid as a flat amount (employee profile rate via
@@ -3668,16 +3686,7 @@ function computeSleepoverSplitForDate(block, emp, date){
   var split = getScheduleBlockHoursForDate(block, date);
   var activeHrs = parseFloat(split.activeHours)||0;
   if(activeHrs<=0 && isOvernightScheduleBlock(block)) activeHrs = parseFloat(block.active_hours)||0;
-  var activeDay = new Date(date);
-  if(activeHrs>0 && isOvernightScheduleBlock(block)){
-    var startAbs = getTimeMinutes(block.start_time)||0;
-    var endAbs = getTimeMinutes(block.end_time)||0;
-    if(endAbs<=startAbs) endAbs += 1440;
-    var activeStartAbs = endAbs - activeHrs*60;
-    var minsAfterMidnight = Math.max(0, endAbs - Math.max(activeStartAbs, 1440));
-    var minsBeforeMidnight = Math.max(0, Math.min(endAbs, 1440) - activeStartAbs);
-    if(minsAfterMidnight >= minsBeforeMidnight) activeDay.setDate(activeDay.getDate()+1);
-  }
+  var activeDay = sleepoverActiveSegmentDay(date, block.start_time, block.end_time, activeHrs);
   var activeType = getDayTypeForDate(activeDay);
   var activeRate = getEmployeeDayRate(emp, activeType);
   var activeAmt = +(activeHrs*activeRate).toFixed(2);
@@ -4818,7 +4827,9 @@ function ctEnrichResults(parsedResults){
         shiftTypeId:stRes.shiftTypeId,
         shiftTypeStatus:stRes.status,
         shiftKind:stRes.shiftKind,
-        activeMins:0
+        // Sleepover matches default to the SCHADS 1-hour active floor;
+        // editable per shift in the Stage 2 review screen.
+        activeMins:stRes.shiftKind==='sleepover'?SCHADS_SLEEPOVER_ACTIVE_MIN_HRS*60:0
       };
     });
 
@@ -4844,6 +4855,7 @@ function ctRematchShiftTypes(enrichedResults){
       s.shiftTypeId=stRes.shiftTypeId;
       s.shiftTypeStatus=stRes.status;
       s.shiftKind=stRes.shiftKind;
+      if(stRes.shiftKind==='sleepover'&&!s.activeMins)s.activeMins=SCHADS_SLEEPOVER_ACTIVE_MIN_HRS*60;
     });
   });
 }
@@ -7552,6 +7564,7 @@ function tsSetParticipant(erIdx,si,ptId){
   if(s.participantId){
     var stRes=ctMatchShiftType(s,s.participantId);
     s.shiftTypeId=stRes.shiftTypeId;s.shiftTypeStatus=stRes.status;s.shiftKind=stRes.shiftKind;
+    if(stRes.shiftKind==='sleepover'&&!s.activeMins)s.activeMins=SCHADS_SLEEPOVER_ACTIVE_MIN_HRS*60;
   }else{
     s.shiftTypeId=null;s.shiftTypeStatus='unmatched';s.shiftKind=null;
   }
@@ -7621,6 +7634,7 @@ function tsSetShiftType(erIdx,si,stId){
   if(stId){
     var t=(S.scheduleBlocks||[]).find(function(t){return t.id===stId;});
     s.shiftTypeStatus='confident';s.shiftKind=t?t.shift_kind:null;
+    if(s.shiftKind==='sleepover'&&!s.activeMins)s.activeMins=SCHADS_SLEEPOVER_ACTIVE_MIN_HRS*60;
   }else{
     s.shiftTypeStatus='unmatched';s.shiftKind=null;
   }
@@ -7747,23 +7761,39 @@ function tsBack(){
   }
 }
 
-// One-off rate resolution: a shift matched to a schedule block resolves its
-// sleepover flat through that block's rate config using THIS file's matched
-// employee (manual $ wins; employee-sourced falls back to the employee's
-// profile rate). Nothing is ever written back to assigned_employee_ids.
-function tsSleepoverFlatSum(shifts, emp){
-  var sum=0, count=0;
+// Prices imported sleepover shifts with the same model as manual pay runs:
+// per shift, an inactive FLAT component plus active hours at the employee's
+// ordinary rate for the calendar day the active segment actually falls on.
+// Rate resolution is one-off against THIS file's matched employee (manual $
+// on the block wins; employee-sourced falls back to the employee's profile).
+// Nothing is ever written back to assigned_employee_ids.
+function tsComputeSleepoverPay(shifts, emp){
+  var flatSum=0, activeSum=0, count=0, perShift=[];
   (shifts||[]).forEach(function(s){
     if(s.shiftKind!=='sleepover'||s.included===false)return;
     count++;
     var block=s.shiftTypeId?(S.scheduleBlocks||[]).find(function(b){return b.id===s.shiftTypeId;}):null;
+    var flatAmt=null;
     if(block){
       var r=resolveBlockRate(block, emp?emp.id:null);
-      if(r.flat!=null){sum+=parseFloat(r.flat)||0;return;}
+      if(r.flat!=null)flatAmt=parseFloat(r.flat)||0;
     }
-    sum+=resolveSleepoverFlatRate(emp);
+    if(flatAmt==null)flatAmt=resolveSleepoverFlatRate(emp);
+    var mins=parseFloat(s.activeMins)||0;
+    var activeHrs=mins>0?Math.max(SCHADS_SLEEPOVER_ACTIVE_MIN_HRS,+(mins/60).toFixed(2)):0;
+    var dp=String(s.date||'').split('-');
+    var startDay=dp.length===3?new Date(parseInt(dp[0]),parseInt(dp[1])-1,parseInt(dp[2])):null;
+    var activeDay=(startDay&&!isNaN(startDay.getTime()))?sleepoverActiveSegmentDay(startDay,s['in'],s.out,activeHrs):null;
+    var activeType=activeDay?getDayTypeForDate(activeDay):'weekday';
+    var activeRate=getEmployeeDayRate(emp,activeType);
+    var activeAmt=+(activeHrs*activeRate).toFixed(2);
+    flatSum+=flatAmt;activeSum+=activeAmt;
+    perShift.push({shift:s,flatAmt:+flatAmt.toFixed(2),activeHrs:activeHrs,activeRate:activeRate,
+      activeDate:activeDay?fmtDate(activeDay):(s.date||null),activeType:activeType,activeAmt:activeAmt,
+      payAmt:+(flatAmt+activeAmt).toFixed(2)});
   });
-  return {sum:+sum.toFixed(2), count:count};
+  return {count:count,flatSum:+flatSum.toFixed(2),activeSum:+activeSum.toFixed(2),
+    total:+(flatSum+activeSum).toFixed(2),perShift:perShift};
 }
 
 function renderTsStage3(){
@@ -7787,13 +7817,9 @@ function renderTsStage3(){
     var sr=parseFloat(emp.sat_rate)||(br*1.5);
     var ur=parseFloat(emp.sun_rate)||(br*2);
     var pr=br*2.25;
-    var sleepFlat=tsSleepoverFlatSum(er.shifts, emp);
+    var sleepPay=tsComputeSleepoverPay(er.shifts, emp);
     var gross=+(tot.wd*br+tot.sat*sr+tot.sun*ur+tot.ph*pr
-      +sleepFlat.sum).toFixed(2);
-    if(tot.sleep>0&&tot.activeMins>0){
-      var actHrs=Math.max(SCHADS_SLEEPOVER_ACTIVE_MIN_HRS,tot.activeMins/60);
-      gross=+(gross+tot.sleep*actHrs*(br*1.5)).toFixed(2);
-    }
+      +sleepPay.total).toFixed(2);
 
     // Duplicate run check
     var dupRun=(S.runs||[]).find(function(r){
@@ -7881,43 +7907,54 @@ async function tsCreatePayRuns(){
     var sr=emp.sat_rate?parseFloat(emp.sat_rate):(br*1.5);
     var ur=emp.sun_rate?parseFloat(emp.sun_rate):(br*2);
 
-    // Per-sleepover active minutes array for computePay
-    var perShiftMins=included.filter(function(s){return s.shiftKind==='sleepover';}).map(function(s){return s.activeMins||0;});
+    // Sleepovers use the same model as manual pay runs: per shift, block-resolved
+    // flat + active hours at the ordinary rate of the day the active segment
+    // falls on — not computePay's 1.5x overtime model.
+    var sleepPay=tsComputeSleepoverPay(included, emp);
+    var perShiftMins=sleepPay.perShift.map(function(ps){return Math.round(ps.activeHrs*60);});
 
-    // computePay prices sleepovers as shifts × one flat rate; pass the average
-    // of the per-shift block-resolved flats so the total equals the exact sum.
-    var sleepFlat2=tsSleepoverFlatSum(included, emp);
-    var sleepoverFlatRate=sleepFlat2.count>0?sleepFlat2.sum/sleepFlat2.count:resolveSleepoverFlatRate(emp);
-
-    var p=computePay({
-      baseRate:br,satRate:sr,sunRate:ur,
-      wdHrs:tot.wd,satHrs:tot.sat,sunHrs:tot.sun,
-      holHrs:tot.ph,holRate:br*2.25,
-      sleepShifts:tot.sleep,sleepActiveMins:0,sleepPerShiftMins:perShiftMins,
-      sleepoverFlatRate:sleepoverFlatRate,
-      paygOn:true,superOn:true,
-      periodEnd:er.periodEnd
-    });
+    var hourlyGross=+(tot.wd*br+tot.sat*sr+tot.sun*ur+tot.ph*(br*2.25)).toFixed(2);
+    var gross=+(hourlyGross+sleepPay.total).toFixed(2);
+    var annualEq=gross*26;
+    var tax=+(paygCalc(annualEq)/26).toFixed(2);
+    var sup=+(gross*getSuperRate(er.periodEnd||tod())).toFixed(2);
+    var p={gross:gross,tax:tax,sup:sup,net:+(gross-tax).toFixed(2)};
 
     // Build day_breakdown — one entry per included shift + sleepover_meta + import_meta
     var dtLabelMap={'PH':'holiday','Sat':'saturday','Sun':'sunday','Wkday':'weekday'};
     var dayBreakdown=included.map(function(s){
       var dtObj=tsDayType(s.date);
       var isSleep=s.shiftKind==='sleepover';
-      return{
+      var blockName=s.shiftTypeId?(S.scheduleBlocks||[]).reduce(function(a,t){return t.id===s.shiftTypeId?t.name:a;},''):'';
+      var row={
         date:s.date,
         dow:tsDowLabel(s.date),
         type:dtLabelMap[dtObj.label]||'weekday',
         worked:true,
-        hrs:isSleep?0:+(s.duration||0),
+        hrs:+(s.duration||0),
         startTime:s['in']||'',
         endTime:s.out||'',
         participant:s.job||'',
-        shiftTypeName:s.shiftTypeId?(S.scheduleBlocks||[]).reduce(function(a,t){return t.id===s.shiftTypeId?t.name:a;},''):'',
-        shift_label:s.shiftTypeId?(S.scheduleBlocks||[]).reduce(function(a,t){return t.id===s.shiftTypeId?t.name:a;},''):null,
+        shiftTypeName:blockName,
+        shift_label:blockName||null,
         block_id:s.shiftTypeId||null,
+        shift_kind:s.shiftKind||null,
         isSleep:isSleep
       };
+      if(isSleep){
+        // Attach the flat/active split so genPayslip renders the two lines
+        // (inactive flat + active @ ordinary day rate) exactly like manual runs.
+        var ps=sleepPay.perShift.find(function(x){return x.shift===s;});
+        if(ps){
+          row.pay_amt=ps.payAmt;
+          row.flat_amt=ps.flatAmt;
+          row.active_hrs=ps.activeHrs;
+          row.active_rate=ps.activeRate;
+          row.active_date=ps.activeDate;
+          row.active_type=ps.activeType;
+        }
+      }
+      return row;
     });
 
     if(tot.sleep>0){
