@@ -1053,9 +1053,12 @@ async function loadAll(){
     var r5=await sb2.from('participants').select('*').order('name',{ascending:true});
     S.participants=r5.error?[]:r5.data||[];
     S.participants.forEach(migrateLegacyPlan);
-    // shift_types and timesheet_name_map — graceful degradation if Step 0 SQL not yet run
-    try{var stRes=await sb2.from('shift_types').select('*').order('created_at',{ascending:true});if(stRes.error){S.shiftTypes=[];console.warn('[loadAll] shift_types:',stRes.error.message);}else{S.shiftTypes=stRes.data||[];}}catch(e){S.shiftTypes=[];console.warn('[loadAll] shift_types load error:',e);}
-    try{var nmRes=await sb2.from('timesheet_name_map').select('*').order('created_at',{ascending:true});if(nmRes.error){S.tsNameMap=[];console.warn('[loadAll] timesheet_name_map:',nmRes.error.message);}else{S.tsNameMap=nmRes.data||[];}}catch(e){S.tsNameMap=[];console.warn('[loadAll] timesheet_name_map load error:',e);}
+    // shift_types and timesheet_name_map — graceful degradation if Step 0 SQL not yet run.
+    // Track whether the table itself is missing (vs merely empty) so the import UI
+    // can point the operator at the Step 0 SQL instead of silently showing nothing.
+    S._shiftTypesTableMissing=false;S._nameMapTableMissing=false;
+    try{var stRes=await sb2.from('shift_types').select('*').order('created_at',{ascending:true});if(stRes.error){S.shiftTypes=[];if(tsTableMissing(stRes.error))S._shiftTypesTableMissing=true;console.warn('[loadAll] shift_types:',stRes.error.message);}else{S.shiftTypes=stRes.data||[];}}catch(e){S.shiftTypes=[];console.warn('[loadAll] shift_types load error:',e);}
+    try{var nmRes=await sb2.from('timesheet_name_map').select('*').order('created_at',{ascending:true});if(nmRes.error){S.tsNameMap=[];if(tsTableMissing(nmRes.error))S._nameMapTableMissing=true;console.warn('[loadAll] timesheet_name_map:',nmRes.error.message);}else{S.tsNameMap=nmRes.data||[];}}catch(e){S.tsNameMap=[];console.warn('[loadAll] timesheet_name_map load error:',e);}
     setSync('ok');
     eid('errBox').style.display='none';
     renderDash();
@@ -3652,6 +3655,11 @@ function renderShiftTypes(participantId){
   var body=eid('pt-shift-types-body');
   if(!body)return;
   var addBtn=eid('pt-add-shift-type-btn');
+  if(S._shiftTypesTableMissing){
+    body.innerHTML='<div style="background:rgba(251,191,36,.08);border:1px solid rgba(251,191,36,.3);border-radius:var(--r);padding:10px 12px;font-size:12px;color:#f59e0b">&#9888; '+TS_SETUP_HINT+'</div>';
+    if(addBtn){addBtn.disabled=true;addBtn.style.opacity='0.5';}
+    return;
+  }
   if(!participantId){
     body.innerHTML='<div style="color:var(--text3);font-size:12px;padding:8px 0">Save the participant first, then add shift types.</div>';
     if(addBtn){addBtn.disabled=true;addBtn.style.opacity='0.5';}
@@ -3904,6 +3912,23 @@ function ctParsePageShifts(items, periodStart, periodEnd){
 
 // Parse a single Connecteam PDF File object.
 // Returns {fileName, employeeName, periodStart, periodEnd, rawShifts:[], error:null}
+// Scan a page's text for a date range in the report header, e.g.
+// "06/07/2026 - 19/07/2026" or "06-07-2026 – 19-07-2026". Returns
+// {start,end} as 'YYYY-MM-DD' or null. Local-time construction only.
+function ctExtractHeaderPeriod(items){
+  var text=items.map(function(it){return it.str;}).join(' ');
+  var re=/(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})/g;
+  var found=[],m;
+  while((m=re.exec(text))!==null){
+    var dd=parseInt(m[1],10),mm=parseInt(m[2],10),yy=parseInt(m[3],10);
+    if(mm<1||mm>12||dd<1||dd>31)continue;
+    found.push(yy+'-'+String(mm).padStart(2,'0')+'-'+String(dd).padStart(2,'0'));
+    if(found.length>=2)break;
+  }
+  if(found.length>=2)return{start:found[0],end:found[1]};
+  return null;
+}
+
 async function ctParsePDF(file){
   var result={fileName:file.name,employeeName:null,periodStart:null,periodEnd:null,rawShifts:[],error:null};
 
@@ -3916,24 +3941,43 @@ async function ctParsePDF(file){
   for(var i=0;i<parts.length-1;i++){
     if(DMYRE.test(parts[i])&&DMYRE.test(parts[i+1])){dateIdx=i;break;}
   }
-  if(dateIdx<1){result.error='Could not parse period from filename';return result;}
-  result.employeeName=parts.slice(0,dateIdx).join(' ');
-  result.periodStart=ctParseDMY(parts[dateIdx]);
-  result.periodEnd=ctParseDMY(parts[dateIdx+1]);
-  if(!result.periodStart||!result.periodEnd){result.error='Invalid date in filename';return result;}
+  if(dateIdx>=1){
+    result.employeeName=parts.slice(0,dateIdx).join(' ');
+    result.periodStart=ctParseDMY(parts[dateIdx]);
+    result.periodEnd=ctParseDMY(parts[dateIdx+1]);
+    if(!result.periodStart||!result.periodEnd){result.periodStart=null;result.periodEnd=null;}
+  }
 
   if(typeof pdfjsLib==='undefined'){result.error='PDF.js library not loaded';return result;}
 
   try{
     var ab=await file.arrayBuffer();
     var pdf=await pdfjsLib.getDocument({data:new Uint8Array(ab)}).promise;
-    var allShifts=[];
+
+    // Cache each page's text content so we can peek at the header before
+    // parsing shifts (period must be known first for day→date resolution).
+    var pageContents=[];
     for(var pg=1;pg<=pdf.numPages;pg++){
       var page=await pdf.getPage(pg);
-      var content=await page.getTextContent();
-      var pageShifts=ctParsePageShifts(content.items,result.periodStart,result.periodEnd);
-      allShifts=allShifts.concat(pageShifts);
+      pageContents.push((await page.getTextContent()).items);
     }
+
+    // Filename didn't yield a period → fall back to the header date line.
+    if(!result.periodStart||!result.periodEnd){
+      for(var h=0;h<pageContents.length&&!result.periodStart;h++){
+        var hp=ctExtractHeaderPeriod(pageContents[h]);
+        if(hp){result.periodStart=hp.start;result.periodEnd=hp.end;}
+      }
+    }
+    if(!result.periodStart||!result.periodEnd){
+      result.error='Could not parse pay period from filename or PDF header';
+      return result;
+    }
+
+    var allShifts=[];
+    pageContents.forEach(function(items){
+      allShifts=allShifts.concat(ctParsePageShifts(items,result.periodStart,result.periodEnd));
+    });
     result.rawShifts=allShifts;
     if(allShifts.length===0)result.error='No shifts found — check PDF format';
   }catch(e){
@@ -6510,12 +6554,24 @@ var _tsEnriched = [];     // live enriched results for stage 2/3
 var _tsStage = 1;
 var _tsNewSTContext = null; // {erIdx, shiftIdx} for inline shift-type creator
 
+// True when a Supabase error indicates the table itself doesn't exist
+// (vs. a permissions / column / transient error). Covers PostgREST's
+// "Could not find the table ... in the schema cache" and Postgres 42P01.
+function tsTableMissing(err){
+  if(!err)return false;
+  var m=(err.message||'')+' '+(err.details||'')+' '+(err.code||'');
+  return /does not exist|could not find the table|schema cache|42P01|PGRST205/i.test(m);
+}
+
+// Shared operator hint pointing at the Step 0 schema.
+var TS_SETUP_HINT='Timesheet import needs setup — run the Step 0 SQL (shift_types + timesheet_name_map tables) in Supabase.';
+
 function openTsImport(){
   if(typeof pdfjsLib==='undefined'){
     showToast('PDF.js not loaded — check internet connection','err'); return;
   }
-  if(!(S.shiftTypes&&S.tsNameMap)){
-    showToast('Run the Step 0 SQL in Supabase first','err'); return;
+  if(S._shiftTypesTableMissing||S._nameMapTableMissing){
+    showToast(TS_SETUP_HINT,'err'); return;
   }
   _tsEnriched=[];_tsStage=1;_tsNewSTContext=null;
   eid('ts-stage-1').style.display='';
@@ -7047,7 +7103,8 @@ function renderTsStage3(){
 }
 
 function tsDowLabel(dateStr){
-  var d=new Date(dateStr+'T12:00:00');
+  var p=dateStr.split('-');
+  var d=new Date(parseInt(p[0]),parseInt(p[1])-1,parseInt(p[2]));
   return ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][d.getDay()];
 }
 
@@ -7060,6 +7117,7 @@ async function tsCreatePayRuns(){
   for(var i=0;i<_tsEnriched.length;i++){
     var er=_tsEnriched[i];
     if(!er.empMatch||!er.empMatch.employee_id||er.empMatch.status==='ignored')continue;
+    if(er.empMatch.dupError)continue; // duplicate export — operator must resolve
     if(er.error&&!er.shifts.length)continue;
 
     var emp=(S.emps||[]).find(function(e){return e.id===er.empMatch.employee_id;});
@@ -7134,9 +7192,8 @@ async function tsCreatePayRuns(){
     dayBreakdown.push({
       type:'import_meta',
       source:'connecteam',
-      periodStart:er.periodStart,
-      periodEnd:er.periodEnd,
-      importedAt:new Date().toISOString()
+      file:er.fileName||'',
+      imported_at:new Date().toISOString()
     });
 
     var insertRow={
@@ -7167,7 +7224,8 @@ async function tsCreatePayRuns(){
 
     // Pending cash book entry — amount_out:0 until Wise transfer matches
     var pendingRef='PAYROLL-PENDING-'+run.id.slice(0,8);
-    var month=MONTHS[new Date(er.periodEnd).getMonth()];
+    var peParts=er.periodEnd.split('-');
+    var month=MONTHS[parseInt(peParts[1],10)-1];
     var txRes=await sb2.from('transactions').insert({
       month:month,date:er.periodEnd,
       description:'Payroll - '+emp.name+' [pending]',
