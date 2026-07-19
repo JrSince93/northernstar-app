@@ -1135,6 +1135,7 @@ async function loadAll(){
     S.participants=r5.error?[]:r5.data||[];
     S.participants.forEach(migrateLegacyPlan);
     S.participants.forEach(migrateSilRates2026);
+    migrateSplitCoreLines();
     // shift_types and timesheet_name_map — graceful degradation if Step 0 SQL not yet run.
     // Track whether the table itself is missing (vs merely empty) so the import UI
     // can point the operator at the Step 0 SQL instead of silently showing nothing.
@@ -2626,9 +2627,17 @@ function attributeReceiptsToLines(pt, lines){
     byLineId[lines[0].id] = receipts;
     return { byLineId: byLineId, unattributed: [] };
   }
-  var matchers = lines.map(function(bl){
-    return { id: bl.id, prefix: BL_INV_PREFIXES[bl.rate_card||'core'] || 'INV-' };
-  }).sort(function(a,b){ return b.prefix.length - a.prefix.length; });
+  var matchers = [];
+  lines.forEach(function(bl){
+    // A merged core_combined line owns BOTH prefix families: new invoices are
+    // INV-CF-, but historical community (0125) invoices were INV-COM- and must
+    // attribute to the merged line rather than landing in Unattributed.
+    var prefixes = bl.rate_card==='core_combined'
+      ? ['INV-CF-','INV-COM-']
+      : [BL_INV_PREFIXES[bl.rate_card||'core'] || 'INV-'];
+    prefixes.forEach(function(p){ matchers.push({ id: bl.id, prefix: p }); });
+  });
+  matchers.sort(function(a,b){ return b.prefix.length - a.prefix.length; });
   var unattributed = [];
   receipts.forEach(function(r){
     var ref = (r.reference||'').toUpperCase();
@@ -5665,7 +5674,7 @@ var RATE_CARDS = {
   ],
   custom: []
 };
-var BL_CARD_LABELS = {core:'Core (0107)',core_combined:'Core Flexible — Combined (0107+0125)',sil:'SIL (0138)',employment:'Employment (0102)',community:'Community (0125)',custom:'Custom'};
+var BL_CARD_LABELS = {core:'Core (0107)',core_combined:'Core-CP/ASC (0125/0107)',sil:'SIL (0138)',employment:'Employment (0102)',community:'Community (0125)',custom:'Custom'};
 var BL_INV_PREFIXES = {sil:'INV-SIL-',core:'INV-CF-',core_combined:'INV-CF-',employment:'INV-EMP-',community:'INV-COM-',custom:'INV-'};
 
 // ── SIL 2026-27 rate refresh ────────────────────────────────────────────────
@@ -5693,6 +5702,38 @@ function migrateSilRates2026(pt) {
       var slDefault = (RATE_CARDS.sil||[]).find(function(x){ return x.day_type==='sleepover'; });
       if(slDefault) bl.rates.push(JSON.parse(JSON.stringify(slDefault)));
     }
+  });
+}
+
+// ── Split Core merge ─────────────────────────────────────────────────────────
+// One-time (idempotent) merge of a participant's separate 'core' (0107) and
+// 'community' (0125) budget lines into a single 'core_combined' line. Only
+// fires when both are active AND share plan_start, plan_end and
+// funding_amount — that equality is what proves they're one pool of money
+// entered twice, not two genuinely separate budgets. Keeps the core line's id
+// so tracker expand-state keys and stored references stay stable; persists
+// through the normal budget_lines jsonb save path.
+function migrateSplitCoreLines() {
+  (S.participants||[]).forEach(function(pt){
+    var bls = pt.budget_lines;
+    if(!Array.isArray(bls)) return;
+    var core = bls.find(function(b){ return b.active!==false && b.rate_card==='core'; });
+    var comm = bls.find(function(b){ return b.active!==false && b.rate_card==='community'; });
+    if(!core || !comm) return;
+    if(core.plan_start !== comm.plan_start || core.plan_end !== comm.plan_end
+       || +core.funding_amount !== +comm.funding_amount) return;
+
+    var merged = Object.assign({}, core, {
+      name: 'CORE-CP/ASC',
+      rate_card: 'core_combined',
+      rates: blRatesForCard('core_combined')
+    });
+    pt.budget_lines = bls.map(function(b){ return b.id===core.id ? merged : b; })
+                         .filter(function(b){ return b.id!==comm.id; });
+    sb2.from('participants').update({budget_lines: pt.budget_lines}).eq('id', pt.id).then(function(r){
+      if(r.error) console.warn('[migrateSplitCoreLines] persist failed for '+pt.name+':', r.error.message);
+    });
+    showToast('Merged Core 0107+0125 into one combined line for '+pt.name, 'ok');
   });
 }
 
@@ -6073,7 +6114,15 @@ function ndisInvLoadBudgetLines() {
   var bls = (pt && pt.budget_lines)||[];
   var active = bls.filter(function(bl){ return bl.active!==false; });
   eid('ndis-inv-bl').innerHTML = active.length
-    ? active.map(function(bl,i){ return '<option value="'+i+'">'+bl.name+' ('+BL_CARD_LABELS[bl.rate_card||'core']+')'+'</option>'; }).join('')
+    ? active.map(function(bl,i){
+        var lbl = BL_CARD_LABELS[bl.rate_card||'core']||'';
+        // Dedupe when the card label already starts with the line's name
+        // (e.g. line "CORE-CP/ASC" + card "Core-CP/ASC (0125/0107)") so the
+        // option doesn't read doubled-up.
+        var txt = (bl.name && lbl.toLowerCase().indexOf(bl.name.toLowerCase())===0)
+          ? lbl : bl.name+' ('+lbl+')';
+        return '<option value="'+i+'">'+txt+'</option>';
+      }).join('')
     : '<option value="">No budget lines — add one on the participant card</option>';
   // Populate sleepover section from participant schedule blocks
   ndisInvPopulateSleepover(pt);
@@ -6138,19 +6187,9 @@ function ndisInvApplyBudgetLineDefaults() {
       +'<div class="field"><label>Public holiday hrs (total)</label><input type="number" id="ii-ph" value="0" min="0" step="0.5"></div>'
       +'</div>';
   } else if(card==='core_combined') {
-    sec = '<div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--blue);margin-bottom:6px">Assistance with Daily Life (0107)</div>'
-      +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:12px">'
-      +'<div class="field"><label>Weekday hrs (total)</label><input type="number" id="ii-dl-wkd" value="0" min="0" step="0.5"></div>'
-      +'<div class="field"><label>Saturday hrs (total)</label><input type="number" id="ii-dl-sat" value="0" min="0" step="0.5"></div>'
-      +'<div class="field"><label>Sunday hrs (total)</label><input type="number" id="ii-dl-sun" value="0" min="0" step="0.5"></div>'
-      +'<div class="field"><label>Public holiday hrs (total)</label><input type="number" id="ii-dl-ph" value="0" min="0" step="0.5"></div>'
-      +'</div>'
-      +'<div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--purple);margin-bottom:6px">Community Participation (0125)</div>'
-      +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">'
-      +'<div class="field"><label>Weekday hrs (total)</label><input type="number" id="ii-cp-wkd" value="0" min="0" step="0.5"></div>'
-      +'<div class="field"><label>Saturday hrs (total)</label><input type="number" id="ii-cp-sat" value="0" min="0" step="0.5"></div>'
-      +'<div class="field"><label>Sunday hrs (total)</label><input type="number" id="ii-cp-sun" value="0" min="0" step="0.5"></div>'
-      +'<div class="field"><label>Public holiday hrs (total)</label><input type="number" id="ii-cp-ph" value="0" min="0" step="0.5"></div>'
+    sec = '<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">'
+      +'<div class="field"><label style="color:var(--blue)">Hours per day — 0107 Daily Life</label><input type="number" id="ii-hrs-0107" value="8" min="0" step="0.5"></div>'
+      +'<div class="field"><label style="color:var(--purple)">Hours per day — 0125 Community</label><input type="number" id="ii-hrs-0125" value="0" min="0" step="0.5"></div>'
       +'</div>';
   } else if(card==='employment') {
     sec = '<div class="field"><label>Total hours (period)</label><input type="number" id="ii-hrs" value="0" min="0" step="0.5"></div>';
@@ -6163,7 +6202,10 @@ function ndisInvApplyBudgetLineDefaults() {
     return (r.group&&BL_GROUP_LABELS[r.group]?BL_GROUP_LABELS[r.group]+' ':'')+r.day_type+' $'+Number(r.rate).toFixed(2)+'/hr';
   }).join(' &nbsp;&#8226;&nbsp; ');
   var mgmtLabel = bl.management==='plan'?'Plan-managed':bl.management==='self'?'Self-managed':'Agency-managed';
-  eid('ndis-inv-info').innerHTML = '<b>'+bl.name+' &mdash; '+BL_CARD_LABELS[card]+'</b> &nbsp;|&nbsp; '+mgmtLabel+'<br><span style="font-size:10px">'+rateLines+'</span><br><span style="color:var(--gold)">&#9888; Leave fields at 0 to skip those line items</span>';
+  var skipHint = card==='core_combined'
+    ? '&#9888; Each group is billed per day across the service period at that day&rsquo;s 0107/0125 rate. Set a group&rsquo;s hours to 0 to leave it off the invoice.'
+    : '&#9888; Leave fields at 0 to skip those line items';
+  eid('ndis-inv-info').innerHTML = '<b>'+bl.name+' &mdash; '+BL_CARD_LABELS[card]+'</b> &nbsp;|&nbsp; '+mgmtLabel+'<br><span style="font-size:10px">'+rateLines+'</span><br><span style="color:var(--gold)">'+skipHint+'</span>';
 }
 
 // ── Build invoice line items from budget line + user inputs ──────────────────
@@ -6210,22 +6252,29 @@ function _buildInvLines(bl, periodStart, periodEnd, travelKm, travelMin, opts) {
       cur4.setDate(cur4.getDate()+1);
     }
   } else if(card==='core_combined') {
-    // One invoice, sectioned per registration group. Header pseudo-lines
-    // (amt 0, header:true) render as full-width section dividers on the PDF
-    // and are filtered out of the myplace CSV (plan-managed → PDF only anyway).
+    // One invoice, sectioned per registration group. Each group bills its own
+    // "hours per day" across the service period, day-by-day like the plain
+    // core card (weekday/Sat/Sun/public-holiday resolved per date). Header
+    // pseudo-lines (amt 0, header:true) render as full-width PDF section
+    // dividers and are filtered out of the myplace CSV.
     var ccGroups = [
-      {group:'daily_life', title:'Assistance with Daily Life (0107)', ids:{weekday:'ii-dl-wkd',saturday:'ii-dl-sat',sunday:'ii-dl-sun',public_holiday:'ii-dl-ph'}},
-      {group:'community',  title:'Community Participation (0125)',    ids:{weekday:'ii-cp-wkd',saturday:'ii-cp-sat',sunday:'ii-cp-sun',public_holiday:'ii-cp-ph'}}
+      {group:'daily_life', title:'Assistance with Daily Life (0107)', hrs:parseFloat((eid('ii-hrs-0107')||{value:'0'}).value)||0},
+      {group:'community',  title:'Community Participation (0125)',    hrs:parseFloat((eid('ii-hrs-0125')||{value:'0'}).value)||0}
     ];
     ccGroups.forEach(function(g){
+      if(g.hrs<=0) return;
       var gLines = [];
-      Object.keys(g.ids).forEach(function(dt){
-        var hrs = parseFloat((eid(g.ids[dt])||{value:'0'}).value)||0;
-        if(hrs<=0) return;
-        var ri = blRateG(bl, g.group, dt);
-        if(!ri) return;
-        gLines.push({ date:svcRangeStr, day:'—', desc:ri.desc, code:ri.code, qty:hrs, rate:ri.rate, amt:+(hrs*ri.rate).toFixed(2) });
-      });
+      var curG=new Date(parseInt(ps[0]),parseInt(ps[1])-1,parseInt(ps[2]));
+      while(curG<=end4){
+        var dsG=fmtDate(curG); var dowG=curG.getDay(); var isHolG=!!VIC_HOLIDAYS[dsG];
+        var dtG=isHolG?'public_holiday':dowG===6?'saturday':dowG===0?'sunday':'weekday';
+        var riG=blRateG(bl,g.group,dtG)||blRateG(bl,g.group,'weekday');
+        if(riG){
+          var dateStrG=String(curG.getDate()).padStart(2,'0')+'/'+String(curG.getMonth()+1).padStart(2,'0')+'/'+curG.getFullYear();
+          gLines.push({ date:dateStrG, day:DNShort[dowG], desc:riG.desc+(isHolG?' ('+VIC_HOLIDAYS[dsG]+')':''), code:riG.code, qty:g.hrs, rate:riG.rate, amt:+(g.hrs*riG.rate).toFixed(2) });
+        }
+        curG.setDate(curG.getDate()+1);
+      }
       if(gLines.length){
         lines.push({ header:true, date:svcRangeStr, day:'', desc:g.title, code:'', qty:0, rate:0, amt:0 });
         lines.push.apply(lines, gLines);
