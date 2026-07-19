@@ -675,11 +675,11 @@ input[type=number]{text-align:right;font-variant-numeric:tabular-nums}
         </div>
         <div id="pt-budget-lines"></div>
 
-        <!-- Budget tracker fields — remain for Reports tab compatibility -->
+        <!-- Budget tracker fields — legacy fallback only -->
         <details style="margin-top:10px">
           <summary style="font-size:10px;font-weight:700;text-transform:uppercase;color:var(--text3);cursor:pointer;letter-spacing:.04em;user-select:none">Budget tracker (Reports tab)</summary>
           <div style="margin-top:8px;padding:10px;background:var(--bg4);border:1px solid var(--border);border-radius:var(--r)">
-            <div style="font-size:10px;color:var(--text3);margin-bottom:8px">These fields are read by the Reports tab budget tracker. They are auto-populated from the first active budget line above, but can be overridden here.</div>
+            <div style="font-size:10px;color:var(--text3);margin-bottom:8px">The Reports tab now tracks each budget line above separately (plan start/end + funding on the line itself; receipts matched by invoice-ref prefix). These fields are a legacy fallback used only when a participant has no budget lines — plus the takeover date, which still pro-rates the first quarter of every line.</div>
             <div class="form-row">
               <div class="field"><label>Plan start</label><input type="date" id="pt-plan-start" oninput="renderPtQuarterOverrides()"></div>
               <div class="field"><label>Plan end</label><input type="date" id="pt-plan-end" oninput="renderPtQuarterOverrides()"></div>
@@ -2460,7 +2460,7 @@ function findScheduleBudgetLine(pt){
   if(!Array.isArray(bls)) return null;
   return bls.find(function(bl){ return bl.active!==false && blFundingSchedule(bl).length>0; }) || null;
 }
-function computeFundingScheduleRowsForParticipant(pt, bl){
+function computeFundingScheduleRowsForParticipant(pt, bl, _receipts){
   var MON=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
   var sched = blFundingSchedule(bl);
   var periods = sched.map(function(p,i){
@@ -2468,7 +2468,7 @@ function computeFundingScheduleRowsForParticipant(pt, bl){
     return { idx:i, label:MON[parseInt(sd[1])-1]+' '+sd[0], start_iso:p.start, end_iso:p.end,
              fresh:+p.amount, is_takeover:false };
   });
-  var receipts = collectNDISReceiptsForParticipant(pt);
+  var receipts = _receipts !== undefined ? _receipts : collectNDISReceiptsForParticipant(pt);
   var placed = bucketReceiptsByQuarter(receipts, periods);
   var ov = bl.funding_opening_balance_override || null;
   var ovStart = ov && ov.period_start ? ov.period_start : null;
@@ -2533,14 +2533,16 @@ function computeFundingScheduleRowsForParticipant(pt, bl){
 // Compute per-quarter rows for a single participant. Returns the rows array
 // plus aggregates (totalFresh, totalReceived, ytdFresh, ytdReceived, currentIdx).
 // Pure function — no DOM. Used by both per-card rendering and the aggregated summary.
-function computeNDISBudgetRowsForParticipant(pt, plan) {
+function computeNDISBudgetRowsForParticipant(pt, plan, _receipts, _schedBl) {
   // Monthly funding schedule mode takes over when any active budget line
   // carries funding_schedule rows; the quarterly path below is untouched
-  // for everyone else.
-  var schedBl = findScheduleBudgetLine(pt);
-  if(schedBl) return computeFundingScheduleRowsForParticipant(pt, schedBl);
+  // for everyone else. Callers doing per-budget-line tracking pass _schedBl
+  // explicitly (a line, or null to force the quarterly path) and a receipts
+  // subset already attributed to that line.
+  var schedBl = _schedBl !== undefined ? _schedBl : findScheduleBudgetLine(pt);
+  if(schedBl) return computeFundingScheduleRowsForParticipant(pt, schedBl, _receipts);
   var quarters = buildNDISQuartersForPlan(plan);
-  var receipts = collectNDISReceiptsForParticipant(pt);
+  var receipts = _receipts !== undefined ? _receipts : collectNDISReceiptsForParticipant(pt);
   var placed = bucketReceiptsByQuarter(receipts, quarters);
   var buckets = placed.buckets;
 
@@ -2597,8 +2599,62 @@ function computeNDISBudgetRowsForParticipant(pt, plan) {
 // Build the HTML for a single participant's collapsible budget tracker card.
 // Card defaults to collapsed; user clicks header (toggleNDISCard) to expand.
 // Per-quarter expand state is keyed by ptId+":"+idx in _ndisBudgetOpen.
-function renderNDISBudgetParticipantCard(pt, plan, computed) {
-  var ptId = pt.id;
+// \u2500\u2500 Per-budget-line tracking \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+// A budget line is tracked when it's active and either has the quarterly
+// fields (plan_start + plan_end + funding_amount) or funding_schedule rows.
+function trackedLinesForParticipant(pt){
+  var bls = pt && pt.budget_lines;
+  if(!Array.isArray(bls)) return [];
+  return bls.filter(function(bl){
+    if(bl.active === false) return false;
+    if(blFundingSchedule(bl).length > 0) return true;
+    return !!(bl.plan_start && bl.plan_end && +bl.funding_amount > 0);
+  });
+}
+
+// Attribute each receipt to a budget line by invoice-ref prefix (INV-SIL- \u2192
+// sil line, INV-CF- \u2192 core/core_combined, INV-EMP- \u2192 employment, INV-COM- \u2192
+// community). Longest prefix wins so the custom 'INV-' catch-all can't swallow
+// the specific ones. With a single tracked line every receipt goes to it \u2014
+// preserving the previous pooled behaviour exactly. Anything unmatched on a
+// multi-line participant lands in `unattributed` (shown, never counted).
+function attributeReceiptsToLines(pt, lines){
+  var receipts = collectNDISReceiptsForParticipant(pt);
+  var byLineId = {};
+  lines.forEach(function(bl){ byLineId[bl.id] = []; });
+  if(lines.length === 1){
+    byLineId[lines[0].id] = receipts;
+    return { byLineId: byLineId, unattributed: [] };
+  }
+  var matchers = lines.map(function(bl){
+    return { id: bl.id, prefix: BL_INV_PREFIXES[bl.rate_card||'core'] || 'INV-' };
+  }).sort(function(a,b){ return b.prefix.length - a.prefix.length; });
+  var unattributed = [];
+  receipts.forEach(function(r){
+    var ref = (r.reference||'').toUpperCase();
+    var hit = ref ? matchers.find(function(m){ return ref.indexOf(m.prefix) === 0; }) : null;
+    if(hit) byLineId[hit.id].push(r);
+    else unattributed.push(r);
+  });
+  return { byLineId: byLineId, unattributed: unattributed };
+}
+
+// Quarterly plan derived from a single budget line (multi-line participants).
+// Totals come from the LINE, not participant-level ndis_plan; the participant's
+// takeover date still pro-rates Q1 since it applies to the whole engagement.
+function blPlanFromLine(pt, bl){
+  var ov = pt && pt.ndis_plan || {};
+  return {
+    plan_start: bl.plan_start, plan_end: bl.plan_end,
+    total_funding: +bl.funding_amount || 0,
+    takeover_date: ov.takeover_date || null,
+    quarter_overrides: null, weekly_hours_target: null
+  };
+}
+
+// Renders ONE budget line's tracker section (header + banners + quarter/period
+// rows). keyPrefix scopes the expand/collapse keys per line: ptId+':'+blId.
+function renderNDISBudgetLineSection(pt, bl, plan, computed, keyPrefix) {
   var rows = computed.rows;
   var receipts = computed.receipts;
   var orphans = computed.orphans;
@@ -2619,8 +2675,20 @@ function renderNDISBudgetParticipantCard(pt, plan, computed) {
   var isSched = computed.mode === 'schedule';
   var subline = 'Plan ' + planStartDmy + ' \u2192 ' + planEndDmy
               + (weeklyHrs ? ' \u00B7 Target ' + weeklyHrs + ' hrs/week' : '')
-              + (takeoverDmy ? ' from ' + takeoverDmy : '')
-              + (isSched ? ' \u00B7 Monthly funding schedule ('+(computed.scheduleBl.name||'budget line')+')' : '');
+              + (takeoverDmy ? ' from ' + takeoverDmy : '');
+
+  var mgmtLabel = bl ? (bl.management==='plan'?'Plan-managed':bl.management==='self'?'Self-managed':'Agency-managed') : '';
+  var modeBadge = isSched
+    ? '<span style="background:rgba(188,140,255,.15);color:#bc8cff;font-size:9px;font-weight:700;padding:2px 7px;border-radius:10px;letter-spacing:.05em;text-transform:uppercase">Monthly schedule</span>'
+    : '<span style="background:rgba(76,194,224,.12);color:var(--blue);font-size:9px;font-weight:700;padding:2px 7px;border-radius:10px;letter-spacing:.05em;text-transform:uppercase">Quarterly</span>';
+  var sectionHeader = '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin:2px 0 10px;padding-top:4px">'
+    + '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">'
+      + '<span style="font-size:13px;font-weight:700">'+(bl ? bl.name + ' <span style="color:var(--text3);font-weight:500">\u00B7 '+(BL_CARD_LABELS[bl.rate_card]||bl.rate_card)+'</span>' : 'Plan (legacy fields)')+'</span>'
+      + (bl ? '<span class="badge badge-gray">'+mgmtLabel+'</span>' : '')
+      + modeBadge
+    + '</div>'
+    + '<div style="font-size:10px;color:var(--text3)">'+subline+'</div>'
+  + '</div>';
 
   // Orphan banner
   var orphanBanner = '';
@@ -2647,7 +2715,7 @@ function renderNDISBudgetParticipantCard(pt, plan, computed) {
   var carryLabel = isSched ? 'Remaining' : 'Rollover';
   rows.forEach(function(row, idx){
     var q = row.q, s = row.status;
-    var key = ptId + ':' + idx;
+    var key = keyPrefix + ':' + idx;
     var open = !!_ndisBudgetOpen[key];
     if(row.untracked){
       // Pre-takeover period: prior provider's spend, not tracked by NSS.
@@ -2736,12 +2804,49 @@ function renderNDISBudgetParticipantCard(pt, plan, computed) {
     quartersHtml += '</div>';
   });
 
-  // Header KPI strip for this participant (per-card)
-  var perCardSummary = '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:14px">'
-    + '<div class="kpi"><div class="kpi-label">Plan funding</div><div class="kpi-val purple">'+fmt(totalFresh)+'</div><div class="td-muted" style="font-size:10px">over '+rows.length+' '+(isSched?'monthly period':'quarter')+(rows.length===1?'':'s')+'</div></div>'
+  // Per-line KPI strip
+  var perLineSummary = '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:14px">'
+    + '<div class="kpi"><div class="kpi-label">'+(bl?'Line funding':'Plan funding')+'</div><div class="kpi-val purple">'+fmt(totalFresh)+'</div><div class="td-muted" style="font-size:10px">over '+rows.length+' '+(isSched?'monthly period':'quarter')+(rows.length===1?'':'s')+'</div></div>'
     + '<div class="kpi"><div class="kpi-label">Received</div><div class="kpi-val green">'+fmt(totalReceived)+'</div><div class="td-muted" style="font-size:10px">'+receipts.length+' receipt'+(receipts.length===1?'':'s')+'</div></div>'
-    + '<div class="kpi"><div class="kpi-label">Plan progress</div><div class="kpi-val" style="color:'+ndisBudgetStatus(pctOverall).color+'">'+Math.round(pctOverall*100)+'%</div><div class="td-muted" style="font-size:10px">'+fmt(totalReceived)+' / '+fmt(totalFresh)+'</div></div>'
+    + '<div class="kpi"><div class="kpi-label">Progress</div><div class="kpi-val" style="color:'+ndisBudgetStatus(pctOverall).color+'">'+Math.round(pctOverall*100)+'%</div><div class="td-muted" style="font-size:10px">'+fmt(totalReceived)+' / '+fmt(totalFresh)+'</div></div>'
   + '</div>';
+
+  return '<div style="border-top:1px solid var(--hairline);margin-top:14px;padding-top:10px">'
+    + sectionHeader
+    + perLineSummary
+    + quartersHtml
+  + '</div>';
+}
+
+// Card shell: one collapsible card per participant, one section per tracked
+// budget line inside it, plus an unattributed-receipts warning block.
+// sections: [{bl, plan, computed, keyPrefix}]
+function renderNDISBudgetParticipantCard(pt, sections, unattributed) {
+  var ptId = pt.id;
+  var body = sections.map(function(sec){
+    return renderNDISBudgetLineSection(pt, sec.bl, sec.plan, sec.computed, sec.keyPrefix);
+  }).join('');
+
+  if(unattributed && unattributed.length){
+    var unTotal = unattributed.reduce(function(s,r){ return s + r.amount; }, 0);
+    body += '<div style="border-top:1px solid var(--hairline);margin-top:14px;padding-top:12px">'
+      + '<div style="background:rgba(210,153,34,.08);border:1px solid rgba(210,153,34,.25);border-radius:var(--r);padding:10px 14px;font-size:11px;color:var(--gold)">'
+      + '&#9888; <b>'+unattributed.length+' unattributed receipt'+(unattributed.length===1?'':'s')+' ('+fmt(unTotal)+')</b> — no invoice-ref prefix matches a tracked budget line. Not counted in any section above.'
+      + '<div style="margin-top:8px">'
+      + unattributed.map(function(r){
+          return '<div style="display:flex;justify-content:space-between;gap:10px;padding:3px 0;border-top:1px dashed rgba(210,153,34,.2);color:var(--text2)">'
+            + '<span class="td-muted">'+r.date+'</span>'
+            + '<span style="font-family:monospace;color:#bc8cff">'+(r.reference||'&mdash;')+'</span>'
+            + '<span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+r.description+'</span>'
+            + '<span class="td-green" style="font-weight:600">'+fmt(r.amount)+'</span></div>';
+        }).join('')
+      + '</div></div></div>';
+  }
+
+  var lineCount = sections.filter(function(s){ return s.bl; }).length;
+  var subline = lineCount > 0
+    ? lineCount + ' budget line' + (lineCount===1?'':'s') + ' tracked'
+    : 'Legacy plan fields';
 
   // Initial render state: read from _ndisCardOpen so a re-render (triggered
   // by a quarter toggle) restores the user's expanded card instead of
@@ -2759,8 +2864,7 @@ function renderNDISBudgetParticipantCard(pt, plan, computed) {
       + '<div style="font-size:11px;color:var(--text3)">'+subline+'</div>'
     + '</div>'
     + '<div class="ndis-card-body" style="display:'+bodyDisplay+'">'
-      + perCardSummary
-      + quartersHtml
+      + body
     + '</div>'
   + '</div>';
 }
@@ -2795,7 +2899,8 @@ function renderNDISBudget() {
     return;
   }
 
-  // Compute per-participant data and aggregate the four summary KPIs.
+  // Compute per-participant sections (one per tracked budget line) and
+  // aggregate the four summary KPIs across every section — no double counting.
   var aggTotalFresh = 0;
   var aggTotalReceived = 0;
   var aggYtdFresh = 0;
@@ -2807,20 +2912,44 @@ function renderNDISBudget() {
 
   var cardsHtml = '';
   tracked.forEach(function(pt){
-    var plan = getPlanForParticipant(pt);
-    var c = computeNDISBudgetRowsForParticipant(pt, plan);
-    aggTotalFresh    += c.totalFresh;
-    aggTotalReceived += c.totalReceived;
-    aggYtdFresh      += c.ytdFresh;
-    aggYtdReceived   += c.ytdReceived;
-    aggReceiptCount  += c.receipts.length;
-    if(c.currentIdx >= 0) {
-      anyCurrent = true;
-      var cur = c.rows[c.currentIdx];
-      aggCurrentFresh    += cur.q.fresh;
-      aggCurrentReceived += cur.received;
+    var lines = trackedLinesForParticipant(pt);
+    var sections = [];
+    var unattributed = [];
+    if(lines.length <= 1){
+      // Zero lines (legacy ndis_plan fields) or a single line: identical to
+      // the previous single-budget behaviour — pooled receipts, plan from
+      // getPlanForParticipant, schedule takeover if the line has one.
+      var plan1 = getPlanForParticipant(pt);
+      var c1 = computeNDISBudgetRowsForParticipant(pt, plan1);
+      sections.push({ bl: lines[0]||null, plan: plan1, computed: c1,
+                      keyPrefix: pt.id + ':' + (lines[0] ? lines[0].id : 'legacy') });
+    } else {
+      var att = attributeReceiptsToLines(pt, lines);
+      unattributed = att.unattributed;
+      lines.forEach(function(bl){
+        var recs = att.byLineId[bl.id] || [];
+        var schedBl = blFundingSchedule(bl).length > 0 ? bl : null;
+        var planL = blPlanFromLine(pt, bl);
+        var cL = computeNDISBudgetRowsForParticipant(pt, planL, recs, schedBl);
+        sections.push({ bl: bl, plan: planL, computed: cL, keyPrefix: pt.id + ':' + bl.id });
+      });
     }
-    cardsHtml += renderNDISBudgetParticipantCard(pt, plan, c);
+    sections.forEach(function(sec){
+      var c = sec.computed;
+      aggTotalFresh    += c.totalFresh;
+      aggTotalReceived += c.totalReceived;
+      aggYtdFresh      += c.ytdFresh;
+      aggYtdReceived   += c.ytdReceived;
+      aggReceiptCount  += c.receipts.length;
+      if(c.currentIdx >= 0) {
+        anyCurrent = true;
+        var cur = c.rows[c.currentIdx];
+        aggCurrentFresh    += cur.q.fresh;
+        aggCurrentReceived += cur.received;
+      }
+    });
+    aggReceiptCount += unattributed.length;
+    cardsHtml += renderNDISBudgetParticipantCard(pt, sections, unattributed);
   });
 
   var ytdPct     = aggYtdFresh > 0     ? aggYtdReceived / aggYtdFresh         : 0;
@@ -5518,10 +5647,26 @@ var RATE_CARDS = {
     { day_type:'public_holiday', code:'04_102_0125_6_1', desc:'Community Participation – Public Holiday', rate:156.03 },
     { day_type:'travel_km',      code:'04_210_0125_6_1', desc:'Provider Travel – Non-labour ({km}km)',    rate:0.99 }
   ],
+  // One plan-managed invoice covering 0107 daily activities + 0125 community
+  // participation + transport, all drawn from the same Core Flexible budget.
+  // NDIS-compliant: one invoice may span registration groups as long as each
+  // line item carries its own support item number. `group` distinguishes the
+  // sections for the entry UI and the invoice builder (PAPL 2025-26 v1.1).
+  core_combined: [
+    { group:'daily_life', day_type:'weekday',        code:'01_011_0107_1_1', desc:'Assistance with Daily Life – Weekday',        rate:70.23 },
+    { group:'daily_life', day_type:'saturday',       code:'01_013_0107_1_1', desc:'Assistance with Daily Life – Saturday',       rate:98.83 },
+    { group:'daily_life', day_type:'sunday',         code:'01_014_0107_1_1', desc:'Assistance with Daily Life – Sunday',         rate:127.43 },
+    { group:'daily_life', day_type:'public_holiday', code:'01_012_0107_1_1', desc:'Assistance with Daily Life – Public Holiday', rate:156.03 },
+    { group:'community',  day_type:'weekday',        code:'04_104_0125_6_1', desc:'Community Participation – Weekday',           rate:70.23 },
+    { group:'community',  day_type:'saturday',       code:'04_105_0125_6_1', desc:'Community Participation – Saturday',          rate:98.83 },
+    { group:'community',  day_type:'sunday',         code:'04_106_0125_6_1', desc:'Community Participation – Sunday',            rate:127.43 },
+    { group:'community',  day_type:'public_holiday', code:'04_102_0125_6_1', desc:'Community Participation – Public Holiday',    rate:156.03 },
+    { group:'travel',     day_type:'travel_km',      code:'01_799_0107_1_1', desc:'Provider Travel – Non-labour ({km}km)',       rate:0.99 }
+  ],
   custom: []
 };
-var BL_CARD_LABELS = {core:'Core (0107)',sil:'SIL (0138)',employment:'Employment (0102)',community:'Community (0125)',custom:'Custom'};
-var BL_INV_PREFIXES = {sil:'INV-SIL-',core:'INV-CF-',employment:'INV-EMP-',community:'INV-COM-',custom:'INV-'};
+var BL_CARD_LABELS = {core:'Core (0107)',core_combined:'Core Flexible — Combined (0107+0125)',sil:'SIL (0138)',employment:'Employment (0102)',community:'Community (0125)',custom:'Custom'};
+var BL_INV_PREFIXES = {sil:'INV-SIL-',core:'INV-CF-',core_combined:'INV-CF-',employment:'INV-EMP-',community:'INV-COM-',custom:'INV-'};
 
 // ── SIL 2026-27 rate refresh ────────────────────────────────────────────────
 // Budget lines snapshot RATE_CARDS at creation, so existing SIL lines carry the
@@ -5596,13 +5741,15 @@ function blRatesForCard(cardKey) {
   return RATE_CARDS[cardKey] ? JSON.parse(JSON.stringify(RATE_CARDS[cardKey])) : [];
 }
 
+var BL_GROUP_LABELS = {daily_life:'0107', community:'0125', travel:'travel'};
 function buildBlRateRowsHtml(rates) {
   return (rates||[]).map(function(r) {
-    return '<div class="bl-rate-row" data-daytype="'+r.day_type+'">'
+    var lbl = (r.group && BL_GROUP_LABELS[r.group] ? BL_GROUP_LABELS[r.group]+' · ' : '') + r.day_type;
+    return '<div class="bl-rate-row" data-daytype="'+r.day_type+'"'+(r.group?' data-group="'+r.group+'"':'')+'>'
       +'<div class="form-row" style="align-items:flex-end;gap:6px">'
       +'<div class="field" style="flex:2"><label style="font-size:9px">Code</label>'
       +'<input type="text" class="bl-rate-code" value="'+(r.code||'')+'" style="font-size:11px;padding:4px 6px;font-family:monospace"></div>'
-      +'<div class="field" style="flex:2"><label style="font-size:9px">'+r.day_type+'</label>'
+      +'<div class="field" style="flex:2"><label style="font-size:9px">'+lbl+'</label>'
       +'<input type="text" class="bl-rate-desc" value="'+(r.desc||'')+'" style="font-size:11px;padding:4px 6px"></div>'
       +'<div class="field" style="flex:1"><label style="font-size:9px">$/unit</label>'
       +'<input type="number" class="bl-rate-amt" value="'+(r.rate!=null?r.rate:'')+'" step="0.01" min="0" style="font-size:11px;padding:4px 6px"></div>'
@@ -5636,7 +5783,7 @@ function buildBudgetLineCardHtml(bl, idx) {
     +'<button class="btn-icon" onclick="removeBudgetLine('+idx+')">&times;</button>'
     +'</div>'
     +'<div class="form-row">'
-    +'<div class="field"><label>Rate card</label><select class="bl-rate-card" onchange="onBlRateCardChange(this)">'+cardOpts+'</select></div>'
+    +'<div class="field"><label>Rate card</label><select class="bl-rate-card" data-prev="'+(bl.rate_card||'core')+'" onchange="onBlRateCardChange(this)">'+cardOpts+'</select></div>'
     +'<div class="field"><label>Management</label><select class="bl-mgmt" onchange="onBlMgmtChange(this)">'+mgmtOpts+'</select></div>'
     +'</div>'
     +'<div class="form-row">'
@@ -5755,7 +5902,19 @@ function onBlRateCardChange(sel) {
   var card = sel.closest('.bl-card');
   if(!card) return;
   var container = card.querySelector('.bl-rates-container');
-  if(container) container.innerHTML = buildBlRateRowsHtml(blRatesForCard(sel.value));
+  if(!container) return;
+  // Changing card type re-seeds the rate table from the new card's defaults —
+  // confirm before discarding an existing line's (possibly edited) rates, so an
+  // operator can e.g. consolidate a core line into 'Core Flexible — Combined'.
+  if(container.querySelector('.bl-rate-row')){
+    var newLabel = BL_CARD_LABELS[sel.value]||sel.value;
+    if(!confirm('Switch this budget line to "'+newLabel+'"?\n\nIts rate table will be re-seeded from the '+newLabel+' defaults (current rate rows are replaced; nothing is saved until you save the participant).')){
+      sel.value = sel.dataset.prev || sel.value;
+      return;
+    }
+  }
+  sel.dataset.prev = sel.value;
+  container.innerHTML = buildBlRateRowsHtml(blRatesForCard(sel.value));
 }
 
 function onBlMgmtChange(sel) {
@@ -5771,12 +5930,14 @@ function collectBudgetLines() {
   document.querySelectorAll('#pt-budget-lines .bl-card').forEach(function(card, idx) {
     var rates = [];
     card.querySelectorAll('.bl-rate-row').forEach(function(row) {
-      rates.push({
+      var rr = {
         code: (row.querySelector('.bl-rate-code')||{value:''}).value.trim(),
         desc: (row.querySelector('.bl-rate-desc')||{value:''}).value.trim(),
         day_type: row.dataset.daytype||'',
         rate: parseFloat((row.querySelector('.bl-rate-amt')||{value:0}).value)||0
-      });
+      };
+      if(row.dataset.group) rr.group = row.dataset.group;
+      rates.push(rr);
     });
     var tdays = [];
     card.querySelectorAll('.bl-travel-day-cb:checked').forEach(function(cb){ tdays.push(+cb.dataset.dow); });
@@ -5826,6 +5987,14 @@ function blRate(bl, dayType) {
   var rates = bl && bl.rates;
   if(!Array.isArray(rates)) return null;
   return rates.find(function(r){ return r.day_type===dayType; }) || null;
+}
+
+// Group-aware lookup for combined cards where the same day_type appears once
+// per registration group (e.g. daily_life weekday vs community weekday).
+function blRateG(bl, group, dayType) {
+  var rates = bl && bl.rates;
+  if(!Array.isArray(rates)) return null;
+  return rates.find(function(r){ return r.group===group && r.day_type===dayType; }) || null;
 }
 
 // ── Merge a participant's ndis_plan overrides over the defaults. ─────────────
@@ -5968,6 +6137,21 @@ function ndisInvApplyBudgetLineDefaults() {
       +'<div class="field"><label>Sunday hrs (total)</label><input type="number" id="ii-sun" value="0" min="0" step="0.5"></div>'
       +'<div class="field"><label>Public holiday hrs (total)</label><input type="number" id="ii-ph" value="0" min="0" step="0.5"></div>'
       +'</div>';
+  } else if(card==='core_combined') {
+    sec = '<div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--blue);margin-bottom:6px">Assistance with Daily Life (0107)</div>'
+      +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:12px">'
+      +'<div class="field"><label>Weekday hrs (total)</label><input type="number" id="ii-dl-wkd" value="0" min="0" step="0.5"></div>'
+      +'<div class="field"><label>Saturday hrs (total)</label><input type="number" id="ii-dl-sat" value="0" min="0" step="0.5"></div>'
+      +'<div class="field"><label>Sunday hrs (total)</label><input type="number" id="ii-dl-sun" value="0" min="0" step="0.5"></div>'
+      +'<div class="field"><label>Public holiday hrs (total)</label><input type="number" id="ii-dl-ph" value="0" min="0" step="0.5"></div>'
+      +'</div>'
+      +'<div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--purple);margin-bottom:6px">Community Participation (0125)</div>'
+      +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">'
+      +'<div class="field"><label>Weekday hrs (total)</label><input type="number" id="ii-cp-wkd" value="0" min="0" step="0.5"></div>'
+      +'<div class="field"><label>Saturday hrs (total)</label><input type="number" id="ii-cp-sat" value="0" min="0" step="0.5"></div>'
+      +'<div class="field"><label>Sunday hrs (total)</label><input type="number" id="ii-cp-sun" value="0" min="0" step="0.5"></div>'
+      +'<div class="field"><label>Public holiday hrs (total)</label><input type="number" id="ii-cp-ph" value="0" min="0" step="0.5"></div>'
+      +'</div>';
   } else if(card==='employment') {
     sec = '<div class="field"><label>Total hours (period)</label><input type="number" id="ii-hrs" value="0" min="0" step="0.5"></div>';
   } else {
@@ -5976,7 +6160,7 @@ function ndisInvApplyBudgetLineDefaults() {
   eid('ndis-inv-hrs-section').innerHTML = sec;
   var rates = bl.rates||[];
   var rateLines = rates.filter(function(r){return r.day_type!=='travel_km';}).map(function(r){
-    return r.day_type+' $'+Number(r.rate).toFixed(2)+'/hr';
+    return (r.group&&BL_GROUP_LABELS[r.group]?BL_GROUP_LABELS[r.group]+' ':'')+r.day_type+' $'+Number(r.rate).toFixed(2)+'/hr';
   }).join(' &nbsp;&#8226;&nbsp; ');
   var mgmtLabel = bl.management==='plan'?'Plan-managed':bl.management==='self'?'Self-managed':'Agency-managed';
   eid('ndis-inv-info').innerHTML = '<b>'+bl.name+' &mdash; '+BL_CARD_LABELS[card]+'</b> &nbsp;|&nbsp; '+mgmtLabel+'<br><span style="font-size:10px">'+rateLines+'</span><br><span style="color:var(--gold)">&#9888; Leave fields at 0 to skip those line items</span>';
@@ -6024,6 +6208,55 @@ function _buildInvLines(bl, periodStart, periodEnd, travelKm, travelMin, opts) {
         }
       }
       cur4.setDate(cur4.getDate()+1);
+    }
+  } else if(card==='core_combined') {
+    // One invoice, sectioned per registration group. Header pseudo-lines
+    // (amt 0, header:true) render as full-width section dividers on the PDF
+    // and are filtered out of the myplace CSV (plan-managed → PDF only anyway).
+    var ccGroups = [
+      {group:'daily_life', title:'Assistance with Daily Life (0107)', ids:{weekday:'ii-dl-wkd',saturday:'ii-dl-sat',sunday:'ii-dl-sun',public_holiday:'ii-dl-ph'}},
+      {group:'community',  title:'Community Participation (0125)',    ids:{weekday:'ii-cp-wkd',saturday:'ii-cp-sat',sunday:'ii-cp-sun',public_holiday:'ii-cp-ph'}}
+    ];
+    ccGroups.forEach(function(g){
+      var gLines = [];
+      Object.keys(g.ids).forEach(function(dt){
+        var hrs = parseFloat((eid(g.ids[dt])||{value:'0'}).value)||0;
+        if(hrs<=0) return;
+        var ri = blRateG(bl, g.group, dt);
+        if(!ri) return;
+        gLines.push({ date:svcRangeStr, day:'—', desc:ri.desc, code:ri.code, qty:hrs, rate:ri.rate, amt:+(hrs*ri.rate).toFixed(2) });
+      });
+      if(gLines.length){
+        lines.push({ header:true, date:svcRangeStr, day:'', desc:g.title, code:'', qty:0, rate:0, amt:0 });
+        lines.push.apply(lines, gLines);
+      }
+    });
+    // Provider travel — same travel-days walk as the other cards; labour billed
+    // at the daily-life (0107) rate for the day type, km at the travel row.
+    if(travelDays.length && (travelKm>0 || travelMin>0)){
+      var travelLines = [];
+      var curC=new Date(parseInt(ps[0]),parseInt(ps[1])-1,parseInt(ps[2]));
+      while(curC<=end4){
+        var dsC=fmtDate(curC); var dowC=curC.getDay(); var isHolC=!!VIC_HOLIDAYS[dsC];
+        if(travelDays.indexOf(dowC)!==-1){
+          var dateStrC=String(curC.getDate()).padStart(2,'0')+'/'+String(curC.getMonth()+1).padStart(2,'0')+'/'+curC.getFullYear();
+          if(travelMin>0){
+            var labHrsC=+(travelMin/60).toFixed(2);
+            var dtC=isHolC?'public_holiday':dowC===6?'saturday':dowC===0?'sunday':'weekday';
+            var labRiC=blRateG(bl,'daily_life',dtC)||blRateG(bl,'daily_life','weekday');
+            if(labRiC) travelLines.push({ date:dateStrC, day:DNShort[dowC], desc:'Provider Travel – Labour ('+travelMin+' min)', code:labRiC.code, qty:labHrsC, rate:labRiC.rate, amt:+(labHrsC*labRiC.rate).toFixed(2) });
+          }
+          if(travelKm>0){
+            var kmRiC=blRateG(bl,'travel','travel_km')||blRate(bl,'travel_km');
+            if(kmRiC) travelLines.push({ date:dateStrC, day:DNShort[dowC], desc:kmRiC.desc.replace('{km}',travelKm), code:kmRiC.code, qty:travelKm, rate:kmRiC.rate, amt:+(travelKm*kmRiC.rate).toFixed(2) });
+          }
+        }
+        curC.setDate(curC.getDate()+1);
+      }
+      if(travelLines.length){
+        lines.push({ header:true, date:svcRangeStr, day:'', desc:'Provider Travel', code:'', qty:0, rate:0, amt:0 });
+        lines.push.apply(lines, travelLines);
+      }
     }
   } else if(card==='employment') {
     var empHrs = parseFloat((eid('ii-hrs')||{value:'0'}).value)||0;
@@ -6152,6 +6385,10 @@ function genNDISInvoice() {
   var travelDaysLabel=(bl.travel&&bl.travel.days||[]).map(function(d){return dayLabels[d];}).join(', ')||'none';
   var prevDate='', rowIdx=0;
   var lineRows=lines.map(function(l){
+    if(l.header){
+      prevDate='';rowIdx=0;
+      return '<tr><td colspan="7" style="padding:7px 8px;border:1px solid #e0e0e0;background:#ede9f5;font-size:8.5pt;font-weight:700;color:#4c2a85;text-transform:uppercase;letter-spacing:.04em">'+l.desc+'</td></tr>';
+    }
     if(l.date!==prevDate){rowIdx++;prevDate=l.date;}
     var bg=(rowIdx%2===1)?'#f5f5f5':'#ffffff';
     return '<tr style="background:'+bg+'"><td style="padding:5px 8px;border:1px solid #e0e0e0;font-size:8.5pt">'+l.date+'</td><td style="padding:5px 8px;border:1px solid #e0e0e0;font-size:8.5pt">'+l.day+'</td><td style="padding:5px 8px;border:1px solid #e0e0e0;font-size:8.5pt">'+l.desc+'</td><td style="padding:5px 8px;border:1px solid #e0e0e0;font-size:8pt;font-family:monospace;color:#444">'+l.code+'</td><td style="padding:5px 8px;border:1px solid #e0e0e0;font-size:8.5pt;text-align:right">'+l.qty.toFixed(2)+'</td><td style="padding:5px 8px;border:1px solid #e0e0e0;font-size:8.5pt;text-align:right">$'+l.rate.toFixed(2)+'</td><td style="padding:5px 8px;border:1px solid #e0e0e0;font-size:8.5pt;text-align:right;font-weight:600">$'+l.amt.toFixed(2)+'</td></tr>';
@@ -6257,7 +6494,8 @@ function genMyPlaceCSV() {
   if(!NDIS_PROVIDER_REG){ showToast('Provider Registration Number not configured','err'); return; }
   var prefix = BL_INV_PREFIXES[bl.rate_card||'core'];
   var invNum = prefix.replace(/-/g,'')+periodEnd.replace(/-/g,'').slice(0,8);
-  var rows = lines.map(function(l){
+  // Section-header pseudo-lines (core_combined PDF dividers) never become claims
+  var rows = lines.filter(function(l){ return !l.header; }).map(function(l){
     // Convert display date back to ISO: "DD/MM/YYYY" or range "DD/MM/YYYY–DD/MM/YYYY"
     var fromStr, toStr;
     if(l.date.indexOf('–')!==-1){
