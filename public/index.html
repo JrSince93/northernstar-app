@@ -6165,6 +6165,41 @@ function calcNdisInvSleepCount(){
   eid('ii-sleep-shifts').value = count;
 }
 
+// ── Per-field "Specific days" selector for hours-per-day inputs ─────────────
+// Each day-walked hours field gets its own optional day-of-week filter so e.g.
+// 0125 Community can bill Mon/Wed/Fri only while 0107 in the same invoice
+// bills every day. Toggle unchecked (default) = bill every day, exactly as
+// before. Markup is rebuilt with the hours section on every budget-line /
+// participant change and modal open, so state never leaks between invoices.
+function iiDaysSelectorHtml(prefix){
+  var days=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+  return '<div style="margin-top:5px">'
+    +'<label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:11px;color:var(--text2)">'
+      +'<input type="checkbox" id="'+prefix+'-days-toggle" class="cb-circle" style="width:16px;height:16px" '
+      +'onchange="eid(\''+prefix+'-days-row\').style.display=this.checked?\'flex\':\'none\'"> Specific days</label>'
+    +'<div id="'+prefix+'-days-row" style="display:none;gap:5px;flex-wrap:wrap;margin-top:6px">'
+    +days.map(function(d,i){
+      return '<label style="display:flex;align-items:center;gap:4px;font-size:11px;cursor:pointer;background:var(--bg5);border:1px solid var(--border2);border-radius:var(--r);padding:3px 7px">'
+        +'<input type="checkbox" id="'+prefix+'-day-'+i+'" checked>'+d+'</label>';
+    }).join('')
+    +'</div></div>';
+}
+
+// Returns null when the field's "Specific days" toggle is off/missing (= bill
+// every day, the pre-existing behaviour); otherwise the checked day-of-week
+// ints (0=Sun..6=Sat). An expanded toggle with zero days checked returns []
+// — that field bills nothing, which is what the empty selection says.
+function getRestrictedDaysFor(fieldPrefix){
+  var t = eid(fieldPrefix+'-days-toggle');
+  if(!t || !t.checked) return null;
+  var days = [];
+  for(var i=0;i<7;i++){
+    var cb = eid(fieldPrefix+'-day-'+i);
+    if(cb && cb.checked) days.push(i);
+  }
+  return days;
+}
+
 function ndisInvApplyBudgetLineDefaults() {
   var ptId = eid('ndis-inv-pt').value;
   var pt = (S.participants||[]).find(function(p){ return p.id===ptId; });
@@ -6188,13 +6223,13 @@ function ndisInvApplyBudgetLineDefaults() {
       +'</div>';
   } else if(card==='core_combined') {
     sec = '<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">'
-      +'<div class="field"><label style="color:var(--blue)">Hours per day — 0107 Daily Life</label><input type="number" id="ii-hrs-0107" value="8" min="0" step="0.5"></div>'
-      +'<div class="field"><label style="color:var(--purple)">Hours per day — 0125 Community</label><input type="number" id="ii-hrs-0125" value="0" min="0" step="0.5"></div>'
+      +'<div class="field"><label style="color:var(--blue)">Hours per day — 0107 Daily Life</label><input type="number" id="ii-hrs-0107" value="8" min="0" step="0.5">'+iiDaysSelectorHtml('ii-hrs-0107')+'</div>'
+      +'<div class="field"><label style="color:var(--purple)">Hours per day — 0125 Community</label><input type="number" id="ii-hrs-0125" value="0" min="0" step="0.5">'+iiDaysSelectorHtml('ii-hrs-0125')+'</div>'
       +'</div>';
   } else if(card==='employment') {
     sec = '<div class="field"><label>Total hours (period)</label><input type="number" id="ii-hrs" value="0" min="0" step="0.5"></div>';
   } else {
-    sec = '<div class="field"><label>Hours per day</label><input type="number" id="ii-hrs" value="8" min="0" step="0.5"></div>';
+    sec = '<div class="field"><label>Hours per day</label><input type="number" id="ii-hrs" value="8" min="0" step="0.5">'+iiDaysSelectorHtml('ii-hrs')+'</div>';
   }
   eid('ndis-inv-hrs-section').innerHTML = sec;
   var rates = bl.rates||[];
@@ -6258,15 +6293,20 @@ function _buildInvLines(bl, periodStart, periodEnd, travelKm, travelMin, opts) {
     // pseudo-lines (amt 0, header:true) render as full-width PDF section
     // dividers and are filtered out of the myplace CSV.
     var ccGroups = [
-      {group:'daily_life', title:'Assistance with Daily Life (0107)', hrs:parseFloat((eid('ii-hrs-0107')||{value:'0'}).value)||0},
-      {group:'community',  title:'Community Participation (0125)',    hrs:parseFloat((eid('ii-hrs-0125')||{value:'0'}).value)||0}
+      {group:'daily_life', prefix:'ii-hrs-0107', title:'Assistance with Daily Life (0107)', hrs:parseFloat((eid('ii-hrs-0107')||{value:'0'}).value)||0},
+      {group:'community',  prefix:'ii-hrs-0125', title:'Community Participation (0125)',    hrs:parseFloat((eid('ii-hrs-0125')||{value:'0'}).value)||0}
     ];
     ccGroups.forEach(function(g){
       if(g.hrs<=0) return;
+      // Each group filters its delivery days independently: 0107 can bill every
+      // day while 0125 bills Mon/Wed/Fri only, in the same invoice. null =
+      // every day (unchanged default). Travel walk below is unaffected.
+      var groupRestrict = opts && opts.dayRestrictions ? opts.dayRestrictions[g.prefix] : null;
       var gLines = [];
       var curG=new Date(parseInt(ps[0]),parseInt(ps[1])-1,parseInt(ps[2]));
       while(curG<=end4){
         var dsG=fmtDate(curG); var dowG=curG.getDay(); var isHolG=!!VIC_HOLIDAYS[dsG];
+        if(groupRestrict && groupRestrict.indexOf(dowG)===-1){ curG.setDate(curG.getDate()+1); continue; }
         var dtG=isHolG?'public_holiday':dowG===6?'saturday':dowG===0?'sunday':'weekday';
         var riG=blRateG(bl,g.group,dtG)||blRateG(bl,g.group,'weekday');
         if(riG){
@@ -6332,12 +6372,16 @@ function _buildInvLines(bl, periodStart, periodEnd, travelKm, travelMin, opts) {
     }
   } else {
     var hrsPerDay = parseFloat((eid('ii-hrs')||{value:'0'}).value)||0;
+    // Optional per-field day filter: null = every day (unchanged default).
+    // Applies to the active-support line only — travel below keeps its own
+    // independent bl.travel.days check.
+    var hrsRestrict = opts && opts.dayRestrictions ? opts.dayRestrictions['ii-hrs'] : null;
     var cur6=new Date(parseInt(ps[0]),parseInt(ps[1])-1,parseInt(ps[2]));
     while(cur6<=end4){
       var ds6=fmtDate(cur6); var dow6=cur6.getDay(); var isHol6=!!VIC_HOLIDAYS[ds6];
       var dt6=isHol6?'public_holiday':dow6===6?'saturday':dow6===0?'sunday':'weekday';
       var dateStr6=String(cur6.getDate()).padStart(2,'0')+'/'+String(cur6.getMonth()+1).padStart(2,'0')+'/'+cur6.getFullYear();
-      if(hrsPerDay>0){
+      if(hrsPerDay>0 && (!hrsRestrict || hrsRestrict.indexOf(dow6)!==-1)){
         var ri6=blRate(bl,dt6)||blRate(bl,'weekday');
         if(ri6) lines.push({ date:dateStr6, day:DNShort[dow6], desc:ri6.desc+(isHol6?' ('+VIC_HOLIDAYS[ds6]+')':''), code:ri6.code, qty:hrsPerDay, rate:ri6.rate, amt:+(hrsPerDay*ri6.rate).toFixed(2) });
       }
@@ -6414,7 +6458,13 @@ function genNDISInvoice() {
     active_minutes:parseFloat((eid('ii-sleep-active-min')||{value:'0'}).value)||0,
     day_type:     (eid('ii-sleep-day-type')||{value:'weekday'}).value||'weekday'
   } : null;
-  var lines = _buildInvLines(bl, periodStart, periodEnd, travelKm, travelMin, slOpts2 ? {sleepovers:slOpts2} : undefined);
+  var invOpts2 = { dayRestrictions: {
+    'ii-hrs':      getRestrictedDaysFor('ii-hrs'),
+    'ii-hrs-0107': getRestrictedDaysFor('ii-hrs-0107'),
+    'ii-hrs-0125': getRestrictedDaysFor('ii-hrs-0125')
+  }};
+  if(slOpts2) invOpts2.sleepovers = slOpts2;
+  var lines = _buildInvLines(bl, periodStart, periodEnd, travelKm, travelMin, invOpts2);
   if(lines.length===0){ showToast('Nothing to invoice — enter hours for at least one service','err'); return; }
   var subtotal = lines.reduce(function(s,l){return s+l.amt;},0);
   var prefix = BL_INV_PREFIXES[bl.rate_card||'core'];
@@ -6532,7 +6582,13 @@ function genMyPlaceCSV() {
     active_minutes:parseFloat((eid('ii-sleep-active-min')||{value:'0'}).value)||0,
     day_type:      (eid('ii-sleep-day-type')||{value:'weekday'}).value||'weekday'
   } : null;
-  var lines = _buildInvLines(bl, periodStart, periodEnd, travelKm, travelMin, slOptsC ? {sleepovers:slOptsC} : undefined);
+  var invOptsC = { dayRestrictions: {
+    'ii-hrs':      getRestrictedDaysFor('ii-hrs'),
+    'ii-hrs-0107': getRestrictedDaysFor('ii-hrs-0107'),
+    'ii-hrs-0125': getRestrictedDaysFor('ii-hrs-0125')
+  }};
+  if(slOptsC) invOptsC.sleepovers = slOptsC;
+  var lines = _buildInvLines(bl, periodStart, periodEnd, travelKm, travelMin, invOptsC);
   if(lines.length===0){ showToast('Nothing to export — enter hours for at least one service','err'); return; }
   var ndisNum = stripInvisibles(pt.ndis_number||'').replace(/\s+/g,'');
   if(!ndisNum){ showToast('Participant has no NDIS number','err'); return; }
