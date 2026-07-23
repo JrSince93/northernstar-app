@@ -11,7 +11,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;650;700;800&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <style>*{box-sizing:border-box;margin:0;padding:0}
 :root{
   /* "Expensive dark": deep navy-black surfaces, layered elevation, refined
@@ -464,6 +464,7 @@ input[type=number]{text-align:right;font-variant-numeric:tabular-nums}
       </div>
       <div style="font-size:10px;color:var(--text3)">$58.69 SCHADS allowance per shift + overtime rate for active minutes. Not counted in regular hours.</div>
     </div>
+    <div class="field" style="margin-top:4px"><label>Travel (km) <span style="font-size:10px;color:var(--text3)">(reimbursed at $0.99/km)</span></label><input type="number" id="pr-travel-km" placeholder="0" min="0" step="0.1" oninput="calcPay()"></div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:4px"><label style="display:flex;align-items:center;gap:10px;background:var(--bg4);border:1px solid var(--border2);border-radius:var(--r);padding:10px 14px;cursor:pointer;user-select:none"><input type="checkbox" id="pr-payg-on" checked onchange="calcPay()" class="cb-circle"><span style="font-size:12px;color:var(--text2)">Withhold PAYG tax</span></label><label style="display:flex;align-items:center;gap:10px;background:var(--bg4);border:1px solid var(--border2);border-radius:var(--r);padding:10px 14px;cursor:pointer;user-select:none"><input type="checkbox" id="pr-super-on" checked onchange="calcPay()" class="cb-circle"><span style="font-size:12px;color:var(--text2)">Include super</span></label></div>
     <div class="pay-breakdown">
       <div id="pp-day-breakdown" style="margin-bottom:8px;padding-bottom:8px;border-bottom:1px solid var(--border)"></div>
@@ -838,11 +839,11 @@ input[type=number]{text-align:right;font-variant-numeric:tabular-nums}
     <!-- Stage 1: Drop zone -->
     <div id="ts-stage-1" style="padding:0 0 16px">
       <div id="ts-dropzone" style="border:2px dashed var(--border2);border-radius:var(--r);padding:48px 24px;text-align:center;cursor:pointer;transition:.15s" onclick="eid('ts-file-input').click()" ondragover="event.preventDefault();this.style.borderColor='var(--blue)'" ondragleave="this.style.borderColor='var(--border2)'" ondrop="event.preventDefault();this.style.borderColor='var(--border2)';onTsFileDrop(event.dataTransfer.files)">
-        <div style="font-size:32px;margin-bottom:12px">&#128196;</div>
-        <div style="font-weight:600;color:var(--text)">Drop Connecteam PDF timesheets here</div>
-        <div style="font-size:12px;color:var(--text3);margin-top:6px">or click to select · Multiple files · One PDF per employee</div>
-        <div style="font-size:11px;color:var(--text3);margin-top:4px">Filename format: First_Last_DD-MM-YYYY_DD-MM-YYYY.pdf</div>
-        <input type="file" id="ts-file-input" accept=".pdf" multiple style="display:none" onchange="onTsFileSelect(this)">
+        <div style="font-size:32px;margin-bottom:12px">&#128202;</div>
+        <div style="font-weight:600;color:var(--text)">Drop the Connecteam Excel timesheet export (.xlsx)</div>
+        <div style="font-size:12px;color:var(--text3);margin-top:6px">or click to select · One workbook covers all employees for the fortnight</div>
+        <div style="font-size:11px;color:var(--text3);margin-top:4px">Filename format: NSS_TIMESHEETS_YYYY-MM-DD_YYYY-MM-DD.xlsx</div>
+        <input type="file" id="ts-file-input" accept=".xlsx" multiple style="display:none" onchange="onTsFileSelect(this)">
       </div>
       <div id="ts-parse-list" style="display:none;margin-top:16px"></div>
     </div>
@@ -914,7 +915,6 @@ input[type=number]{text-align:right;font-variant-numeric:tabular-nums}
 var SKEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJocWpzcXdic2JoanVoand4d2NwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzU4NzM3ODIsImV4cCI6MjA5MTQ0OTc4Mn0.K4X9VClrSfnvSSAZE1LMwQPWVo9fdycx1SyIJBSQ8Xw';
 
 var sb2 = supabase.createClient(SURL, SKEY);
-if(typeof pdfjsLib !== 'undefined') pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
 var MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
 var SHORT = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 var YEAR = new Date().getFullYear();
@@ -936,6 +936,11 @@ var NDIS_SLEEPOVER_CODES = {core:'01_020_0107_1_1',sil:'01_820_0138_1_1',communi
 var SCHADS_SLEEPOVER_ALLOWANCE = 58.69;
 // Minimum overtime hours paid for any active work performed during a sleepover shift.
 var SCHADS_SLEEPOVER_ACTIVE_MIN_HRS = 1;
+// Employee travel reimbursement rate ($/km) — paid to the WORKER for logged
+// driving, applied to import + manual pay runs. Deliberately separate from the
+// NDIS participant-plan travel BILLING rates in _buildInvLines/blRate (which
+// bill the participant's plan, a different concept — do not merge them).
+var EMPLOYEE_TRAVEL_KM_RATE = 0.99;
 var pendingExportPlatform = null;
 var S = {tx:[],emps:[],runs:[],participants:[],dd:{description:[],type:[]},curMonth:new Date().getMonth(),editEmpId:null,ddField:null,ddTargetId:null,ch:{},wiseTransfers:[],invoiceLedger:[],_lastGenInvoice:null,shiftTypes:[],scheduleBlocks:[],tsNameMap:[]};
 
@@ -1623,6 +1628,7 @@ async function saveEmp(){
 function openPayModal(){
   var html='';S.emps.filter(function(e){return e.active;}).forEach(function(e){html+='<option value="'+e.id+'" data-rate="'+e.pay_rate+'" data-type="'+e.pay_type+'" data-sleep-rate="'+resolveSleepoverFlatRate(e)+'">'+e.name+'</option>';});eid('pr-emp').innerHTML=html;
   ['pr-s','pr-e','pr-hrs','pr-rate'].forEach(function(id){eid(id).value='';});
+  if(eid('pr-travel-km'))eid('pr-travel-km').value='';
   ['pp-g','pp-t','pp-s','pp-n'].forEach(function(id){eid(id).textContent='--';});
   eid('pr-payg-on').checked=true;eid('pr-super-on').checked=true;
   eid('pr-s').value='';eid('pr-e').value='';
@@ -1851,6 +1857,12 @@ function calcPay(){
   var satRate=emp&&emp.sat_rate?parseFloat(emp.sat_rate):(baseRate*1.5);
   var sunRate=emp&&emp.sun_rate?parseFloat(emp.sun_rate):(baseRate*2);
   var sleepoverFlatRate=resolveSleepoverFlatRate(emp);
+  // Travel reimbursement — added into gross across every pay path, taxed like
+  // the rest of the run (respects the PAYG/super toggles). Rendered as its own
+  // breakdown line rather than folded into hours.
+  var travelKm=parseFloat((eid('pr-travel-km')||{value:'0'}).value)||0;
+  var travelAmt=+(travelKm*EMPLOYEE_TRAVEL_KM_RATE).toFixed(2);
+  var travelLineHtml=travelAmt>0?'<div class="pay-line" style="font-size:11px;color:var(--gold)"><span>Travel &mdash; '+travelKm+'km @ $'+EMPLOYEE_TRAVEL_KM_RATE.toFixed(2)+'/km</span><span style="color:var(--gold)">'+fmt(travelAmt)+'</span></div>':'';
 
   // ── Salary path — does not use computePay ──
   if(empType==='salary'){
@@ -1859,13 +1871,14 @@ function calcPay(){
     var overrideVal=overrideEl?parseFloat(overrideEl.value):NaN;
     var useOverride=!isNaN(overrideVal)&&overrideVal>0;
     var gross=useOverride?overrideVal:defaultFortnight;
-    var breakdown=[{label:useOverride?'Salary (manual override)':'Salary (fortnightly)',hrs:'',rate:'',amt:gross}];
+    gross=+(gross+travelAmt).toFixed(2); // travel reimbursement into gross
+    var breakdown=[{label:useOverride?'Salary (manual override)':'Salary (fortnightly)',hrs:'',rate:'',amt:useOverride?overrideVal:defaultFortnight}];
     var annualEq=baseRate; // PAYG basis is always the annual salary
     var periodTax=paygOn?+(paygCalc(annualEq)/26).toFixed(2):0;
     var sup=superOn?+(gross*getSuperRate(periodEnd||tod())).toFixed(2):0;
     var net=+(gross-periodTax).toFixed(2);
     var dbEl=eid('pp-day-breakdown');
-    if(dbEl)dbEl.innerHTML=breakdown.map(function(b){return'<div class="pay-line" style="font-size:11px;color:var(--text3)"><span>'+b.label+'</span><span style="color:var(--text2)">'+fmt(b.amt)+'</span></div>';}).join('');
+    if(dbEl)dbEl.innerHTML=breakdown.map(function(b){return'<div class="pay-line" style="font-size:11px;color:var(--text3)"><span>'+b.label+'</span><span style="color:var(--text2)">'+fmt(b.amt)+'</span></div>';}).join('')+travelLineHtml;
     eid('pp-g').textContent=fmt(gross);eid('pp-t').textContent=paygOn?'-'+fmt(periodTax):'Off';
     eid('pp-s').textContent=superOn?fmt(sup):'Off';eid('pp-n').textContent=fmt(net);
     if(eid('pp-tax-row'))eid('pp-tax-row').style.opacity=paygOn?'1':'0.35';
@@ -1914,9 +1927,9 @@ function calcPay(){
         Object.keys(lines).forEach(function(key){
           lineHtml += '<div class="pay-line" style="font-size:11px;color:var(--text3)"><span>'+key+'</span><span style="color:var(--text2)">'+fmt(lines[key])+'</span></div>';
         });
-        dbEl2.innerHTML=lineHtml;
+        dbEl2.innerHTML=lineHtml+travelLineHtml;
       }
-      directGross=+directGross.toFixed(2);
+      directGross=+(directGross+travelAmt).toFixed(2); // travel reimbursement into gross
       var annualEq2=directGross*26;
       var periodTax2=paygOn?+(paygCalc(annualEq2)/26).toFixed(2):0;
       var sup2=superOn?+(directGross*getSuperRate(periodEnd||tod())).toFixed(2):0;
@@ -1998,24 +2011,32 @@ function calcPay(){
     wdLabel:wdLabel,satLabel:satLabel,sunLabel:sunLabel
   });
 
+  // Fold travel reimbursement into gross and recompute tax/super/net on the
+  // augmented gross, mirroring computePay's own basis (annualised gross for
+  // PAYG, gross × super rate). Respects the PAYG/super toggles unchanged.
+  var pGross=+(p.gross+travelAmt).toFixed(2);
+  var pTax=paygOn?+(paygCalc(pGross*26)/26).toFixed(2):0;
+  var pSup=superOn?+(pGross*getSuperRate(periodEnd||tod())).toFixed(2):0;
+  var pNet=+(pGross-pTax).toFixed(2);
+
   // Render breakdown and summary
   var dbEl=eid('pp-day-breakdown');
   if(dbEl){
-    dbEl.innerHTML=p.breakdown.length===0?'':p.breakdown.map(function(b){
+    dbEl.innerHTML=(p.breakdown.length===0?'':p.breakdown.map(function(b){
       var clr=b.isSleep?'#bc8cff':'var(--text3)';
       return'<div class="pay-line" style="font-size:11px;color:'+clr+'">'
         +'<span>'+b.label+(b.hrs?(' — '+b.hrs+'h @ $'+parseFloat(b.rate).toFixed(2)+'/hr'):'')+'</span>'
         +'<span style="color:'+(b.isSleep?'#bc8cff':'var(--text2)')+'">'+fmt(b.amt)+'</span>'
         +'</div>';
-    }).join('');
+    }).join(''))+travelLineHtml;
   }
-  eid('pp-g').textContent=fmt(p.gross);
-  eid('pp-t').textContent=paygOn?'-'+fmt(p.tax):'Off';
-  eid('pp-s').textContent=superOn?fmt(p.sup):'Off';
-  eid('pp-n').textContent=fmt(p.net);
+  eid('pp-g').textContent=fmt(pGross);
+  eid('pp-t').textContent=paygOn?'-'+fmt(pTax):'Off';
+  eid('pp-s').textContent=superOn?fmt(pSup):'Off';
+  eid('pp-n').textContent=fmt(pNet);
   if(eid('pp-tax-row'))eid('pp-tax-row').style.opacity=paygOn?'1':'0.35';
   if(eid('pp-super-row'))eid('pp-super-row').style.opacity=superOn?'1':'0.35';
-  return{gross:p.gross,tax:p.tax,sup:p.sup,net:p.net};
+  return{gross:pGross,tax:pTax,sup:pSup,net:pNet};
 }
 async function savePayRun(){
   var sel=eid('pr-emp'),opt=sel.selectedOptions[0];
@@ -2083,6 +2104,13 @@ async function savePayRun(){
     var prSleepActMin=parseFloat((eid('pr-sleep-active-min')||{value:'0'}).value)||0;
     if(!dayBreakdown) dayBreakdown=[];
     dayBreakdown.push({type:'sleepover_meta',shifts:prSleepShifts,active_minutes:prSleepActMin});
+  }
+  // Travel reimbursement meta — same shape as the import path so both produce
+  // identically-structured records and the payslip renders one travel line.
+  var prTravelKm=parseFloat((eid('pr-travel-km')||{value:'0'}).value)||0;
+  if(prTravelKm>0){
+    if(!dayBreakdown) dayBreakdown=[];
+    dayBreakdown.push({type:'travel_meta',km:prTravelKm,rate:EMPLOYEE_TRAVEL_KM_RATE,amount:+(prTravelKm*EMPLOYEE_TRAVEL_KM_RATE).toFixed(2)});
   }
   if(dayBreakdown) insertRow.day_breakdown=dayBreakdown;
   var res=await sb2.from('pay_runs').insert(insertRow).select();
@@ -3125,8 +3153,28 @@ function genPayslip(id) {
         +'<td style="padding:6px 10px;border-bottom:1px solid #f0f0f0;font-size:12px;text-align:right;font-weight:600;color:#7c3aed">$'+sActAmt.toFixed(2)+'</td></tr>';
     }
   }
+  // Travel reimbursement row from the day_breakdown travel_meta entry.
+  // (run is already resolved at the top of genPayslip.)
+  var travelRows='';
+  var travelMeta=(run&&Array.isArray(run.day_breakdown))?run.day_breakdown.find(function(d){return d&&d.type==='travel_meta';}):null;
+  if(travelMeta&&travelMeta.amount>0){
+    travelRows='<tr style="background:rgba(201,162,39,0.07)">'
+      +'<td colspan="3" style="padding:6px 10px;border-bottom:1px solid #f0f0f0;font-size:12px;color:#8a6d1a;font-weight:600">Travel reimbursement</td>'
+      +'<td style="padding:6px 10px;border-bottom:1px solid #f0f0f0;font-size:12px;text-align:right;color:#8a6d1a">'+(+travelMeta.km).toFixed(1)+'km</td>'
+      +'<td style="padding:6px 10px;border-bottom:1px solid #f0f0f0;font-size:12px;text-align:right;color:#8a6d1a">$'+(+travelMeta.rate).toFixed(2)+'/km</td>'
+      +'<td style="padding:6px 10px;border-bottom:1px solid #f0f0f0;font-size:12px;text-align:right;font-weight:600;color:#8a6d1a">$'+(+travelMeta.amount).toFixed(2)+'</td></tr>';
+  }
+  // Order rows by calendar date. Sleepover shifts split into a flat line (shift
+  // day) + an active line (next day), which were appended after the regular
+  // hourly lines; a stable date sort interleaves everything back into sequence
+  // while preserving insertion order within a single day. dayLines[].date is
+  // always DD/MM/YYYY here.
+  dayLines.sort(function(a,b){
+    function k(d){var p=String(d.date||'').split('/');return p.length===3?(p[2]+p[1]+p[0]):'';}
+    var ka=k(a),kb=k(b);return ka<kb?-1:ka>kb?1:0;
+  });
   var dr=dayLines.map(function(d){var bg=d.hol?'rgba(248,81,73,0.06)':/Saturday|Sunday/.test(d.type)?'rgba(210,153,34,0.06)':'transparent';if(d.salary){return '<tr style="background:'+bg+'"><td style="padding:6px 10px;border-bottom:1px solid #f0f0f0;font-size:12px">'+d.date+'</td><td style="padding:6px 10px;border-bottom:1px solid #f0f0f0;font-size:12px;font-weight:600">'+d.day+'</td><td style="padding:6px 10px;border-bottom:1px solid #f0f0f0;font-size:12px;color:'+(d.hol?'#dc2626':'#555')+'">'+d.type+(d.hol?' ('+d.hol+')':'')+'</td><td colspan="3" style="padding:6px 10px;border-bottom:1px solid #f0f0f0;font-size:12px;text-align:center;font-weight:600;color:#15803d">Worked</td></tr>';}return '<tr style="background:'+bg+'"><td style="padding:6px 10px;border-bottom:1px solid #f0f0f0;font-size:12px">'+d.date+'</td><td style="padding:6px 10px;border-bottom:1px solid #f0f0f0;font-size:12px;font-weight:600">'+d.day+'</td><td style="padding:6px 10px;border-bottom:1px solid #f0f0f0;font-size:12px;color:'+(d.hol?'#dc2626':'#555')+'">'+d.type+(d.hol?' ('+d.hol+')':'')+'</td><td style="padding:6px 10px;border-bottom:1px solid #f0f0f0;font-size:12px;text-align:right">'+d.hrs.toFixed(1)+'h</td><td style="padding:6px 10px;border-bottom:1px solid #f0f0f0;font-size:12px;text-align:right">'+(d.rateLabel?d.rateLabel:'$'+d.rate.toFixed(2))+'</td><td style="padding:6px 10px;border-bottom:1px solid #f0f0f0;font-size:12px;text-align:right;font-weight:600">$'+d.amt.toFixed(2)+'</td></tr>';}).join('');
-  var h='<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Payslip - '+emp.name+'</title><style>body{font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;margin:0;padding:0;background:#fff;color:#1a1a1a}.page{max-width:720px;margin:0 auto;padding:40px}@media print{.page{padding:20px}}</style></head><body><div class="page"><div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:28px;padding-bottom:20px;border-bottom:2px solid #1a1a1a"><div><div style="font-size:18px;font-weight:700;margin-bottom:4px">Northern Star Support Services</div><div style="font-size:12px;color:#555;line-height:1.6">Falaax Group Pty Ltd<br>ABN: 22 671 393 070<br>12 Dimboola Rd, Broadmeadows VIC 3064<br>Phone: 03 7057 1645</div></div><div style="text-align:right"><div style="font-size:11px;color:#888;text-transform:uppercase;letter-spacing:.05em">Payslip</div><div style="font-size:18px;font-weight:700">'+refNo+'</div><div style="font-size:12px;color:#888;margin-top:6px">Paid: '+paidDate+'</div></div></div><div style="background:#f8f9fa;border:1px solid #e5e5e5;border-radius:8px;padding:16px;margin-bottom:20px"><div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:13px"><div><span style="color:#888">Name:</span> <b>'+emp.name+'</b></div><div><span style="color:#888">Role:</span> '+(emp.role||'--')+'</div><div><span style="color:#888">Employment:</span> '+(emp.employment_type||'--')+'</div><div><span style="color:#888">Period:</span> '+periodStart+' to '+periodEnd+'</div></div></div><div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:#888;margin-bottom:8px">Days Worked</div><table style="width:100%;border-collapse:collapse;margin-bottom:20px"><thead><tr style="background:#f0f0f0"><th style="padding:8px 10px;text-align:left;font-size:10px;font-weight:700;text-transform:uppercase;color:#666">Date</th><th style="padding:8px 10px;text-align:left;font-size:10px;font-weight:700;text-transform:uppercase;color:#666">Day</th><th style="padding:8px 10px;text-align:left;font-size:10px;font-weight:700;text-transform:uppercase;color:#666">Type</th><th style="padding:8px 10px;text-align:right;font-size:10px;font-weight:700;text-transform:uppercase;color:#666">Hours</th><th style="padding:8px 10px;text-align:right;font-size:10px;font-weight:700;text-transform:uppercase;color:#666">Rate</th><th style="padding:8px 10px;text-align:right;font-size:10px;font-weight:700;text-transform:uppercase;color:#666">Amount</th></tr></thead><tbody>'+dr+sleepRows+'</tbody></table><div style="display:flex;justify-content:flex-end;margin-bottom:20px"><div style="width:280px"><div style="display:flex;justify-content:space-between;padding:6px 0;font-size:13px"><span>Gross pay</span><span style="font-weight:600">$'+gross.toFixed(2)+'</span></div>'+(tax>0?'<div style="display:flex;justify-content:space-between;padding:6px 0;font-size:13px;color:#dc2626"><span>PAYG tax withheld</span><span>-$'+tax.toFixed(2)+'</span></div>':'<div style="display:flex;justify-content:space-between;padding:6px 0;font-size:13px;color:#888"><span>PAYG tax</span><span>Not withheld</span></div>')+'<div style="display:flex;justify-content:space-between;padding:6px 0;font-size:13px;color:#d97706"><span>'+superLabel+'</span><span>$'+sup.toFixed(2)+'</span></div><div style="display:flex;justify-content:space-between;padding:10px 0;font-size:16px;font-weight:700;border-top:2px solid #1a1a1a;margin-top:4px;color:#15803d"><span>Net pay to bank</span><span>$'+net.toFixed(2)+'</span></div></div></div>'+(bsb?'<div style="background:#f0f9f4;border:2px solid #22c55e;border-radius:10px;padding:16px;text-align:center;margin-bottom:20px"><div style="font-size:11px;font-weight:700;text-transform:uppercase;color:#16a34a;margin-bottom:6px">Deposited to your account</div><div style="font-size:13px;color:#15803d">BSB: '+bsb+' | Account: '+acctMask+'</div><div style="font-size:24px;font-weight:700;color:#15803d;margin-top:8px">$'+net.toFixed(2)+'</div></div>':'')+'<div style="margin-top:30px;padding-top:16px;border-top:1px solid #e5e5e5;font-size:11px;color:#aaa;text-align:center;line-height:1.6">Northern Star Support Services - Falaax Group Pty Ltd - ABN 22 671 393 070</div></div></body></html>';
+  var h='<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Payslip - '+emp.name+'</title><style>body{font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;margin:0;padding:0;background:#fff;color:#1a1a1a}.page{max-width:720px;margin:0 auto;padding:40px}@media print{.page{padding:20px}}</style></head><body><div class="page"><div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:28px;padding-bottom:20px;border-bottom:2px solid #1a1a1a"><div><div style="font-size:18px;font-weight:700;margin-bottom:4px">Northern Star Support Services</div><div style="font-size:12px;color:#555;line-height:1.6">Falaax Group Pty Ltd<br>ABN: 22 671 393 070<br>12 Dimboola Rd, Broadmeadows VIC 3064<br>Phone: 03 7057 1645</div></div><div style="text-align:right"><div style="font-size:11px;color:#888;text-transform:uppercase;letter-spacing:.05em">Payslip</div><div style="font-size:18px;font-weight:700">'+refNo+'</div><div style="font-size:12px;color:#888;margin-top:6px">Paid: '+paidDate+'</div></div></div><div style="background:#f8f9fa;border:1px solid #e5e5e5;border-radius:8px;padding:16px;margin-bottom:20px"><div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:13px"><div><span style="color:#888">Name:</span> <b>'+emp.name+'</b></div><div><span style="color:#888">Role:</span> '+(emp.role||'--')+'</div><div><span style="color:#888">Employment:</span> '+(emp.employment_type||'--')+'</div><div><span style="color:#888">Period:</span> '+periodStart+' to '+periodEnd+'</div></div></div><div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:#888;margin-bottom:8px">Days Worked</div><table style="width:100%;border-collapse:collapse;margin-bottom:20px"><thead><tr style="background:#f0f0f0"><th style="padding:8px 10px;text-align:left;font-size:10px;font-weight:700;text-transform:uppercase;color:#666">Date</th><th style="padding:8px 10px;text-align:left;font-size:10px;font-weight:700;text-transform:uppercase;color:#666">Day</th><th style="padding:8px 10px;text-align:left;font-size:10px;font-weight:700;text-transform:uppercase;color:#666">Type</th><th style="padding:8px 10px;text-align:right;font-size:10px;font-weight:700;text-transform:uppercase;color:#666">Hours</th><th style="padding:8px 10px;text-align:right;font-size:10px;font-weight:700;text-transform:uppercase;color:#666">Rate</th><th style="padding:8px 10px;text-align:right;font-size:10px;font-weight:700;text-transform:uppercase;color:#666">Amount</th></tr></thead><tbody>'+dr+sleepRows+travelRows+'</tbody></table><div style="display:flex;justify-content:flex-end;margin-bottom:20px"><div style="width:280px"><div style="display:flex;justify-content:space-between;padding:6px 0;font-size:13px"><span>Gross pay</span><span style="font-weight:600">$'+gross.toFixed(2)+'</span></div>'+(tax>0?'<div style="display:flex;justify-content:space-between;padding:6px 0;font-size:13px;color:#dc2626"><span>PAYG tax withheld</span><span>-$'+tax.toFixed(2)+'</span></div>':'<div style="display:flex;justify-content:space-between;padding:6px 0;font-size:13px;color:#888"><span>PAYG tax</span><span>Not withheld</span></div>')+'<div style="display:flex;justify-content:space-between;padding:6px 0;font-size:13px;color:#d97706"><span>'+superLabel+'</span><span>$'+sup.toFixed(2)+'</span></div><div style="display:flex;justify-content:space-between;padding:10px 0;font-size:16px;font-weight:700;border-top:2px solid #1a1a1a;margin-top:4px;color:#15803d"><span>Net pay to bank</span><span>$'+net.toFixed(2)+'</span></div></div></div>'+(bsb?'<div style="background:#f0f9f4;border:2px solid #22c55e;border-radius:10px;padding:16px;text-align:center;margin-bottom:20px"><div style="font-size:11px;font-weight:700;text-transform:uppercase;color:#16a34a;margin-bottom:6px">Deposited to your account</div><div style="font-size:13px;color:#15803d">BSB: '+bsb+' | Account: '+acctMask+'</div><div style="font-size:24px;font-weight:700;color:#15803d;margin-top:8px">$'+net.toFixed(2)+'</div></div>':'')+'<div style="margin-top:30px;padding-top:16px;border-top:1px solid #e5e5e5;font-size:11px;color:#aaa;text-align:center;line-height:1.6">Northern Star Support Services - Falaax Group Pty Ltd - ABN 22 671 393 070</div></div></body></html>';
   var w=window.open('','_blank');if(!w){showToast('Popup blocked — allow popups for this site','err');return;}w.document.write(h);w.document.close();w.focus();setTimeout(function(){w.print();},500);
 }
 
@@ -4678,236 +4726,123 @@ async function deleteShiftType(id){
   showToast('Shift type deleted','ok');
 }
 
-// ── Connecteam PDF Parser ────────────────────────────────────────────────────
+// ── Excel timesheet parser (Connecteam Excel export) ───────────────────────
+// Replaces the former PDF importer. The customized Connecteam Excel export is
+// one workbook covering all employees for the fortnight. We parse only down to
+// raw {date, job, in, out, crossesMidnight, travelKm} shifts — everything
+// downstream (ctEnrichResults, matching, Stage 2/3, tsCreatePayRuns) is
+// format-agnostic and unchanged.
 
-// Converts "DD-MM-YYYY" filename date segment to "YYYY-MM-DD"
-function ctParseDMY(s){
-  var p=s.split('-');
-  if(p.length!==3)return null;
-  return p[2]+'-'+p[1]+'-'+p[0];
+// Normalise a sheet date cell to YYYY-MM-DD. VERIFIED against the sample files:
+// sheet_to_json({raw:false}) returns the cell's DISPLAY format, which in the
+// Connecteam template is DD/MM/YYYY — dateNF does not override it. Handle
+// DD/MM/YYYY, ISO, and Date objects defensively.
+function xlNormDate(v){
+  if(v==null||v==='')return '';
+  if(v instanceof Date){
+    return v.getFullYear()+'-'+String(v.getMonth()+1).padStart(2,'0')+'-'+String(v.getDate()).padStart(2,'0');
+  }
+  var s=String(v).trim();
+  var dmy=s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if(dmy)return dmy[3]+'-'+dmy[2].padStart(2,'0')+'-'+dmy[1].padStart(2,'0');
+  var iso=s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if(iso)return iso[1]+'-'+iso[2]+'-'+iso[3];
+  return '';
 }
 
-// Resolve D/M anchor to a full YYYY-MM-DD within the fortnight period.
-// Tries period_start year first, then period_end year (handles month-boundary fortnight).
-function ctResolveDate(day, month, periodStart, periodEnd){
-  var psY=parseInt(periodStart.slice(0,4));
-  var peY=parseInt(periodEnd.slice(0,4));
-  var mm=String(month).padStart(2,'0');
-  var dd=String(day).padStart(2,'0');
-  var years=(psY===peY)?[psY]:[psY,peY];
-  for(var i=0;i<years.length;i++){
-    var s=years[i]+'-'+mm+'-'+dd;
-    if(s>=periodStart&&s<=periodEnd)return s;
+// Normalise a time cell to HH:MM. Samples give 'HH:MM' strings already;
+// defensively also handle H:MM and Excel numeric day-fractions.
+function xlNormTime(v){
+  if(v==null||v==='')return '';
+  if(typeof v==='number'&&isFinite(v)){
+    var mins=Math.round(v*24*60);
+    return String(Math.floor(mins/60)).padStart(2,'0')+':'+String(mins%60).padStart(2,'0');
   }
-  return psY+'-'+mm+'-'+dd; // fallback outside period (caller may flag)
+  var m=String(v).trim().match(/^(\d{1,2}):(\d{2})/);
+  if(m)return m[1].padStart(2,'0')+':'+m[2];
+  return '';
 }
 
-// Words that appear in Connecteam PDF table cells but are NOT job names.
-// A token is treated as noise when ALL of its words are in this set, so
-// multi-word cells like "No sub items" are filtered out too.
-var CT_NOISE={no:1,sub:1,items:1,item:1,daily:1,total:1,paid:1,regular:1,overtime:1,
-  unpaid:1,auto:1,breaks:1,work:1,hours:1,absences:1,absence:1,type:1,day:1,
-  clock:1,'in':1,out:1,sum:1,shift:1};
-
-var CT_DOW=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
-var CT_TIME_RE=/^\d{2}:\d{2}$/;
-// Day anchor as a single cell, e.g. "Wed 15/7". Matched per-item (not against
-// the whole joined row), because the anchor shares its row with job + times.
-var CT_DAY_RE=/^(Sun|Mon|Tue|Wed|Thu|Fri|Sat)\s+(\d{1,2})\/(\d{1,2})$/;
-
-// Parse one PDF page's text items into raw shift records.
-// Returns [{date:'YYYY-MM-DD', job:'...', in:'HH:MM', out:'HH:MM'}]
-function ctParsePageShifts(items, periodStart, periodEnd){
-  // 1. Group items by Y (tolerance 3 pts), sort top-to-bottom (desc Y in PDF coords)
-  var YTOL=3;
-  var groups=[];
-  items.forEach(function(item){
-    var str=(item.str||'').trim();
-    if(!str)return;
-    var y=Math.round(item.transform[5]);
-    var x=item.transform[4];
-    var hit=null;
-    for(var i=0;i<groups.length;i++){
-      if(Math.abs(groups[i].y-y)<=YTOL){hit=groups[i];break;}
-    }
-    if(!hit){hit={y:y,items:[]};groups.push(hit);}
-    hit.items.push({str:str,x:x});
+// Parse a sheet (array-of-arrays) into ctParsePDF-shaped results, one per
+// employee block. Pure/testable — the Node harness exercises this exact logic.
+function xlParseRows(rows, fileName){
+  var mk=function(err){return {fileName:fileName,employeeName:null,periodStart:null,periodEnd:null,rawShifts:[],incomplete:[],error:err};};
+  if(!rows||!rows.length)return [mk('Empty sheet')];
+  var header=rows[0].map(function(h){return String(h==null?'':h).trim();});
+  var col={};
+  ['First name','Last name','Job','Start Date','Start time','End Date','End time','Shift hours','Record your Travel(Km)'].forEach(function(name){
+    col[name]=header.indexOf(name);
   });
-  groups.sort(function(a,b){return b.y-a.y;});
-  groups.forEach(function(g){
-    g.items.sort(function(a,b){return a.x-b.x;});
-  });
-
-  // 2. Detect the day anchor within each row. The anchor is a single cell
-  //    "Wed 15/7" (or, defensively, split into "Wed" + "15/7"); it sits at
-  //    the left of the same row as the job name and clock times.
-  groups.forEach(function(g){
-    for(var i=0;i<g.items.length;i++){
-      var m=g.items[i].str.match(CT_DAY_RE);
-      if(m){g.dayDate=ctResolveDate(parseInt(m[2]),parseInt(m[3]),periodStart,periodEnd);return;}
-    }
-    for(var j=0;j<g.items.length-1;j++){
-      if(CT_DOW.indexOf(g.items[j].str)!==-1&&/^\d{1,2}\/\d{1,2}$/.test(g.items[j+1].str)){
-        var p=g.items[j+1].str.split('/');
-        g.dayDate=ctResolveDate(parseInt(p[0]),parseInt(p[1]),periodStart,periodEnd);return;
-      }
-    }
-  });
-
-  var anchors=groups.filter(function(g){return g.dayDate;});
-  if(anchors.length===0)return [];
-
-  // 3. Assign every row the date of the NEAREST anchor by vertical distance.
-  //    Overnight sleepovers are split at midnight into sub-rows that can sit
-  //    directly above OR below their day's anchor (the anchor+daily-total gets
-  //    its own row between them), so "nearest" is correct where "most recent
-  //    above" would misfile the pre-midnight half onto the following day.
-  groups.forEach(function(g){
-    if(g.dayDate){g.assignedDate=g.dayDate;return;}
-    var best=null,bestD=Infinity;
-    anchors.forEach(function(a){var d=Math.abs(a.y-g.y);if(d<bestD){bestD=d;best=a;}});
-    g.assignedDate=best?best.dayDate:null;
-  });
-
-  // A token is noise when every word in it is a known column/label word —
-  // catches multi-word cells such as "No sub items".
-  function ctIsNoiseTok(tok){
-    var words=tok.split(/\s+/);
-    for(var i=0;i<words.length;i++){if(!CT_NOISE[words[i].toLowerCase()])return false;}
-    return true;
+  // End Date is mandatory — midnight-crossing is a direct field read with it.
+  // Without it, fail loudly rather than falling back to duration inference.
+  if(col['End Date']===-1){
+    return [mk('Missing "End Date" column — re-export using the current Connecteam template')];
   }
-
-  // 4. For each group that has an assigned date, extract shifts.
-  var shifts=[];
-  groups.forEach(function(g){
-    if(!g.assignedDate)return;
-    var tokens=g.items.map(function(it){return it.str;});
-
-    // Collect job-name runs and times from this line.
-    // Job-name runs are separated by "/" or "×N" or a time token.
-    var jobRuns=[];  // each element = array of words
-    var times=[];
-    var cur=[];
-
-    tokens.forEach(function(tok){
-      if(CT_TIME_RE.test(tok)){
-        if(cur.length){jobRuns.push(cur);cur=[];}
-        times.push(tok);
-        return;
-      }
-      // Separator / run-breaker
-      if(tok==='/'||/^[×x]\d+$/i.test(tok)||tok==='--'||tok==='-'){
-        if(cur.length){jobRuns.push(cur);cur=[];}
-        return;
-      }
-      // Day anchor cell (single "Wed 15/7" or bare "Wed" / "15/7") — skip
-      if(CT_DAY_RE.test(tok))return;
-      if(CT_DOW.indexOf(tok)!==-1)return;
-      if(/^\d{1,2}\/\d{1,2}$/.test(tok))return;
-      // Noise cells (column labels, "No sub items", …)
-      if(ctIsNoiseTok(tok))return;
-      // Pure punctuation / digits only
-      if(!/[a-zA-Z]/.test(tok))return;
-      cur.push(tok);
+  var missing=['First name','Last name','Job','Start Date','Start time','End time','Shift hours'].filter(function(n){return col[n]===-1;});
+  if(missing.length){
+    return [mk('Missing column(s): '+missing.join(', ')+' — re-export using the current Connecteam template')];
+  }
+  // Period from the filename pattern; fall back to min/max Start Date.
+  var periodStart=null,periodEnd=null;
+  var fm=String(fileName||'').match(/NSS_TIMESHEETS_(\d{4}-\d{2}-\d{2})_(\d{4}-\d{2}-\d{2})/);
+  if(fm){periodStart=fm[1];periodEnd=fm[2];}
+  else{
+    var ds=[];
+    rows.slice(1).forEach(function(r){var d=xlNormDate(r[col['Start Date']]);if(d)ds.push(d);});
+    ds.sort();
+    if(ds.length){periodStart=ds[0];periodEnd=ds[ds.length-1];}
+  }
+  var results=[],cur=null;
+  var cell=function(r,name){var i=col[name];return i===-1?'':String(r[i]==null?'':r[i]).trim();};
+  rows.slice(1).forEach(function(r){
+    var first=cell(r,'First name'),last=cell(r,'Last name');
+    if(first||last){
+      // Employee header row → new block
+      cur={fileName:fileName,employeeName:(first+' '+last).trim(),periodStart:periodStart,periodEnd:periodEnd,rawShifts:[],incomplete:[],error:null};
+      results.push(cur);
+      return;
+    }
+    if(!cur)return; // stray shift row before any header — ignore
+    var startDate=xlNormDate(r[col['Start Date']]);
+    if(!startDate)return; // blank spacer row
+    var job=cell(r,'Job');
+    var inT=xlNormTime(r[col['Start time']]);
+    var endDate=xlNormDate(r[col['End Date']]);
+    var outT=xlNormTime(r[col['End time']]);
+    var shiftHrs=cell(r,'Shift hours');
+    if(!endDate||!outT||!shiftHrs){
+      // Still clocked in at export time — surface, never crash or silently drop.
+      cur.incomplete.push({job:job,date:startDate,startTime:inT});
+      return;
+    }
+    var kmRaw=col['Record your Travel(Km)']===-1?'':cell(r,'Record your Travel(Km)');
+    cur.rawShifts.push({
+      date:startDate,job:job,'in':inT,out:outT,
+      crossesMidnight:endDate!==startDate,
+      travelKm:parseFloat(kmRaw)||0
     });
-    if(cur.length)jobRuns.push(cur);
-
-    var N=jobRuns.length;
-    if(N===0||times.length<2)return;
-
-    // Pair Nth job with (times[N-indexed clock-in], times[N + N-indexed clock-out])
-    // Layout: [in0, in1, ..., inN-1, out0, out1, ..., outN-1, totals..., dailyTotal]
-    // When N=1 this degenerates to times[0]=in, times[1]=out, ignore rest.
-    for(var i=0;i<N;i++){
-      var inIdx=i;
-      var outIdx=N+i;
-      if(outIdx>=times.length)break; // not enough times
-      shifts.push({
-        date:g.assignedDate,
-        job:jobRuns[i].join(' '),
-        'in':times[inIdx],
-        out:times[outIdx]
-      });
-    }
   });
-
-  return shifts;
+  if(!results.length)return [mk('No employee rows found in sheet')];
+  return results;
 }
 
-// Parse a single Connecteam PDF File object.
-// Returns {fileName, employeeName, periodStart, periodEnd, rawShifts:[], error:null}
-// Scan a page's text for a date range in the report header, e.g.
-// "06/07/2026 - 19/07/2026" or "06-07-2026 – 19-07-2026". Returns
-// {start,end} as 'YYYY-MM-DD' or null. Local-time construction only.
-function ctExtractHeaderPeriod(items){
-  var text=items.map(function(it){return it.str;}).join(' ');
-  var re=/(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})/g;
-  var found=[],m;
-  while((m=re.exec(text))!==null){
-    var dd=parseInt(m[1],10),mm=parseInt(m[2],10),yy=parseInt(m[3],10);
-    if(mm<1||mm>12||dd<1||dd>31)continue;
-    found.push(yy+'-'+String(mm).padStart(2,'0')+'-'+String(dd).padStart(2,'0'));
-    if(found.length>=2)break;
-  }
-  if(found.length>=2)return{start:found[0],end:found[1]};
-  return null;
-}
-
-async function ctParsePDF(file){
-  var result={fileName:file.name,employeeName:null,periodStart:null,periodEnd:null,rawShifts:[],error:null};
-
-  // Extract period and employee name from filename.
-  // Pattern: "First_Last_DD-MM-YYYY_DD-MM-YYYY.pdf" (name may have multiple parts)
-  var base=file.name.replace(/\.pdf$/i,'');
-  var parts=base.split('_');
-  var DMYRE=/^\d{2}-\d{2}-\d{4}$/;
-  var dateIdx=-1;
-  for(var i=0;i<parts.length-1;i++){
-    if(DMYRE.test(parts[i])&&DMYRE.test(parts[i+1])){dateIdx=i;break;}
-  }
-  if(dateIdx>=1){
-    result.employeeName=parts.slice(0,dateIdx).join(' ');
-    result.periodStart=ctParseDMY(parts[dateIdx]);
-    result.periodEnd=ctParseDMY(parts[dateIdx+1]);
-    if(!result.periodStart||!result.periodEnd){result.periodStart=null;result.periodEnd=null;}
-  }
-
-  if(typeof pdfjsLib==='undefined'){result.error='PDF.js library not loaded';return result;}
-
+// Browser wrapper: read one .xlsx File into the array-of-arrays xlParseRows
+// expects, then delegate. Returns an ARRAY (one entry per employee block, or a
+// single error result), matching the ctParsePDF result shape.
+async function xlParseExcelTimesheet(file){
+  var fileName=file.name||'';
   try{
-    var ab=await file.arrayBuffer();
-    var pdf=await pdfjsLib.getDocument({data:new Uint8Array(ab)}).promise;
-
-    // Cache each page's text content so we can peek at the header before
-    // parsing shifts (period must be known first for day→date resolution).
-    var pageContents=[];
-    for(var pg=1;pg<=pdf.numPages;pg++){
-      var page=await pdf.getPage(pg);
-      pageContents.push((await page.getTextContent()).items);
+    if(typeof XLSX==='undefined'){
+      return [{fileName:fileName,employeeName:null,periodStart:null,periodEnd:null,rawShifts:[],incomplete:[],error:'Excel library (XLSX) not loaded'}];
     }
-
-    // Filename didn't yield a period → fall back to the header date line.
-    if(!result.periodStart||!result.periodEnd){
-      for(var h=0;h<pageContents.length&&!result.periodStart;h++){
-        var hp=ctExtractHeaderPeriod(pageContents[h]);
-        if(hp){result.periodStart=hp.start;result.periodEnd=hp.end;}
-      }
-    }
-    if(!result.periodStart||!result.periodEnd){
-      result.error='Could not parse pay period from filename or PDF header';
-      return result;
-    }
-
-    var allShifts=[];
-    pageContents.forEach(function(items){
-      allShifts=allShifts.concat(ctParsePageShifts(items,result.periodStart,result.periodEnd));
-    });
-    result.rawShifts=allShifts;
-    if(allShifts.length===0)result.error='No shifts found — check PDF format';
+    var data=new Uint8Array(await file.arrayBuffer());
+    var wb=XLSX.read(data,{type:'array',cellDates:true});
+    var sheetName=wb.SheetNames.indexOf('All Employees')!==-1?'All Employees':wb.SheetNames[0];
+    var rows=XLSX.utils.sheet_to_json(wb.Sheets[sheetName],{header:1,raw:false,dateNF:'yyyy-mm-dd'});
+    return xlParseRows(rows,fileName);
   }catch(e){
-    result.error='Parse error: '+e.message;
+    return [{fileName:fileName,employeeName:null,periodStart:null,periodEnd:null,rawShifts:[],incomplete:[],error:'Parse error: '+e.message}];
   }
-  return result;
 }
 
 // Validate that all parsed results share the same period; return a warning string or null.
@@ -4952,33 +4887,8 @@ function ctShiftDuration(inTime,outTime,crossesMidnight){
   return(outM-inM)/60;
 }
 
-// Re-merge a single employee's raw shifts: a shift ending exactly 00:00 on date D
-// followed immediately (same job) by one starting 00:00 on D+1 → merged overnight shift.
-// Applied iteratively left-to-right on a date+time sorted array.
-function ctMidnightMerge(rawShifts){
-  var sorted=rawShifts.slice().sort(function(a,b){
-    var ak=a.date+'T'+a['in'],bk=b.date+'T'+b['in'];
-    return ak<bk?-1:ak>bk?1:0;
-  });
-  var out=[];
-  var i=0;
-  while(i<sorted.length){
-    var s=sorted[i];
-    // Try to merge: current ends at 00:00 AND next starts at 00:00 on D+1, same job
-    if(s.out==='00:00'&&i+1<sorted.length){
-      var nxt=sorted[i+1];
-      if(nxt['in']==='00:00'&&nxt.date===ctAddDay(s.date,1)&&nxt.job===s.job){
-        var merged={date:s.date,job:s.job,'in':s['in'],out:nxt.out,crossesMidnight:true};
-        out.push(merged);
-        i+=2;
-        continue;
-      }
-    }
-    out.push({date:s.date,job:s.job,'in':s['in'],out:s.out,crossesMidnight:false});
-    i++;
-  }
-  return out;
-}
+// (ctMidnightMerge removed — Excel rows are already one complete shift each,
+// with their own Start Date + End Date, so no re-stitching is needed.)
 
 // ---- 3b. Employee matching ----
 
@@ -5142,10 +5052,11 @@ function ctEnrichResults(parsedResults){
       empMatch.dupError=true;
     }
 
-    // Midnight-merge this employee's raw shifts
-    var merged=ctMidnightMerge(pr.rawShifts||[]);
+    // Excel rows are already complete shifts (own Start Date + End Date), so
+    // they pass straight through — no midnight re-stitching needed.
+    var merged=pr.rawShifts||[];
 
-    // Enrich each merged shift
+    // Enrich each shift
     var shifts=merged.map(function(s){
       var dur=ctShiftDuration(s['in'],s.out,s.crossesMidnight);
       // Zero / negative duration → flag, exclude by default
@@ -5175,7 +5086,9 @@ function ctEnrichResults(parsedResults){
         shiftKind:stRes.shiftKind,
         // Sleepover matches default to the SCHADS 1-hour active floor;
         // editable per shift in the Stage 2 review screen.
-        activeMins:stRes.shiftKind==='sleepover'?SCHADS_SLEEPOVER_ACTIVE_MIN_HRS*60:0
+        activeMins:stRes.shiftKind==='sleepover'?SCHADS_SLEEPOVER_ACTIVE_MIN_HRS*60:0,
+        // Employee travel reimbursement km carried from the Excel row.
+        travelKm:parseFloat(s.travelKm)||0
       };
     });
 
@@ -5186,6 +5099,8 @@ function ctEnrichResults(parsedResults){
       periodEnd:pr.periodEnd,
       empMatch:empMatch,
       shifts:shifts,
+      // Still-clocked-in rows surfaced by the Excel parser (informational only).
+      incomplete:pr.incomplete||[],
       error:pr.error||null
     };
   });
@@ -7978,8 +7893,8 @@ function tsTableMissing(err){
 var TS_SETUP_HINT='Timesheet import needs setup — the schedule_blocks and/or timesheet_name_map table is missing in Supabase. Run the setup SQL.';
 
 function openTsImport(){
-  if(typeof pdfjsLib==='undefined'){
-    showToast('PDF.js not loaded — check internet connection','err'); return;
+  if(typeof XLSX==='undefined'){
+    showToast('Excel library (XLSX) not loaded — check internet connection','err'); return;
   }
   if(S._scheduleBlocksTableMissing||S._nameMapTableMissing){
     showToast(TS_SETUP_HINT,'err'); return;
@@ -8028,9 +7943,12 @@ async function runTsParse(files){
     var iconId='ts-ic-'+f.name.replace(/[^a-z0-9]/gi,'_');
     var ic=eid(iconId);
     if(ic)ic.innerHTML='&#8987;'; // hourglass
-    var r=await ctParsePDF(f);
-    parsed.push(r);
-    if(ic)ic.innerHTML=r.error&&r.rawShifts.length===0?'&#10060;':'&#10003;';
+    // Each .xlsx returns an ARRAY of employee blocks (normally one file covers
+    // everyone). Flatten across all dropped files before enrichment.
+    var arr=await xlParseExcelTimesheet(f);
+    parsed=parsed.concat(arr);
+    var hadError=arr.some(function(x){return x.error&&x.rawShifts.length===0;});
+    if(ic)ic.innerHTML=hadError?'&#10060;':'&#10003;';
   }
 
   // Validate periods
@@ -8172,11 +8090,24 @@ function renderTsEmpCard(er,idx){
     +' · Sleepovers <b>'+tot.sleep+'</b>'
     +(tot.sleep>0?' · Active mins <b>'+tot.activeMins+'</b>':'');
 
+  // Incomplete (still-clocked-in) shifts: informational note only — never a
+  // blocker, never billed. Surfaces a worker who hadn't clocked out at export.
+  var incompleteNote='';
+  if(Array.isArray(er.incomplete)&&er.incomplete.length){
+    incompleteNote='<div style="padding:8px 12px;font-size:11px;color:var(--gold);background:rgba(201,162,39,.08);border-top:1px solid var(--border)">'
+      +er.incomplete.map(function(inc){
+        var dLbl=inc.date?tsDowLabel(inc.date)+' '+inc.date.split('-').reverse().join('/'):'';
+        return '&#9888; Shift not yet clocked out ('+(inc.job||'?')+(dLbl?', '+dLbl:'')+(inc.startTime?' from '+inc.startTime:'')+') — re-export closer to pay day';
+      }).join('<br>')
+    +'</div>';
+  }
+
   return'<div style="background:var(--bg3);border:1px solid var(--border);border-radius:var(--r);margin-bottom:12px;overflow:hidden">'
     +'<div style="display:flex;align-items:center;gap:10px;padding:10px 12px;border-bottom:1px solid var(--border);background:var(--bg4)">'
     +'<div style="font-weight:700;font-size:13px;flex:1">'+(er.employeeName||er.fileName)+'</div>'
     +'<div style="display:flex;align-items:center;gap:8px">'+empHeader+'</div>'
     +'</div>'
+    +incompleteNote
     +'<div style="overflow-x:auto">'
     +'<table style="width:100%;border-collapse:collapse;font-size:12px">'
     +'<thead><tr style="background:var(--bg4)">'
@@ -8546,21 +8477,30 @@ function renderTsStage3(){
     var tot=tsTotals(er.shifts||[]);
     var totalHrs=tot.wd+tot.sat+tot.sun+tot.ph;
 
-    // Estimate gross (approximate — full calc happens in ctCreatePayRuns)
+    // Estimate gross (approximate — full calc happens in tsCreatePayRuns)
     var br=parseFloat(emp.pay_rate)||0;
     var sr=parseFloat(emp.sat_rate)||(br*1.5);
     var ur=parseFloat(emp.sun_rate)||(br*2);
     var pr=br*2.25;
     var sleepPay=tsComputeSleepoverPay(er.shifts, emp);
+    // Employee travel reimbursement: sum logged km across included shifts.
+    var totalKm=(er.shifts||[]).filter(function(s){return s.included!==false;})
+      .reduce(function(a,s){return a+(parseFloat(s.travelKm)||0);},0);
+    var travelAmt=+(totalKm*EMPLOYEE_TRAVEL_KM_RATE).toFixed(2);
     var gross=+(tot.wd*br+tot.sat*sr+tot.sun*ur+tot.ph*pr
-      +sleepPay.total).toFixed(2);
+      +sleepPay.total+travelAmt).toFixed(2);
+
+    // PAYG/super default: OFF for contractors (responsible for their own tax),
+    // ON otherwise. Editable per row before creating — respected in the calc.
+    var eid_=er.empMatch.employee_id;
+    var isContractor=emp.employment_type==='Contractor';
+    var paygDefault=isContractor?'':' checked';
 
     // Duplicate run check
     var dupRun=(S.runs||[]).find(function(r){
       return r.employee_id===er.empMatch.employee_id
         &&r.period_start===er.periodStart&&r.period_end===er.periodEnd;
     });
-    var dupFlag='';
     if(dupRun){
       dupWarnings.push('<div style="color:#f59e0b;font-size:12px;margin-bottom:4px">&#9888; Pay run for <b>'+(emp?emp.name:er.employeeName)+'</b> covering this period already exists'
         +' <label style="font-size:11px;cursor:pointer"><input type="checkbox" id="ts-dup-'+er.empMatch.employee_id+'" style="margin-left:6px"> Create anyway</label></div>');
@@ -8570,10 +8510,15 @@ function renderTsStage3(){
     }
 
     rows.push('<tr>'
-      +'<td style="padding:7px 10px;font-size:13px;font-weight:600">'+(emp?emp.name:er.employeeName)+'</td>'
+      +'<td style="padding:7px 10px;font-size:13px;font-weight:600">'+(emp?emp.name:er.employeeName)+(isContractor?'<div style="font-size:10px;color:var(--text3);font-weight:400">Contractor</div>':'')+'</td>'
       +'<td style="padding:7px 10px;font-size:12px;color:var(--text2)">'+totalHrs.toFixed(1)+'h total</td>'
       +'<td style="padding:7px 10px;font-size:12px;color:var(--text2)">'+tot.wd.toFixed(1)+'h wd / '+tot.sat.toFixed(1)+'h sat / '+tot.sun.toFixed(1)+'h sun / '+tot.ph.toFixed(1)+'h PH</td>'
       +'<td style="padding:7px 10px;font-size:12px;color:#bc8cff">'+tot.sleep+' sleepovers'+(tot.sleep>0?' ('+tot.activeMins+' active min)':'')+'</td>'
+      +'<td style="padding:7px 10px;font-size:12px;color:var(--gold)">'+(totalKm>0?totalKm.toFixed(1)+'km · '+fmt(travelAmt):'&mdash;')+'</td>'
+      +'<td style="padding:7px 10px;font-size:11px;white-space:nowrap">'
+        +'<label style="cursor:pointer;margin-right:8px"><input type="checkbox" id="ts-payg-'+eid_+'"'+paygDefault+'> PAYG</label>'
+        +'<label style="cursor:pointer"><input type="checkbox" id="ts-super-'+eid_+'"'+paygDefault+'> Super</label>'
+      +'</td>'
       +'<td style="padding:7px 10px;font-size:13px;font-weight:700;text-align:right;color:var(--green)">~'+fmt(gross)+'</td>'
       +'</tr>');
   });
@@ -8591,6 +8536,8 @@ function renderTsStage3(){
     +'<th style="padding:7px 10px;text-align:left;font-size:10px;color:var(--text3);text-transform:uppercase;border-bottom:1px solid var(--border)">Hours</th>'
     +'<th style="padding:7px 10px;text-align:left;font-size:10px;color:var(--text3);text-transform:uppercase;border-bottom:1px solid var(--border)">Breakdown</th>'
     +'<th style="padding:7px 10px;text-align:left;font-size:10px;color:var(--text3);text-transform:uppercase;border-bottom:1px solid var(--border)">Sleepovers</th>'
+    +'<th style="padding:7px 10px;text-align:left;font-size:10px;color:var(--text3);text-transform:uppercase;border-bottom:1px solid var(--border)">Travel</th>'
+    +'<th style="padding:7px 10px;text-align:left;font-size:10px;color:var(--text3);text-transform:uppercase;border-bottom:1px solid var(--border)">Withhold</th>'
     +'<th style="padding:7px 10px;text-align:right;font-size:10px;color:var(--text3);text-transform:uppercase;border-bottom:1px solid var(--border)">Est. gross</th>'
     +'</tr></thead>'
     +'<tbody>'+rows.join('')+'</tbody></table>';
@@ -8647,14 +8594,23 @@ async function tsCreatePayRuns(){
     var sleepPay=tsComputeSleepoverPay(included, emp);
     var perShiftMins=sleepPay.perShift.map(function(ps){return Math.round(ps.activeHrs*60);});
 
+    // Employee travel reimbursement: sum logged km × $0.99, folded into gross
+    // and taxed like the rest of the run (no carve-out — contractors handle
+    // their own tax via the PAYG toggle below).
+    var totalKm=included.reduce(function(a,s){return a+(parseFloat(s.travelKm)||0);},0);
+    var travelAmt=+(totalKm*EMPLOYEE_TRAVEL_KM_RATE).toFixed(2);
+
     var hourlyGross=+(tot.wd*br+tot.sat*sr+tot.sun*ur+tot.ph*(br*2.25)).toFixed(2);
-    var gross=+(hourlyGross+sleepPay.total).toFixed(2);
+    var gross=+(hourlyGross+sleepPay.total+travelAmt).toFixed(2);
+    // Per-employee PAYG/super toggle from Stage 3 (defaults off for contractors).
+    var paygOn=(eid('ts-payg-'+emp.id)||{checked:true}).checked;
+    var superOn=(eid('ts-super-'+emp.id)||{checked:true}).checked;
     var annualEq=gross*26;
-    var tax=+(paygCalc(annualEq)/26).toFixed(2);
-    var sup=+(gross*getSuperRate(er.periodEnd||tod())).toFixed(2);
+    var tax=paygOn?+(paygCalc(annualEq)/26).toFixed(2):0;
+    var sup=superOn?+(gross*getSuperRate(er.periodEnd||tod())).toFixed(2):0;
     var p={gross:gross,tax:tax,sup:sup,net:+(gross-tax).toFixed(2)};
 
-    // Build day_breakdown — one entry per included shift + sleepover_meta + import_meta
+    // Build day_breakdown — one entry per included shift + sleepover_meta + travel_meta + import_meta
     var dtLabelMap={'PH':'holiday','Sat':'saturday','Sun':'sunday','Wkday':'weekday'};
     var dayBreakdown=included.map(function(s){
       var dtObj=tsDayType(s.date);
@@ -8700,6 +8656,11 @@ async function tsCreatePayRuns(){
         active_minutes:avgActMins,
         per_shift_mins:perShiftMins
       });
+    }
+
+    // Travel reimbursement meta — its own payslip line, not folded into hours.
+    if(travelAmt>0){
+      dayBreakdown.push({type:'travel_meta',km:totalKm,rate:EMPLOYEE_TRAVEL_KM_RATE,amount:travelAmt});
     }
 
     dayBreakdown.push({
