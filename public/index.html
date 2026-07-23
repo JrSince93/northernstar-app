@@ -6529,27 +6529,35 @@ function genNDISInvoice() {
     var bg=(rowIdx%2===1)?'#f5f5f5':'#ffffff';
     return '<tr style="background:'+bg+'"><td style="padding:5px 8px;border:1px solid #e0e0e0;font-size:8.5pt">'+l.date+'</td><td style="padding:5px 8px;border:1px solid #e0e0e0;font-size:8.5pt">'+l.day+'</td><td style="padding:5px 8px;border:1px solid #e0e0e0;font-size:8.5pt">'+l.desc+'</td><td style="padding:5px 8px;border:1px solid #e0e0e0;font-size:8pt;font-family:monospace;color:#444">'+l.code+'</td><td style="padding:5px 8px;border:1px solid #e0e0e0;font-size:8.5pt;text-align:right">'+l.qty.toFixed(2)+'</td><td style="padding:5px 8px;border:1px solid #e0e0e0;font-size:8.5pt;text-align:right">$'+l.rate.toFixed(2)+'</td><td style="padding:5px 8px;border:1px solid #e0e0e0;font-size:8.5pt;text-align:right;font-weight:600">$'+l.amt.toFixed(2)+'</td></tr>';
   }).join('');
-  var paySection;
-  if(bl.management==='plan'||bl.management==='self'){
+  // PAYMENT DETAILS: the bank transfer table ALWAYS renders — plan managers
+  // and self-managed participants both pay Falaax Group directly by bank
+  // transfer (then claim from NDIA / reimbursement themselves), so every
+  // invoice must show where to send payment. The management-specific note and
+  // Bill To are layered ABOVE the table, not instead of it. Colour convention
+  // kept: blue box for plan/self, green for agency.
+  var isPlanOrSelf = bl.management==='plan'||bl.management==='self';
+  var payBg    = isPlanOrSelf ? '#eff6ff' : '#f0fdf4';
+  var payBrd   = isPlanOrSelf ? '#bfdbfe' : '#bbf7d0';
+  var payTitle = isPlanOrSelf ? '#1d4ed8' : '#15803d';
+  var payIntro = '';
+  if(isPlanOrSelf){
     var billName=(bl.bill_to&&bl.bill_to.name)||'';
     var billEmail=(bl.bill_to&&bl.bill_to.email)||'';
-    var payNote=bl.management==='self'?'Self-managed participant — claim via the NDIS myplace portal.':'Invoice to plan manager below.';
-    paySection='<div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:6px;padding:12px 20px;margin-top:12px">'
-      +'<div style="font-size:9pt;font-weight:700;color:#1d4ed8;margin-bottom:6px">PAYMENT DETAILS</div>'
-      +'<div style="font-size:9pt;color:#333">'+payNote+'</div>'
-      +(billName?'<div style="font-size:9pt;margin-top:6px"><b>Bill to:</b> '+billName+(billEmail?' &lt;'+billEmail+'&gt;':'')+'</div>':'')
-      +'<div style="font-size:9pt;margin-top:4px"><b>Invoice ref:</b> '+invNum+'</div>'
-      +'</div>';
-  } else {
-    paySection='<div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:6px;padding:12px 20px;margin-top:12px">'
-      +'<div style="font-size:9pt;font-weight:700;color:#15803d;margin-bottom:6px">PAYMENT DETAILS</div>'
-      +'<table style="font-size:9pt;line-height:1.7"><tbody>'
-      +'<tr><td style="padding:1px 14px 1px 0;font-weight:600;color:#333">Account Name:</td><td>Falaax Group Pty Ltd</td></tr>'
-      +'<tr><td style="padding:1px 14px 1px 0;font-weight:600;color:#333">BSB:</td><td>774-001</td></tr>'
-      +'<tr><td style="padding:1px 14px 1px 0;font-weight:600;color:#333">Account Number:</td><td>243610957</td></tr>'
-      +'<tr><td style="padding:1px 14px 1px 0;font-weight:600;color:#333">Reference:</td><td>'+invNum+'</td></tr>'
-      +'</tbody></table></div>';
+    var payNote=bl.management==='self'
+      ? 'Self-managed participant — pay by bank transfer below, then claim reimbursement via the NDIS myplace portal.'
+      : 'Invoice to plan manager — payable by bank transfer below.';
+    payIntro='<div style="font-size:9pt;color:#333;margin-bottom:6px">'+payNote+'</div>'
+      +(billName?'<div style="font-size:9pt;margin-bottom:6px"><b>Bill to:</b> '+billName+(billEmail?' &lt;'+billEmail+'&gt;':'')+'</div>':'');
   }
+  var paySection='<div style="background:'+payBg+';border:1px solid '+payBrd+';border-radius:6px;padding:12px 20px;margin-top:12px">'
+    +'<div style="font-size:9pt;font-weight:700;color:'+payTitle+';margin-bottom:6px">PAYMENT DETAILS</div>'
+    +payIntro
+    +'<table style="font-size:9pt;line-height:1.7"><tbody>'
+    +'<tr><td style="padding:1px 14px 1px 0;font-weight:600;color:#333">Account Name:</td><td>Falaax Group Pty Ltd</td></tr>'
+    +'<tr><td style="padding:1px 14px 1px 0;font-weight:600;color:#333">BSB:</td><td>774-001</td></tr>'
+    +'<tr><td style="padding:1px 14px 1px 0;font-weight:600;color:#333">Account Number:</td><td>243610957</td></tr>'
+    +'<tr><td style="padding:1px 14px 1px 0;font-weight:600;color:#333">Reference:</td><td>'+invNum+'</td></tr>'
+    +'</tbody></table></div>';
   var purple='#6B2D7B';
   var h3='<!DOCTYPE html><html><head><meta charset="UTF-8"><title>NSSS-'+invNum+'-'+(pt.name||'').replace(/\s+/g,'_')+'</title>'
     +'<style>body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;margin:0;padding:0;background:#fff;color:#1a1a1a;-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important;color-adjust:exact!important}'
