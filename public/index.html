@@ -5677,6 +5677,20 @@ var RATE_CARDS = {
 var BL_CARD_LABELS = {core:'Core (0107)',core_combined:'Core-CP/ASC (0125/0107)',sil:'SIL (0138)',employment:'Employment (0102)',community:'Community (0125)',custom:'Custom'};
 var BL_INV_PREFIXES = {sil:'INV-SIL-',core:'INV-CF-',core_combined:'INV-CF-',employment:'INV-EMP-',community:'INV-COM-',custom:'INV-'};
 
+// SINGLE source of truth for invoice reference numbers. The prefix is used
+// AS-IS (trailing hyphen kept) because attributeReceiptsToLines matches
+// receipts against BL_INV_PREFIXES verbatim — a ref built any other way
+// (the old CSV export stripped the hyphens: "INVSIL20260716") never matches
+// and its payment silently lands in the tracker's Unattributed bucket.
+// Every place that mints a reference MUST call this; don't rebuild inline.
+// DATA NOTE: invoice_ref values already recorded with the old hyphen-less
+// CSV format won't retroactively match the tracker — correct those rows
+// manually in Supabase (invoice_ledger.invoice_ref / transactions.reference).
+function buildInvoiceRef(rateCard, periodEnd){
+  var prefix = BL_INV_PREFIXES[rateCard||'core'] || BL_INV_PREFIXES.custom;
+  return prefix + String(periodEnd||'').replace(/-/g,'').slice(0,8);
+}
+
 // ── SIL 2026-27 rate refresh ────────────────────────────────────────────────
 // Budget lines snapshot RATE_CARDS at creation, so existing SIL lines carry the
 // stale 2025-26 amounts. Bump a line's rate to the 2026-27 figure ONLY when it
@@ -6176,13 +6190,34 @@ function iiDaysSelectorHtml(prefix){
   return '<div style="margin-top:5px">'
     +'<label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:11px;color:var(--text2)">'
       +'<input type="checkbox" id="'+prefix+'-days-toggle" class="cb-circle" style="width:16px;height:16px" '
-      +'onchange="eid(\''+prefix+'-days-row\').style.display=this.checked?\'flex\':\'none\'"> Specific days</label>'
+      +'onchange="eid(\''+prefix+'-days-row\').style.display=this.checked?\'flex\':\'none\';updateDaysReadout(\''+prefix+'\')"> Specific days</label>'
     +'<div id="'+prefix+'-days-row" style="display:none;gap:5px;flex-wrap:wrap;margin-top:6px">'
     +days.map(function(d,i){
       return '<label style="display:flex;align-items:center;gap:4px;font-size:11px;cursor:pointer;background:var(--bg5);border:1px solid var(--border2);border-radius:var(--r);padding:3px 7px">'
-        +'<input type="checkbox" id="'+prefix+'-day-'+i+'" checked>'+d+'</label>';
+        +'<input type="checkbox" id="'+prefix+'-day-'+i+'" checked onchange="updateDaysReadout(\''+prefix+'\')">'+d+'</label>';
     }).join('')
-    +'</div></div>';
+    +'</div>'
+    +'<span id="'+prefix+'-days-readout" style="display:none;font-size:10px;margin-top:4px"></span>'
+    +'</div>';
+}
+
+// Live plain-text readout of the ACTUAL stored day selection — what
+// getRestrictedDaysFor() will hand the invoice builder — so the state is
+// always visible rather than inferred from which pills look highlighted.
+function updateDaysReadout(prefix){
+  var el = eid(prefix+'-days-readout');
+  if(!el) return;
+  var days = getRestrictedDaysFor(prefix);
+  if(days === null){ el.style.display='none'; el.textContent=''; return; }
+  var names = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+  el.style.display = 'block';
+  if(days.length){
+    el.textContent = 'Selected: ' + days.map(function(i){ return names[i]; }).join(', ');
+    el.style.color = 'var(--text3)';
+  } else {
+    el.textContent = 'Selected: none — this field will bill nothing';
+    el.style.color = 'var(--gold)';
+  }
 }
 
 // Returns null when the field's "Specific days" toggle is off/missing (= bill
@@ -6232,6 +6267,9 @@ function ndisInvApplyBudgetLineDefaults() {
     sec = '<div class="field"><label>Hours per day</label><input type="number" id="ii-hrs" value="8" min="0" step="0.5">'+iiDaysSelectorHtml('ii-hrs')+'</div>';
   }
   eid('ndis-inv-hrs-section').innerHTML = sec;
+  // Sync each day-filter readout with the freshly injected (default) markup —
+  // no-ops for prefixes the active card doesn't render.
+  ['ii-hrs','ii-hrs-0107','ii-hrs-0125'].forEach(updateDaysReadout);
   var rates = bl.rates||[];
   var rateLines = rates.filter(function(r){return r.day_type!=='travel_km';}).map(function(r){
     return (r.group&&BL_GROUP_LABELS[r.group]?BL_GROUP_LABELS[r.group]+' ':'')+r.day_type+' $'+Number(r.rate).toFixed(2)+'/hr';
@@ -6467,8 +6505,7 @@ function genNDISInvoice() {
   var lines = _buildInvLines(bl, periodStart, periodEnd, travelKm, travelMin, invOpts2);
   if(lines.length===0){ showToast('Nothing to invoice — enter hours for at least one service','err'); return; }
   var subtotal = lines.reduce(function(s,l){return s+l.amt;},0);
-  var prefix = BL_INV_PREFIXES[bl.rate_card||'core'];
-  var invNum = prefix+periodEnd.replace(/-/g,'').slice(0,8);
+  var invNum = buildInvoiceRef(bl.rate_card||'core', periodEnd);
   var pendingInv = { invoice_ref:invNum, amount:+subtotal.toFixed(2), period_start:periodStart, period_end:periodEnd, generated_at:new Date().toISOString(), participant_name:pt.name };
   S._lastGenInvoice = Object.assign({participantId:ptId},pendingInv);
   sb2.from('participants').update({pending_invoice:pendingInv}).eq('id',ptId).then(function(r){
@@ -6597,8 +6634,10 @@ function genMyPlaceCSV() {
     return;
   }
   if(!NDIS_PROVIDER_REG){ showToast('Provider Registration Number not configured','err'); return; }
-  var prefix = BL_INV_PREFIXES[bl.rate_card||'core'];
-  var invNum = prefix.replace(/-/g,'')+periodEnd.replace(/-/g,'').slice(0,8);
+  // Same canonical ref as the PDF — the ClaimReference in the CSV is what
+  // comes back on payment remittances, so it must match BL_INV_PREFIXES for
+  // the budget tracker's receipt attribution.
+  var invNum = buildInvoiceRef(bl.rate_card||'core', periodEnd);
   // Section-header pseudo-lines (core_combined PDF dividers) never become claims
   var rows = lines.filter(function(l){ return !l.header; }).map(function(l){
     // Convert display date back to ISO: "DD/MM/YYYY" or range "DD/MM/YYYY–DD/MM/YYYY"
@@ -6641,7 +6680,9 @@ function genMyPlaceCSV() {
     ].join(','));
   });
   var csv = csvLines.join('\r\n');
-  var fname = invNum.slice(0,16)+'.csv';
+  // Filename only (not a reference): hyphen-free to stay within the portal's
+  // 20-char convention and match the filenames we've always produced.
+  var fname = invNum.replace(/-/g,'').slice(0,16)+'.csv';
   if(fname.length>20) fname=fname.slice(0,16)+'.csv';
   var a = document.createElement('a');
   a.href = URL.createObjectURL(new Blob([csv],{type:'text/csv'}));
@@ -7448,7 +7489,7 @@ function openInvoiceLedgerConfirm(ptId, ptName) {
   }
 
   if(last) {
-    eid('il-invnum').value = last.invoice_ref||('INV-'+(last.period_end||'').replace(/-/g,'').slice(0,8));
+    eid('il-invnum').value = last.invoice_ref||buildInvoiceRef('custom', last.period_end||'');
     eid('il-amount').value = (+last.amount||0).toFixed(2);
     eid('il-period-start').value = last.period_start||last.periodStart||'';
     eid('il-period-end').value = last.period_end||last.periodEnd||'';
