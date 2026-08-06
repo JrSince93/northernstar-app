@@ -1226,6 +1226,7 @@ async function cleanupInvisibleChars(){
 
 // ── Wise API Integration ──
 var WISE_PROFILE_ID = 87229043; // Falaax Group Pty Ltd business profile
+var WISE_AUD_BALANCE_ID = 155725808; // Main AUD operating balance — profile also has group balances (e.g. "Lita's Groceries"), so never match on currency alone
 var WISE_FN_URL = '/.netlify/functions/wise';
 
 async function fetchWiseBalance() {
@@ -1234,13 +1235,16 @@ async function fetchWiseBalance() {
     var resp = await fetch(WISE_FN_URL + '?path=v4/profiles/' + WISE_PROFILE_ID + '/balances?types=STANDARD');
     if (!resp.ok) throw new Error('HTTP ' + resp.status);
     var bals = await resp.json();
-    var audBal = null;
-    if (Array.isArray(bals)) {
-      bals.forEach(function(b) {
-        if (b.currency === 'AUD') audBal = b.amount.value;
-      });
+    var main = Array.isArray(bals) ? bals.find(function(b) {
+      return b && b.id === WISE_AUD_BALANCE_ID;
+    }) : null;
+    if (main && main.amount) {
+      el.textContent = fmt(main.amount.value);
+      el.title = '';
+    } else {
+      el.textContent = '--';
+      el.title = 'Wise balance id ' + WISE_AUD_BALANCE_ID + ' not found in profile balances';
     }
-    el.textContent = (audBal !== null) ? fmt(audBal) : 'No AUD';
   } catch (e) {
     console.error('Wise balance error:', e);
     el.textContent = '--';
@@ -7056,8 +7060,9 @@ async function fetchWiseTransfers() {
       if(balResp.ok) {
         var bals = await balResp.json();
         if(Array.isArray(bals)) {
-          var aud = bals.find(function(b){ return b && b.currency === 'AUD'; });
-          if(aud && aud.id != null) audBalanceId = aud.id;
+          var aud = bals.find(function(b){ return b && b.id === WISE_AUD_BALANCE_ID; });
+          if(aud) audBalanceId = aud.id;
+          else console.warn('[Wise] Main AUD balance id ' + WISE_AUD_BALANCE_ID + ' not found in profile balances');
         }
       }
     } catch(e) { console.warn('Wise balance lookup error:', e); }
