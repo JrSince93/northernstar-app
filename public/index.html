@@ -7678,6 +7678,7 @@ async function autoImportWiseExpenses() {
   if(outbound.length===0) return;
 
   var imported = 0;
+  var jarImported = 0;
   var skipped = { payroll:0, alreadyCB:0, feeOrConv:0, noData:0, notCompleted:0, inactive:0, ignoredOpening:0 };
 
   // Hardcoded ignore list — Wise transfers we never want imported.
@@ -7716,11 +7717,28 @@ async function autoImportWiseExpenses() {
     var tTypeUpper = (t.type||'').toUpperCase();
     var recipient = (t.recipientName||'').toLowerCase();
     var internalTypesOut = ['MONEY_ADDED','TOPPED_UP','CASHBACK','CONVERSION','INTEREST_PAYMENT','BALANCE_TO_BALANCE'];
-    if(internalTypesOut.indexOf(tTypeUpper)!==-1) { skipped.feeOrConv++; continue; }
-    if(tType==='conversion'||tType==='fee'||tType==='balance-cashback') { skipped.feeOrConv++; continue; }
-    if(desc.indexOf('balance cashback')!==-1||desc.indexOf('cashback')!==-1) { skipped.feeOrConv++; continue; }
-    if(desc.indexOf('topped up account')!==-1||desc.indexOf('transferred between')!==-1) { skipped.feeOrConv++; continue; }
-    if(recipient==='wise'||desc.indexOf('jar')!==-1) { skipped.feeOrConv++; continue; }
+
+    // Exemption: jar moves (main AUD balance → a Wise jar). Wise types these as
+    // CONVERSION, so the internal/conversion skips below would drop them — but
+    // the money really has left the operating balance, and the cash book closing
+    // balance is meant to track the Wise main AUD balance. Let them through to
+    // be imported as ordinary expenses. Genuine FX conversions and Wise fees
+    // stay skipped: only this exact "Moved <amount> <CCY> to <jar>" shape is
+    // exempt. (The `desc.indexOf('jar')` skip further down is bypassed too, so
+    // a jar whose name contains the word "jar" still imports.)
+    var jarMove = (t.description||'').match(/^moved\s+[\d,.]+\s+[a-z]{3}\s+to\s+(.+)$/i);
+    var jarName = jarMove ? jarMove[1].trim() : '';
+
+    if(!jarMove) {
+      if(internalTypesOut.indexOf(tTypeUpper)!==-1) { skipped.feeOrConv++; continue; }
+      if(tType==='conversion'||tType==='fee'||tType==='balance-cashback') { skipped.feeOrConv++; continue; }
+      if(desc.indexOf('balance cashback')!==-1||desc.indexOf('cashback')!==-1) { skipped.feeOrConv++; continue; }
+      if(desc.indexOf('topped up account')!==-1||desc.indexOf('transferred between')!==-1) { skipped.feeOrConv++; continue; }
+      if(recipient==='wise'||desc.indexOf('jar')!==-1) { skipped.feeOrConv++; continue; }
+    } else {
+      console.log('[Wise auto-import] jar move exempt from conversion skip —', tDate, tAmt,
+                  'type='+(t.type||'?'), 'jar="'+jarName+'"');
+    }
 
     // Skip: matches an existing pay run. Anchor and window are deliberately
     // IDENTICAL to reconcilePendingPayroll() — anchor on period_end, accept
@@ -7811,6 +7829,8 @@ async function autoImportWiseExpenses() {
          feeBlob.indexOf('monthly fee')!==-1)) {
       txDesc2 = ('Wise Fee - '+txDesc2).slice(0,80);
     }
+    // Jar moves get the jar name, not the raw "Moved 125.00 AUD to X" string.
+    if(jarName) txDesc2 = ('Jar - '+jarName).slice(0,80);
     var month = MONTHS[new Date(tDate).getMonth()];
     var ref = 'WISE-'+(wiseRefSuffix||Date.now().toString().slice(-8));
 
@@ -7832,13 +7852,15 @@ async function autoImportWiseExpenses() {
       if(res.data&&res.data[0]) {
         S.tx.push(res.data[0]);
         imported++;
+        if(jarName) jarImported++;
       }
     } catch(insertErr) {
       console.warn('[Wise auto-import] insert exception:', insertErr);
     }
   }
 
-  console.log('[Wise auto-import] summary — imported:', imported, 'skipped:', skipped);
+  console.log('[Wise auto-import] summary — imported:', imported,
+              '(of which jar moves:', jarImported+')', 'skipped:', skipped);
 
   if(imported > 0) {
     renderDash();
@@ -7873,6 +7895,21 @@ async function autoImportWiseIncome() {
 
     if(!tAmt||tAmt<0.01||!tDate) { skipped.noData++; continue; }
     if(tStatus && tStatus!=='COMPLETED' && tStatus!=='FUNDS_CONVERTED') { skipped.notCompleted++; continue; }
+
+    // A jar → main move (money pulled back out of a jar, e.g. to correct a
+    // mistake) would land here, most likely typed CONVERSION like its outbound
+    // counterpart — but we have no sample of its actual shape, so it stays
+    // skipped for now. Dump the whole object the first time one appears so the
+    // real format is on record and can be handled properly. Logging only: the
+    // internal-type skip below still fires exactly as before.
+    if(tType === 'CONVERSION') {
+      console.warn('[Wise income-import] inbound CONVERSION skipped — possible jar→main move, shape not yet handled:', {
+        id: t.id, type: t.type, direction: t.direction,
+        amount: t.amount, targetAmount: t.targetAmount, date: t.date,
+        description: t.description, senderName: t.senderName, status: t.status
+      });
+    }
+
     if(internalTypesIn.indexOf(tType)!==-1) { skipped.internal++; continue; }
     if(descLower.indexOf('topped up account')!==-1||descLower.indexOf('transferred between')!==-1||
        senderLower.indexOf('topped up account')!==-1||senderLower.indexOf('transferred between')!==-1) {
