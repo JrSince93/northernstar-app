@@ -7628,6 +7628,38 @@ async function initWiseSync() {
   if(document.getElementById('page-cashbook').classList.contains('active')) renderCB();
 }
 
+// ── Shared helper: counterparty name on a Wise transfer ──
+// t.recipientName comes back EMPTY from the Wise statement endpoint, so the
+// only usable name is normally buried in t.description ("Sent money to Yupa
+// Diepold"). Returns a lowercase name, or '' when nothing usable is present.
+var WISE_NAME_PREFIXES  = ['sent money to ','payment to ','transfer to ','paid to '];
+var WISE_NAME_STOPWORDS = ['sent','money','transfer','payment','paid','from','to','the','for','ref'];
+
+function wiseCounterpartyName(t) {
+  if(!t) return '';
+  var name = (t.recipientName||'').toString().trim().toLowerCase();
+  if(name) return name;
+  name = (t.description||'').toString().trim().toLowerCase();
+  if(!name) return '';
+  for(var i=0; i<WISE_NAME_PREFIXES.length; i++) {
+    if(name.indexOf(WISE_NAME_PREFIXES[i]) === 0) {
+      name = name.slice(WISE_NAME_PREFIXES[i].length).trim();
+      break;
+    }
+  }
+  return name;
+}
+
+// Most distinctive token in a counterparty name: longest word of 5+ chars that
+// isn't transfer boilerplate. Returns '' when the name yields nothing useful.
+function wiseNameKeyword(name) {
+  var toks = (name||'').split(/[^a-z0-9]+/).filter(function(w){
+    return w.length >= 5 && WISE_NAME_STOPWORDS.indexOf(w) === -1;
+  });
+  if(!toks.length) return '';
+  return toks.reduce(function(a,b){ return b.length > a.length ? b : a; });
+}
+
 // ── Auto-import Wise outbound transfers as cash book expenses ──
 async function autoImportWiseExpenses() {
   if(!S.wiseTransfers||S.wiseTransfers.length===0) return;
@@ -7690,23 +7722,67 @@ async function autoImportWiseExpenses() {
     if(desc.indexOf('topped up account')!==-1||desc.indexOf('transferred between')!==-1) { skipped.feeOrConv++; continue; }
     if(recipient==='wise'||desc.indexOf('jar')!==-1) { skipped.feeOrConv++; continue; }
 
-    // Skip: matches an existing pay run (amount within $1, date within 5 days).
-    // The $1 tolerance matches reconcilePendingPayroll() — anything that could
-    // be a payroll transfer must NOT be auto-imported as a generic Wise expense,
-    // because reconcilePendingPayroll will use it to flip a pending row.
-    var isPayroll = S.runs.some(function(r) {
+    // Skip: matches an existing pay run. Anchor and window are deliberately
+    // IDENTICAL to reconcilePendingPayroll() — anchor on period_end, accept
+    // transfers from 2 days before to 18 days after, amount within $1. When the
+    // two functions disagree, a transfer can be both reconciled into a PAYROLL-
+    // row and re-imported here as a generic Wise expense, double-counting it.
+    // (The old 5-day window measured from period_end missed a batch paid exactly
+    // 5 days after period end, because the comparison was a strict `<`.)
+    var tName = wiseCounterpartyName(t);
+    var nameRejects = [];
+    var payrollRun = S.runs.find(function(r) {
       var netPay = +r.net_pay||0;
       if(netPay <= 0) return false;
       if(Math.abs(netPay - tAmt) > 1.00) return false;
-      var d1 = new Date(r.paid_date||r.period_end||'');
-      var d2 = new Date(tDate);
-      return Math.abs(d1-d2) < 5*86400000;
+      var anchor   = r.period_end || r.paid_date || '';
+      var anchorMs = anchor ? new Date(anchor).getTime() : 0;
+      var tMs      = tDate  ? new Date(tDate).getTime()  : 0;
+      if(anchorMs && tMs) {
+        if(tMs < anchorMs -  2*24*3600*1000) return false;
+        if(tMs > anchorMs + 18*24*3600*1000) return false;
+      }
+      // The wider window raises the chance a genuine non-payroll payment lands
+      // within $1 of some net pay. When the transfer carries a usable name,
+      // require it to match that run's employee; with no name available, fall
+      // back to amount + date alone (the previous behaviour).
+      if(tName) {
+        var emp = S.emps.find(function(e){ return e.id === r.employee_id; });
+        var empName = (emp && emp.name ? emp.name : '').toLowerCase();
+        if(empName) {
+          var parts = empName.split(/\s+/).filter(function(w){ return w.length >= 3; });
+          var hit = parts.some(function(w){ return tName.indexOf(w) !== -1; });
+          if(!hit) {
+            // Amount + date say payroll but the name disagrees. Usually correct
+            // (a real supplier payment), but log it: if the Wise recipient name
+            // is simply spelled differently from the employee record, a genuine
+            // payroll transfer will fall through and be imported as an expense.
+            nameRejects.push(tDate+' '+tAmt+' "'+tName+'" vs employee "'+empName+'"');
+            return false;
+          }
+        }
+      }
+      return true;
     });
-    if(isPayroll) { skipped.payroll++; continue; }
+    if(payrollRun) {
+      skipped.payroll++;
+      console.log('[Wise auto-import] skip payroll —', tDate, tAmt,
+                  'run='+(payrollRun.id||'').toString().slice(0,8),
+                  'period_end='+(payrollRun.period_end||payrollRun.paid_date||'?'),
+                  'name='+(tName||'(none)'));
+      continue;
+    }
+    if(nameRejects.length) {
+      console.log('[Wise auto-import] payroll amount+date matched but name did not — importing as expense:', nameRejects);
+    }
 
     // Skip: already in cash book. Use specific identity, not the catch-all-on-match
     // that previously caused every transfer to be flagged as duplicate.
     var wiseRefSuffix = (t.id||'').toString().slice(-8);
+    // Distinctive token from the counterparty name. The old code split the raw
+    // description and took the first 5+ char word, which for "sent money to
+    // yupa diepold" was "money" — so this guard never fired for statement rows.
+    var tKey = wiseNameKeyword(tName);
     var alreadyInCB = S.tx.some(function(tx) {
       // Previously auto-imported by us — identified by reference
       var txRef = (tx.reference||'').toString();
@@ -7718,11 +7794,8 @@ async function autoImportWiseExpenses() {
       // Same amount + same date + matching description text → likely a manual entry
       // for the same transaction. Require description overlap to reduce false positives.
       var txDesc = (tx.description||'').toLowerCase();
-      var tDesc = (recipient||desc||'').toLowerCase();
-      if(!tDesc) return false;
-      // Match if either contains the other's first word (7+ chars)
-      var tKey = tDesc.split(/\s+/).find(function(w){ return w.length>=5; });
-      if(tKey && txDesc.indexOf(tKey)!==-1) return true;
+      if(!tKey) return false;
+      if(txDesc.indexOf(tKey)!==-1) return true;
       return false;
     });
     if(alreadyInCB) { skipped.alreadyCB++; continue; }
