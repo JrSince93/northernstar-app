@@ -831,7 +831,7 @@ input[type=number]{text-align:right;font-variant-numeric:tabular-nums}
   <input type="hidden" id="wp-wise-id">
   <div class="modal-footer">
     <button class="btn btn-outline" onclick="closeM('m-inv-wisepay')">Not this one</button>
-    <button class="btn btn-green" onclick="confirmWisePayment()">Confirm payment</button>
+    <button class="btn btn-green" id="wp-confirm-btn" onclick="confirmWisePayment()">Confirm payment</button>
   </div>
 </div></div></div>
 
@@ -7520,6 +7520,17 @@ function openWisePayConfirm(invId, wiseTransferId) {
   eid('m-inv-wisepay').style.display = 'block';
 }
 
+// Guard against recording the same invoice payment twice: a cash book row with
+// the same invoice reference, amount in and date is treated as already recorded.
+function findExistingPaymentTx(ref, amt, date) {
+  if(!ref) return null;
+  return (S.tx||[]).find(function(r) {
+    return r.reference===ref
+      && r.date===date
+      && Math.abs((+r.amount_in||0) - (+amt||0)) < 0.005;
+  }) || null;
+}
+
 async function confirmWisePayment() {
   var invId = eid('wp-inv-id').value;
   var wiseId = eid('wp-wise-id').value;
@@ -7527,39 +7538,59 @@ async function confirmWisePayment() {
   var transfer = (S.wiseTransfers||[]).find(function(t){ return t.id===wiseId; });
   if(!inv||!transfer){ showToast('Match not found','err'); return; }
 
+  // Block a second click while this save is in flight
+  var btn = eid('wp-confirm-btn');
+  if(btn) { if(btn.disabled) return; btn.disabled = true; btn.style.opacity = '.5'; }
+
   setSync('saving');
 
-  // 1. Update ledger entry to paid
-  var updateData = {
-    status: 'paid',
-    payment_amount: transfer.amount,
-    payment_date: transfer.date||tod(),
-    payment_source: 'Wise',
-    wise_transfer_id: wiseId
-  };
+  try {
+    // 1. Update ledger entry to paid
+    var updateData = {
+      status: 'paid',
+      payment_amount: transfer.amount,
+      payment_date: transfer.date||tod(),
+      payment_source: 'Wise',
+      wise_transfer_id: wiseId
+    };
 
-  if(invId.indexOf('local-')!==0) {
-    await sb2.from('invoice_ledger').update(updateData).eq('id', invId);
+    if(invId.indexOf('local-')!==0) {
+      await sb2.from('invoice_ledger').update(updateData).eq('id', invId);
+    }
+    Object.assign(inv, updateData);
+
+    // 2. Create cash book transaction — unless this payment is already recorded
+    var payDate = transfer.date||tod();
+    if(findExistingPaymentTx(inv.invoice_ref, transfer.amount, payDate)) {
+      setSync('ok');
+      closeM('m-inv-wisepay');
+      renderInvoices();renderDash();
+      showToast('Payment already recorded in cash book — skipped duplicate','ok');
+      return;
+    }
+
+    var month = MONTHS[new Date(payDate).getMonth()];
+    var txRes = await sb2.from('transactions').insert({
+      month: month,
+      date: payDate,
+      description: 'NDIS Payment - ' + (inv.participant_name||''),
+      payment_type: 'Wise Transfer',
+      reference: inv.invoice_ref,
+      amount_in: transfer.amount,
+      amount_out: 0
+    }).select();
+    if(txRes.data&&txRes.data[0]) S.tx.push(txRes.data[0]);
+
+    setSync('ok');
+    closeM('m-inv-wisepay');
+    renderInvoices();renderDash();
+    showToast('Payment confirmed — $'+transfer.amount.toFixed(2)+' recorded in cash book','ok');
+  } catch(e) {
+    setSync('error');
+    showToast('Could not confirm payment: '+(e.message||e),'err');
+  } finally {
+    if(btn) { btn.disabled = false; btn.style.opacity = ''; }
   }
-  Object.assign(inv, updateData);
-
-  // 2. Create cash book transaction
-  var month = MONTHS[new Date(transfer.date||tod()).getMonth()];
-  var txRes = await sb2.from('transactions').insert({
-    month: month,
-    date: transfer.date||tod(),
-    description: 'NDIS Payment - ' + (inv.participant_name||''),
-    payment_type: 'Wise Transfer',
-    reference: inv.invoice_ref,
-    amount_in: transfer.amount,
-    amount_out: 0
-  }).select();
-  if(txRes.data&&txRes.data[0]) S.tx.push(txRes.data[0]);
-
-  setSync('ok');
-  closeM('m-inv-wisepay');
-  renderInvoices();renderDash();
-  showToast('Payment confirmed — $'+transfer.amount.toFixed(2)+' recorded in cash book','ok');
 }
 
 // Manual mark paid (for non-Wise payments)
@@ -7587,7 +7618,14 @@ async function manualMarkPaid(invId) {
   }
   Object.assign(inv, updateData);
 
-  // Create cash book transaction
+  // Create cash book transaction — unless this payment is already recorded
+  if(findExistingPaymentTx(inv.invoice_ref, amt, payDate)) {
+    setSync('ok');
+    renderInvoices();renderDash();
+    showToast('Payment already recorded in cash book — skipped duplicate','ok');
+    return;
+  }
+
   var month = MONTHS[new Date(payDate).getMonth()];
   var txRes = await sb2.from('transactions').insert({
     month: month,
