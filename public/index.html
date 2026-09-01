@@ -795,7 +795,13 @@ input[type=number]{text-align:right;font-variant-numeric:tabular-nums}
   <div class="form-grid">
     <div class="form-row">
       <div class="field"><label>Participant</label><div id="il-participant" style="background:var(--bg4);border:1px solid var(--border2);border-radius:var(--r);padding:8px 12px;font-size:12px;color:var(--text)">--</div></div>
-      <div class="field"><label>Invoice number</label><input type="text" id="il-invnum" placeholder="INV-20260414"></div>
+      <div class="field"><label>Invoice number</label><input type="text" id="il-invnum" placeholder="INV-20260414">
+        <div id="il-invnum-lock" style="display:none;font-size:10px;margin-top:4px">
+          <span id="il-invnum-linked" style="color:var(--text3)"></span>
+          <a href="#" onclick="ilUnlockInvnum();return false;" style="color:var(--purple);text-decoration:underline;margin-left:6px">Edit manually</a>
+        </div>
+        <div id="il-invnum-warn" style="display:none;font-size:10px;margin-top:4px;color:var(--gold)">Only override this if you're logging an invoice from outside the app.</div>
+      </div>
     </div>
     <div class="form-row">
       <div class="field"><label>Invoice amount ($)</label><input type="number" id="il-amount" step="0.01" min="0" placeholder="0.00"></div>
@@ -806,6 +812,12 @@ input[type=number]{text-align:right;font-variant-numeric:tabular-nums}
       <div class="field"><label>Service period end</label><input type="date" id="il-period-end"></div>
     </div>
   </div>
+  <div id="il-source-row" style="display:none;background:var(--purple-bg);border:1px solid rgba(188,140,255,.2);border-radius:var(--r);padding:10px 14px;margin-top:12px">
+    <label style="font-size:10px;color:var(--purple);display:block;margin-bottom:6px">Which generated invoice is this? (more than one is awaiting attachment)</label>
+    <select id="il-source-pick" onchange="ilApplySource(this.value)" style="width:100%"></select>
+  </div>
+  <input type="hidden" id="il-budget-line-id">
+  <input type="hidden" id="il-rate-card">
   <div class="modal-footer">
     <button class="btn btn-outline" onclick="closeM('m-inv-ledger')">Skip</button>
     <button class="btn btn-primary" onclick="saveInvoiceLedgerEntry()" style="background:#6B2D7B">Create ledger entry</button>
@@ -2397,6 +2409,7 @@ function collectNDISReceiptsForParticipant(pt) {
       date: date,
       amount: amt,
       reference: ref,
+      budget_line_id: inv.budget_line_id || null,
       source: 'ledger',
       description: 'Invoice ' + (ref||'—') + ' paid',
       payment_source: inv.payment_source || '—'
@@ -2418,6 +2431,7 @@ function collectNDISReceiptsForParticipant(pt) {
       date: tx.date,
       amount: amt,
       reference: ref,
+      budget_line_id: tx.budget_line_id || null,
       source: 'cashbook',
       description: tx.description || 'NDIS Payment',
       payment_source: tx.payment_type || '—'
@@ -2682,6 +2696,14 @@ function attributeReceiptsToLines(pt, lines){
   matchers.sort(function(a,b){ return b.prefix.length - a.prefix.length; });
   var unattributed = [];
   receipts.forEach(function(r){
+    // Direct link wins: anything generated through the app since the
+    // budget-line-linking migration carries the line id end to end, so no
+    // text matching is involved. Prefix matching is only for receipts
+    // predating that (or entered manually in the cash book).
+    if(r.budget_line_id && byLineId[r.budget_line_id]){
+      byLineId[r.budget_line_id].push(r);
+      return;
+    }
     var ref = (r.reference||'').toUpperCase();
     var hit = ref ? matchers.find(function(m){ return ref.indexOf(m.prefix) === 0; }) : null;
     if(hit) byLineId[hit.id].push(r);
@@ -6435,8 +6457,12 @@ function genNDISInvoice() {
   if(lines.length===0){ showToast('Nothing to invoice — enter hours for at least one service','err'); return; }
   var subtotal = lines.reduce(function(s,l){return s+l.amt;},0);
   var invNum = buildInvoiceRef(bl.rate_card||'core', periodEnd);
-  var pendingInv = { invoice_ref:invNum, amount:+subtotal.toFixed(2), period_start:periodStart, period_end:periodEnd, generated_at:new Date().toISOString(), participant_name:pt.name };
+  var pendingInv = { invoice_ref:invNum, amount:+subtotal.toFixed(2), period_start:periodStart, period_end:periodEnd, generated_at:new Date().toISOString(), participant_name:pt.name,
+                     budget_line_id:bl.id, rate_card:bl.rate_card||'core' };
   S._lastGenInvoice = Object.assign({participantId:ptId},pendingInv);
+  // Keep EVERY invoice generated this session, not just the newest: generating
+  // Core then SIL before attaching either used to lose the first one's link.
+  rememberPendingGenInvoice(ptId, pendingInv);
   sb2.from('participants').update({pending_invoice:pendingInv}).eq('id',ptId).then(function(r){
     if(!r.error){ pt.pending_invoice=pendingInv; S.participants=S.participants.map(function(p){ return p.id===ptId?Object.assign(p,{pending_invoice:pendingInv}):p; }); }
   });
@@ -7423,34 +7449,144 @@ function renderDashWiseMatchBanner() {
 // ── Invoice Ledger Confirm (after upload to participant archive) ──
 var _ilParticipantId = '';
 
+// budget_line_id / rate_card are added by a manual Supabase migration
+// (migrations/2026-08-29-budget-line-linking.sql). Until it runs, PostgREST
+// rejects the WHOLE insert with "Could not find the 'budget_line_id' column of
+// 'transactions' in the schema cache" — which would break invoice and payment
+// recording outright. Retry once without the new columns instead: attribution
+// falls back to prefix matching exactly as it does today.
+function isMissingColumnError(err, cols) {
+  if(!err) return false;
+  var msg = (err.message||'') + ' ' + (err.details||'') + ' ' + (err.hint||'');
+  var code = err.code||'';
+  if(code!=='PGRST204' && code!=='42703' && msg.toLowerCase().indexOf('column')===-1) return false;
+  return cols.some(function(c){ return msg.indexOf(c)!==-1; });
+}
+
+async function insertTolerant(table, row, optionalCols) {
+  var res = await sb2.from(table).insert(row).select();
+  if(res.error && isMissingColumnError(res.error, optionalCols)) {
+    var stripped = Object.assign({}, row);
+    optionalCols.forEach(function(c){ delete stripped[c]; });
+    console.warn('['+table+'] missing column(s): '+optionalCols.join(', ')
+      +' — inserted without them. Run migrations/2026-08-29-budget-line-linking.sql.');
+    res = await sb2.from(table).insert(stripped).select();
+    if(!res.error) res.droppedCols = true;
+  }
+  return res;
+}
+
+// Every invoice generated this session, so a second generation can't silently
+// orphan the first one's budget-line link. Persisted pending_invoice on the
+// participant still holds only the newest (unchanged shape, back-compatible).
+function rememberPendingGenInvoice(ptId, pendingInv) {
+  if(!S._pendingGenInvoices) S._pendingGenInvoices = [];
+  var rec = Object.assign({participantId:ptId}, pendingInv);
+  var dupe = S._pendingGenInvoices.findIndex(function(p){
+    return p.participantId===ptId && p.invoice_ref===rec.invoice_ref && p.budget_line_id===rec.budget_line_id;
+  });
+  if(dupe!==-1) S._pendingGenInvoices.splice(dupe,1);
+  S._pendingGenInvoices.push(rec);
+}
+
+// Prefill candidates for the Ledger Confirm modal, oldest first.
+function ilPendingCandidates(ptId) {
+  var out = [], seen = {};
+  var add = function(src){
+    if(!src) return;
+    var key = (src.invoice_ref||'')+'|'+(src.budget_line_id||'')+'|'+(+src.amount||0);
+    if(seen[key]) return;
+    seen[key] = 1;
+    out.push(src);
+  };
+  (S._pendingGenInvoices||[]).forEach(function(p){ if(p.participantId===ptId) add(p); });
+  if(S._lastGenInvoice && S._lastGenInvoice.participantId === ptId) add(S._lastGenInvoice);
+  var pt = (S.participants||[]).find(function(p){ return p.id===ptId; });
+  if(pt && pt.pending_invoice) add(pt.pending_invoice);
+  return out;
+}
+
+var _ilCandidates = [];
+
+function ilApplySource(idx) {
+  var src = _ilCandidates[+idx];
+  if(!src) return;
+  eid('il-invnum').value = src.invoice_ref||buildInvoiceRef(src.rate_card||'custom', src.period_end||'');
+  eid('il-amount').value = (+src.amount||0).toFixed(2);
+  eid('il-period-start').value = src.period_start||src.periodStart||'';
+  eid('il-period-end').value = src.period_end||src.periodEnd||'';
+  eid('il-budget-line-id').value = src.budget_line_id||'';
+  eid('il-rate-card').value = src.rate_card||'';
+  var linked = eid('il-invnum-linked');
+  if(linked) linked.textContent = src.budget_line_id
+    ? 'Linked to ' + (BL_CARD_LABELS[src.rate_card||'core']||src.rate_card||'budget line')
+    : 'No budget line linked \u2014 will attribute by reference';
+}
+
+function ilUnlockInvnum() {
+  var f = eid('il-invnum');
+  if(f) { f.readOnly = false; f.focus(); }
+  var lock = eid('il-invnum-lock'); if(lock) lock.style.display = 'none';
+  var warn = eid('il-invnum-warn'); if(warn) warn.style.display = 'block';
+}
+
 function openInvoiceLedgerConfirm(ptId, ptName) {
   _ilParticipantId = ptId;
   eid('il-participant').textContent = ptName;
   eid('il-date').value = tod();
 
-  // Try sources in order: session data > persistent pending_invoice on participant
-  var last = null;
-  if(S._lastGenInvoice && S._lastGenInvoice.participantId === ptId) {
-    last = S._lastGenInvoice;
-  } else {
-    var pt = (S.participants||[]).find(function(p){ return p.id===ptId; });
-    if(pt && pt.pending_invoice) {
-      last = pt.pending_invoice;
-    }
-  }
+  // Sources, oldest first: every invoice generated this session, then the
+  // persistent pending_invoice on the participant.
+  _ilCandidates = ilPendingCandidates(ptId);
 
-  if(last) {
-    eid('il-invnum').value = last.invoice_ref||buildInvoiceRef('custom', last.period_end||'');
-    eid('il-amount').value = (+last.amount||0).toFixed(2);
-    eid('il-period-start').value = last.period_start||last.periodStart||'';
-    eid('il-period-end').value = last.period_end||last.periodEnd||'';
+  var invnum = eid('il-invnum');
+  var pick = eid('il-source-pick');
+  var row = eid('il-source-row');
+  var lock = eid('il-invnum-lock');
+  var warn = eid('il-invnum-warn');
+  if(warn) warn.style.display = 'none';
+
+  if(_ilCandidates.length) {
+    // Default to the newest, matching the previous single-slot behaviour.
+    var defIdx = _ilCandidates.length - 1;
+    if(pick) {
+      pick.innerHTML = _ilCandidates.map(function(c,i){
+        var label = (c.invoice_ref||'(no ref)')
+          + ' \u2014 ' + (BL_CARD_LABELS[c.rate_card||'core']||c.rate_card||'unlinked')
+          + ' \u2014 ' + fmt(+c.amount||0);
+        return '<option value="'+i+'"'+(i===defIdx?' selected':'')+'>'+label+'</option>';
+      }).join('');
+    }
+    if(row) row.style.display = _ilCandidates.length > 1 ? 'block' : 'none';
+    ilApplySource(defIdx);
+    // Prefilled refs are read-only: a hand-edit here is what used to break
+    // attribution. Still submits (readOnly, not disabled).
+    if(invnum) invnum.readOnly = true;
+    if(lock) lock.style.display = 'block';
   } else {
+    if(row) row.style.display = 'none';
     eid('il-invnum').value = '';
     eid('il-amount').value = '';
     eid('il-period-start').value = '';
     eid('il-period-end').value = '';
+    eid('il-budget-line-id').value = '';
+    eid('il-rate-card').value = '';
+    if(invnum) invnum.readOnly = false;
+    if(lock) lock.style.display = 'none';
   }
   eid('m-inv-ledger').style.display = 'block';
+}
+
+// Minimum shape for a hand-typed reference: a known BL_INV_PREFIXES prefix
+// followed by an 8-digit period-end date, i.e. exactly what buildInvoiceRef
+// mints. Built from BL_INV_PREFIXES so the two can't drift apart.
+function ilRefLooksValid(ref) {
+  var up = (ref||'').toUpperCase();
+  return Object.keys(BL_INV_PREFIXES)
+    .map(function(k){ return BL_INV_PREFIXES[k]; })
+    .filter(function(v,i,a){ return a.indexOf(v)===i; })
+    .sort(function(a,b){ return b.length - a.length; })
+    .some(function(pfx){ return up.indexOf(pfx)===0 && /^\d{8}$/.test(up.slice(pfx.length)); });
 }
 
 async function saveInvoiceLedgerEntry() {
@@ -7463,6 +7599,20 @@ async function saveInvoiceLedgerEntry() {
 
   if(!invRef||!amount||!invDate){ showToast('Fill invoice number, amount and date','err'); return; }
 
+  var blId = (eid('il-budget-line-id')||{value:''}).value || null;
+  var rateCard = (eid('il-rate-card')||{value:''}).value || null;
+
+  // Backstop for hand-typed refs on a multi-line participant: with no budget
+  // line carried through, the reference IS the only attribution key, so a
+  // malformed one silently lands in Unattributed after payment. Block it here
+  // rather than after the money has moved.
+  var lineCount = (pt && pt.budget_lines || []).length;
+  if(!blId && lineCount > 1 && !ilRefLooksValid(invRef)) {
+    showToast('Invoice ref must be a known prefix + 8-digit period end, e.g. '
+      + buildInvoiceRef('sil', pEnd||invDate) + ' — check the reference on the invoice','err');
+    return;
+  }
+
   var entry = {
     invoice_ref: invRef,
     participant_id: _ilParticipantId,
@@ -7471,11 +7621,13 @@ async function saveInvoiceLedgerEntry() {
     invoice_date: invDate,
     period_start: pStart||null,
     period_end: pEnd||null,
-    status: 'awaiting_payment'
+    status: 'awaiting_payment',
+    budget_line_id: blId,
+    rate_card: rateCard
   };
 
   setSync('saving');
-  var res = await sb2.from('invoice_ledger').insert(entry).select();
+  var res = await insertTolerant('invoice_ledger', entry, ['budget_line_id','rate_card']);
   if(res.error) {
     console.warn('invoice_ledger table error:', res.error.message);
     // Fallback local
@@ -7495,6 +7647,9 @@ async function saveInvoiceLedgerEntry() {
   closeM('m-inv-ledger');
   // Clear pending invoice data
   S._lastGenInvoice = null;
+  if(S._pendingGenInvoices) S._pendingGenInvoices = S._pendingGenInvoices.filter(function(c){
+    return !(c.participantId===_ilParticipantId && c.invoice_ref===invRef);
+  });
   var pt2 = (S.participants||[]).find(function(p){ return p.id===_ilParticipantId; });
   if(pt2 && pt2.pending_invoice) {
     pt2.pending_invoice = null;
@@ -7570,15 +7725,16 @@ async function confirmWisePayment() {
     }
 
     var month = MONTHS[new Date(payDate).getMonth()];
-    var txRes = await sb2.from('transactions').insert({
+    var txRes = await insertTolerant('transactions', {
       month: month,
       date: payDate,
       description: 'NDIS Payment - ' + (inv.participant_name||''),
       payment_type: 'Wise Transfer',
       reference: inv.invoice_ref,
       amount_in: transfer.amount,
-      amount_out: 0
-    }).select();
+      amount_out: 0,
+      budget_line_id: inv.budget_line_id||null
+    }, ['budget_line_id']);
     if(txRes.data&&txRes.data[0]) S.tx.push(txRes.data[0]);
 
     setSync('ok');
@@ -7627,15 +7783,16 @@ async function manualMarkPaid(invId) {
   }
 
   var month = MONTHS[new Date(payDate).getMonth()];
-  var txRes = await sb2.from('transactions').insert({
+  var txRes = await insertTolerant('transactions', {
     month: month,
     date: payDate,
     description: 'NDIS Payment - ' + (inv.participant_name||''),
     payment_type: 'Bank Transfer',
     reference: inv.invoice_ref,
     amount_in: amt,
-    amount_out: 0
-  }).select();
+    amount_out: 0,
+    budget_line_id: inv.budget_line_id||null
+  }, ['budget_line_id']);
   if(txRes.data&&txRes.data[0]) S.tx.push(txRes.data[0]);
 
   setSync('ok');
