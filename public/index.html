@@ -8809,6 +8809,7 @@ function renderTsStage3(){
   eid('ts-modal-title').textContent='Confirm pay runs';
   var rows=[];
   var dupWarnings=[];
+  var totalGross=0;
 
   _tsEnriched.forEach(function(er){
     if(er.empMatch.status==='ignored')return;
@@ -8833,6 +8834,7 @@ function renderTsStage3(){
     var travelAmt=+(totalKm*EMPLOYEE_TRAVEL_KM_RATE).toFixed(2);
     var gross=+(tot.wd*br+tot.sat*sr+tot.sun*ur+tot.ph*pr
       +sleepPay.total+travelAmt).toFixed(2);
+    totalGross+=gross;
 
     // PAYG/super default: OFF for contractors (responsible for their own tax),
     // ON otherwise. Editable per row before creating — respected in the calc.
@@ -8884,7 +8886,11 @@ function renderTsStage3(){
     +'<th style="padding:7px 10px;text-align:left;font-size:10px;color:var(--text3);text-transform:uppercase;border-bottom:1px solid var(--border)">Withhold</th>'
     +'<th style="padding:7px 10px;text-align:right;font-size:10px;color:var(--text3);text-transform:uppercase;border-bottom:1px solid var(--border)">Est. gross</th>'
     +'</tr></thead>'
-    +'<tbody>'+rows.join('')+'</tbody></table>';
+    +'<tbody>'+rows.join('')+'</tbody>'
+    +'<tfoot><tr style="border-top:2px solid var(--border);background:var(--bg4)">'
+    +'<td colspan="6" style="padding:9px 10px;font-size:12px;font-weight:700;text-align:right;color:var(--text2)">Total ('+included.length+' employee'+(included.length!==1?'s':'')+')</td>'
+    +'<td style="padding:9px 10px;font-size:14px;font-weight:800;text-align:right;color:var(--green)">'+fmt(totalGross)+'</td>'
+    +'</tr></tfoot></table>';
 }
 
 function tsDowLabel(dateStr){
