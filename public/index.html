@@ -1291,6 +1291,15 @@ function renderDash(){
   eid('d-net').className='kpi-val '+(net>=0?'green':'red');
   eid('d-emp').textContent=S.emps.filter(function(e){return e.active;}).length;
 
+  // Invoices outstanding: updated here so it refreshes on every renderDash()
+  // (payment confirm, mark paid, new ledger entry) — not just on a full reload.
+  var invKpi = eid('d-inv-out');
+  if(invKpi) {
+    var outAmt = getDashInvoiceOutstanding();
+    invKpi.textContent = outAmt > 0 ? fmt(outAmt) : '$0';
+    invKpi.style.color = outAmt > 0 ? 'var(--out)' : 'var(--in)';
+  }
+
   var mIn=[],mOut=[],mNet=[];
   MONTHS.forEach(function(m){
     var rows=S.tx.filter(function(r){
