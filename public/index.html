@@ -190,6 +190,11 @@ input[type=number]{text-align:right;font-variant-numeric:tabular-nums}
 .exp-ctx-item:hover{background:var(--bg5)}
 .exp-pick-row{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:9px 11px;border-radius:var(--r);cursor:pointer;border:1px solid transparent}
 .exp-pick-row:hover{background:var(--bg4);border-color:var(--border2)}
+.exp-owner-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:16px}
+.exp-owner-box{background:var(--bg2);border:1px solid var(--border);border-radius:var(--r2);padding:12px 13px}
+.exp-owner-head{padding:2px 3px 10px;border-bottom:1px solid var(--hairline);margin-bottom:11px}
+.exp-owner-box .card{background:var(--bg3)}
+.exp-owner-box .card:last-child{margin-bottom:0!important}
 .empty::before{content:'◇';display:block;font-size:19px;margin-bottom:8px;opacity:.4;color:var(--blue)}
 .err-box{background:var(--out-bg);border:1px solid var(--out-dim);color:var(--out);border-radius:var(--r);padding:12px 16px;margin-bottom:16px;font-size:12px;display:none;word-break:break-all}
 @media(max-width:768px){
@@ -207,6 +212,7 @@ input[type=number]{text-align:right;font-variant-numeric:tabular-nums}
   .sidebar.open{left:0}
   .kpi-grid{grid-template-columns:1fr 1fr}
   .two-col,.three-col{grid-template-columns:1fr}
+  .exp-owner-grid{grid-template-columns:1fr}
   .topbar{padding:0 12px}
   .page{padding:12px}
   table{min-width:400px}
@@ -439,9 +445,9 @@ input[type=number]{text-align:right;font-variant-numeric:tabular-nums}
 <div id="exp-ctxmenu" style="display:none;position:fixed;z-index:400;min-width:210px;background:var(--bg3);border:1px solid var(--border2);border-radius:var(--r);padding:5px;box-shadow:0 18px 44px -14px rgba(0,0,0,.85)"></div>
 
 <div id="m-exp-alloc" style="display:none"><div class="modal-bg" onclick="if(event.target===this)closeM('m-exp-alloc')"><div class="modal" style="width:460px">
-  <div class="modal-title"><span style="color:var(--blue)">Allocate to participant</span><button class="btn-icon" onclick="closeM('m-exp-alloc')">&#x2715;</button></div>
+  <div class="modal-title"><span style="color:var(--blue)">Allocate expense</span><button class="btn-icon" onclick="closeM('m-exp-alloc')">&#x2715;</button></div>
   <div id="exp-alloc-tx" style="background:var(--bg4);border:1px solid var(--border2);border-radius:var(--r);padding:9px 12px;font-size:12px;color:var(--text2);margin-bottom:12px">--</div>
-  <div class="field"><label>Search participants</label><input type="text" id="exp-alloc-search" placeholder="Start typing a name" oninput="renderExpAllocList(this.value)"></div>
+  <div class="field"><label>Allocate to</label><input type="text" id="exp-alloc-search" placeholder="Company, or start typing a participant name" oninput="renderExpAllocList(this.value)"></div>
   <div id="exp-alloc-list" style="max-height:280px;overflow-y:auto;margin-top:10px"></div>
   <div class="modal-footer"><button class="btn btn-outline" onclick="closeM('m-exp-alloc')">Cancel</button></div>
 </div></div></div>
@@ -9157,6 +9163,13 @@ var _expCtxInstance = null;       // instance the context menu is open on
 var _expMarkTxId = null;          // transaction being turned into a recurring expense
 var _expMatchInstanceId = null;   // instance being manually matched
 var _expCandidate = null;         // suggested candidate being added, for back-fill
+// Transactions the allocate modal is currently targeting. MUST NOT live on
+// _expCtxTx: opening the modal from the context menu lets that click bubble to
+// the document listener, which runs expCloseMenu() and nulls _expCtxTx before
+// the user ever picks a name — which is why clicking a participant used to do
+// nothing at all. This is set when the modal opens and cleared when it closes.
+var _expAllocTxIds = [];
+var _expAllocLabel = '';          // what the modal header describes
 
 // Month shown on the tab. Follows the app's existing month selection so the
 // Cash Book month tabs and this tab stay in step.
@@ -9351,6 +9364,7 @@ function detectRecurringCandidates(){
 
   (S.tx||[]).forEach(function(t){
     if(!expIsTrackable(t)) return;                 // expense, and never payroll
+    if(t.allocated_to) return;                     // already handled by hand
     var amt = +t.amount_out||0;
     if(!amt) return;
     if(expIsTracked(t.description, amt)) return;   // already a recurring expense
@@ -9392,6 +9406,7 @@ function detectRecurringCandidates(){
       day: day||null,
       months: months,
       monthTx: byMonth,
+      txIds: g.txs.map(function(t){ return t.id; }),   // every row in the group
       sig: expCandidateSig(label, avg)
     });
   });
@@ -9435,13 +9450,27 @@ function renderSuggestedCandidates(){
             +' <span style="opacity:.7">('+span+')</span>'
           +'</div>'
         +'</div>'
-        +'<div style="display:flex;align-items:center;gap:8px">'
+        +'<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">'
           +'<button class="btn btn-primary btn-sm" onclick="openExpRecurringFromCandidate('+i+')">Add as Recurring</button>'
+          +'<button class="btn btn-outline btn-sm" onclick="openExpAllocateOneTime('+i+')">Allocate as one-time</button>'
           +'<button class="btn btn-outline btn-sm" onclick="expDismissCandidate('+i+')">Dismiss</button>'
         +'</div>'
       +'</div>'
     +'</div>';
   }).join('');
+}
+
+// False positive: two unrelated payments that merely look alike. Allocate them
+// as ordinary one-off expenses — no recurring_expenses row is created. Because
+// detectRecurringCandidates skips allocated transactions, whatever gets
+// allocated drops out of the group on the next render: the suggestion shrinks,
+// and disappears once nothing unallocated is left in it.
+function openExpAllocateOneTime(idx){
+  var c = _expCandidates[idx];
+  if(!c || !c.txIds || !c.txIds.length) return;
+  var n = c.txIds.length;
+  expOpenAllocPicker(c.txIds,
+    (c.label||'Untitled')+' · '+n+(n===1?' transaction':' transactions')+' · '+fmt(c.avgAmount)+' avg');
 }
 
 async function expDismissCandidate(idx){
@@ -9488,15 +9517,50 @@ function renderRecurringCards(){
     return;
   }
   var key = expMonthKey();
-  host.innerHTML = list.map(function(re){
-    var inst = expInstanceFor(re.id, key);
-    var paid = inst && inst.status==='paid';
-    var tx = inst && inst.transaction_id ? expTxById(inst.transaction_id) : null;
-    var who = re.default_allocated_to==='participant'
-      ? ((S.participants||[]).find(function(p){ return p.id===re.default_participant_id; })||{}).name || 'Participant'
-      : 'Company';
 
-    var statusHtml = paid
+  // Grouped by allocation owner: Company first, then one box per participant
+  // that actually has a recurring expense. Owners with none are not rendered.
+  var owners = [{ id:'company', name:'Company', items:[] }];
+  var byPt = {};
+  list.forEach(function(re){
+    if(re.default_allocated_to==='participant' && re.default_participant_id){
+      var pid = re.default_participant_id;
+      if(!byPt[pid]){
+        var p = (S.participants||[]).find(function(x){ return x.id===pid; });
+        byPt[pid] = { id:pid, name:(p&&p.name)||'Unknown participant', items:[] };
+        owners.push(byPt[pid]);
+      }
+      byPt[pid].items.push(re);
+    } else {
+      owners[0].items.push(re);
+    }
+  });
+  owners = owners.filter(function(o){ return o.items.length; });
+
+  host.innerHTML = '<div class="exp-owner-grid">' + owners.map(function(o){
+    var total = o.items.reduce(function(s,re){ return s+(+re.expected_amount||0); },0);
+    var paidN = o.items.filter(function(re){
+      var i = expInstanceFor(re.id, key); return i && i.status==='paid';
+    }).length;
+    return '<div class="exp-owner-box">'
+      +'<div class="exp-owner-head">'
+        +'<div style="font-size:12px;font-weight:700;letter-spacing:.01em">'+o.name+'</div>'
+        +'<div style="font-size:10px;color:var(--text3);margin-top:2px">'
+          +paidN+'/'+o.items.length+' paid &middot; '+fmt(total)+' expected</div>'
+      +'</div>'
+      + o.items.map(function(re){ return expRecurringCardHtml(re, key); }).join('')
+    +'</div>';
+  }).join('') + '</div>';
+}
+
+// One recurring-expense card for the given month. Unchanged in behaviour —
+// same Paid/Pending treatment, same match/unlink actions, same history toggle.
+function expRecurringCardHtml(re, key){
+  var inst = expInstanceFor(re.id, key);
+  var paid = inst && inst.status==='paid';
+  var tx = inst && inst.transaction_id ? expTxById(inst.transaction_id) : null;
+
+  var statusHtml = paid
       ? '<span class="badge badge-green">&#10003; Paid</span>'
       : '<span class="badge badge-gold">Pending</span>';
 
@@ -9519,7 +9583,7 @@ function renderRecurringCards(){
           +'<div style="font-size:11px;color:var(--text3);margin-top:3px">'
             +fmt(re.expected_amount)+' expected'
             +(re.expected_day_of_month?' &middot; around the '+re.expected_day_of_month+'th':'')
-            +' &middot; '+who+'</div>'
+          +'</div>'
         +'</div>'
         +'<div style="display:flex;align-items:center;gap:10px">'+statusHtml+action+'</div>'
       +'</div>'
@@ -9529,7 +9593,6 @@ function renderRecurringCards(){
         +'<div id="exp-hist-'+re.id+'" style="display:none;margin-top:8px">'+expHistoryHtml(re)+'</div>'
       +'</div>'
     +'</div>';
-  }).join('');
 }
 
 function expHistoryHtml(re){
@@ -9714,12 +9777,21 @@ async function expAllocateCompany(txId){
   showToast('Allocated to Company','ok');
 }
 
+// Opens the picker for one transaction (context menu path).
 function openExpAllocateModal(txId){
   expCloseMenu();
   var tx = expTxById(txId);
   if(!tx) return;
-  _expCtxTx = txId;
-  eid('exp-alloc-tx').textContent = (tx.date||'')+' · '+(tx.description||'')+' · '+fmt(tx.amount_out);
+  expOpenAllocPicker([txId], (tx.date||'')+' · '+(tx.description||'')+' · '+fmt(tx.amount_out));
+}
+
+// Shared opener. Targets are held in _expAllocTxIds, which expCloseMenu leaves
+// alone, so the bubbling click that opened this modal cannot wipe them.
+function expOpenAllocPicker(txIds, headerText){
+  _expAllocTxIds = (txIds||[]).filter(Boolean);
+  _expAllocLabel = headerText||'';
+  if(!_expAllocTxIds.length) return;
+  eid('exp-alloc-tx').textContent = _expAllocLabel;
   eid('exp-alloc-search').value = '';
   renderExpAllocList('');
   eid('m-exp-alloc').style.display='block';
@@ -9732,33 +9804,57 @@ function renderExpAllocList(q){
   var list = (S.participants||[]).filter(function(p){
     return !term || expNorm(p.name).indexOf(term)!==-1;
   });
-  host.innerHTML = list.length
-    ? list.map(function(p){
-        return '<div class="exp-pick-row" onclick="expAllocateParticipant(\''+p.id+'\')">'
-          +'<span style="font-size:12px;font-weight:600">'+p.name+'</span>'
-          +'<span class="td-muted" style="font-size:10px">'+(p.ndis_number||'')+'</span>'
-          +'</div>';
-      }).join('')
-    : '<div class="empty">No participants match</div>';
+  // Company sits at the top so this modal can settle either kind of allocation.
+  var companyRow = (!term || 'company'.indexOf(term)!==-1)
+    ? '<div class="exp-pick-row" onclick="expAllocatePicked(\'company\',null)">'
+        +'<span style="font-size:12px;font-weight:600">Company</span>'
+        +'<span class="td-muted" style="font-size:10px">Business expense</span>'
+      +'</div>'
+    : '';
+  var rows = list.map(function(p){
+    return '<div class="exp-pick-row" onclick="expAllocatePicked(\'participant\',\''+p.id+'\')">'
+      +'<span style="font-size:12px;font-weight:600">'+p.name+'</span>'
+      +'<span class="td-muted" style="font-size:10px">'+(p.ndis_number||'')+'</span>'
+      +'</div>';
+  }).join('');
+  host.innerHTML = (companyRow+rows) || '<div class="empty">Nothing matches</div>';
 }
 
-async function expAllocateParticipant(ptId){
-  var txId = _expCtxTx;
-  var tx = expTxById(txId);
-  var pt = (S.participants||[]).find(function(p){ return p.id===ptId; });
-  if(!tx||!pt) return;
+// Allocates every targeted transaction to the picked owner.
+async function expAllocatePicked(kind, ptId){
+  var ids = _expAllocTxIds.slice();
+  if(!ids.length) return;
+  var pt = kind==='participant'
+    ? (S.participants||[]).find(function(p){ return p.id===ptId; })
+    : null;
+  if(kind==='participant' && !pt) return;
+
   setSync('saving');
-  var res = await expUpdateTx(txId, { allocated_to:'participant', participant_id:ptId });
-  if(res.error){
+  var patch = { allocated_to: kind, participant_id: kind==='participant' ? ptId : null };
+  var done = 0, failed = 0, lastErr = null, missingCols = false;
+  for(var i=0;i<ids.length;i++){
+    var tx = expTxById(ids[i]);
+    if(!tx){ failed++; continue; }
+    var res = await expUpdateTx(ids[i], patch);
+    if(res.error){ failed++; lastErr = res.error; if(res.missingCols) missingCols = true; continue; }
+    tx.allocated_to = patch.allocated_to;
+    tx.participant_id = patch.participant_id;
+    done++;
+  }
+
+  var who = kind==='participant' ? pt.name : 'Company';
+  if(!done){
     setSync('error');
-    showToast(res.missingCols?'Run the expense tracker migration first':'Could not allocate: '+res.error.message,'err');
+    showToast(missingCols ? 'Run the expense tracker migration first'
+                          : 'Could not allocate'+(lastErr?': '+lastErr.message:''),'err');
     return;
   }
-  tx.allocated_to='participant'; tx.participant_id=ptId;
   setSync('ok');
   closeM('m-exp-alloc');
+  _expAllocTxIds = []; _expAllocLabel = '';
   renderExpenses();
-  showToast('Allocated to '+pt.name,'ok');
+  showToast('Allocated '+done+(done===1?' transaction':' transactions')+' to '+who
+            +(failed?' ('+failed+' failed)':''), failed?'err':'ok');
 }
 
 // ── Mark as recurring ───────────────────────────────────────────────────────
