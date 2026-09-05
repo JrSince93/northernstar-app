@@ -428,7 +428,8 @@ input[type=number]{text-align:right;font-variant-numeric:tabular-nums}
     </div>
 
     <div class="card">
-      <div class="card-title">Unallocated transactions</div>
+      <div class="card-title">Unallocated transactions <span id="exp-unalloc-count" class="badge badge-gold" style="margin-left:6px;display:none"></span></div>
+      <div style="font-size:11px;color:var(--text3);margin:-4px 0 12px;line-height:1.6">Every unallocated expense across all months, newest first. Click a month to fold it away.</div>
       <div id="exp-unalloc-body"><div class="loading"><div class="spin"></div>Loading...</div></div>
     </div>
   </div>
@@ -9169,6 +9170,12 @@ function expMonthShort(key){
   var p = String(key||'').split('-');
   return (MONTHS[(+p[1]||1)-1]||'').slice(0,3);
 }
+// Full 'Month YYYY' label for an arbitrary 'YYYY-MM' key (any year, unlike
+// expMonthLabel which describes the tab's currently selected month).
+function expMonthKeyLabel(key){
+  var p = String(key||'').split('-');
+  return (MONTHS[(+p[1]||1)-1]||'')+' '+(p[0]||'');
+}
 
 function expIsExpense(tx){ return (+tx.amount_out||0) > 0; }
 function expTxInMonth(tx, key){ return String(tx.date||'').indexOf(key||expMonthKey())===0; }
@@ -9547,32 +9554,98 @@ function expToggleHistory(reId){
   if(el) el.style.display = el.style.display==='none' ? 'block' : 'none';
 }
 
+// Full history, not just the selected month: every unallocated expense in the
+// cash book, grouped by month with the newest first. Payroll is excluded by
+// expIsTrackable like everywhere else on this tab.
+var _expUnallocOpen = {};   // month key -> expanded?, persists across re-renders
+
+function expUnallocRows(){
+  return (S.tx||[]).filter(function(t){
+    return expIsTrackable(t) && !t.allocated_to;
+  });
+}
+
+function expToggleUnallocMonth(key){
+  _expUnallocOpen[key] = !_expUnallocOpen[key];
+  renderUnallocatedTx();
+}
+
 function renderUnallocatedTx(){
   var host = eid('exp-unalloc-body');
   if(!host) return;
-  var key = expMonthKey();
-  var rows = (S.tx||[]).filter(function(t){
-    return expIsTrackable(t) && expTxInMonth(t, key) && !t.allocated_to;
-  }).sort(function(a,b){ return String(a.date).localeCompare(String(b.date)); });
+  var rows = expUnallocRows();
+
+  // Badge on the section header so the size of the backlog is obvious.
+  var badge = eid('exp-unalloc-count');
+  if(badge){
+    badge.textContent = rows.length ? rows.length+' to allocate' : '';
+    badge.style.display = rows.length ? '' : 'none';
+  }
 
   if(!rows.length){
-    host.innerHTML = '<div class="empty">Every expense in '+expMonthLabel()+' is allocated.</div>';
+    host.innerHTML = '<div class="empty">Every expense in the cash book is allocated.</div>';
     return;
   }
-  host.innerHTML = '<div class="tbl-wrap"><table><thead><tr>'
-    +'<th>Date</th><th>Description</th><th>Type</th><th>Ref</th><th class="td-right">Amount</th><th></th>'
-    +'</tr></thead><tbody>'
-    + rows.map(function(t){
-        return '<tr oncontextmenu="expTxMenu(event,\''+t.id+'\');return false;" style="cursor:context-menu">'
-          +'<td>'+(t.date||'')+'</td>'
-          +'<td>'+(t.description||'')+'</td>'
-          +'<td><span class="td-muted">'+(t.payment_type||'')+'</span></td>'
-          +'<td><span class="td-muted">'+(t.reference||'')+'</span></td>'
-          +'<td class="td-right" style="color:var(--out);font-weight:600">'+fmt(t.amount_out)+'</td>'
-          +'<td class="td-right"><button class="btn btn-outline btn-sm" onclick="expTxMenu(event,\''+t.id+'\')">Allocate &#9662;</button></td>'
-          +'</tr>';
-      }).join('')
-    +'</tbody></table></div>';
+
+  // Group by the transaction's own month, newest month first, newest row first.
+  var byMonth = {};
+  rows.forEach(function(t){
+    var k = expTxMonthKey(t) || 'undated';
+    (byMonth[k] = byMonth[k] || []).push(t);
+  });
+  var groups = Object.keys(byMonth).sort(function(a,b){
+      // 'undated' must sort last, not first — it beats every 'YYYY-MM' on a
+      // plain descending compare.
+      if(a==='undated') return 1;
+      if(b==='undated') return -1;
+      return b.localeCompare(a);
+    })
+    .map(function(k){
+      var list = byMonth[k].sort(function(a,b){ return String(b.date).localeCompare(String(a.date)); });
+      return {
+        key: k,
+        rows: list,
+        total: list.reduce(function(s,t){ return s+(+t.amount_out||0); }, 0)
+      };
+    });
+
+  // Newest month starts open, older months folded; explicit toggles stick.
+  groups.forEach(function(g,i){
+    if(!(g.key in _expUnallocOpen)) _expUnallocOpen[g.key] = (i===0);
+  });
+
+  host.innerHTML = groups.map(function(g){
+    var open = !!_expUnallocOpen[g.key];
+    var label = g.key==='undated' ? 'No date' : expMonthKeyLabel(g.key);
+    return '<div style="margin-bottom:10px">'
+      +'<div onclick="expToggleUnallocMonth(\''+g.key+'\')" '
+        +'style="display:flex;align-items:center;justify-content:space-between;gap:10px;cursor:pointer;'
+        +'padding:9px 12px;background:var(--bg4);border:1px solid var(--border2);border-radius:var(--r)">'
+        +'<div style="display:flex;align-items:center;gap:8px">'
+          +'<span style="font-size:10px;color:var(--text3);width:9px;display:inline-block">'+(open?'&#9662;':'&#9656;')+'</span>'
+          +'<span style="font-size:12px;font-weight:650">'+label+'</span>'
+          +'<span class="td-muted" style="font-size:11px">'+g.rows.length+' item'+(g.rows.length===1?'':'s')+'</span>'
+        +'</div>'
+        +'<span style="font-size:12px;font-weight:600;color:var(--out)">'+fmt(g.total)+'</span>'
+      +'</div>'
+      +(open
+        ? '<div class="tbl-wrap" style="margin-top:6px"><table><thead><tr>'
+            +'<th>Date</th><th>Description</th><th>Type</th><th>Ref</th><th class="td-right">Amount</th><th></th>'
+            +'</tr></thead><tbody>'
+          + g.rows.map(function(t){
+              return '<tr oncontextmenu="expTxMenu(event,\''+t.id+'\');return false;" style="cursor:context-menu">'
+                +'<td>'+(t.date||'')+'</td>'
+                +'<td>'+(t.description||'')+'</td>'
+                +'<td><span class="td-muted">'+(t.payment_type||'')+'</span></td>'
+                +'<td><span class="td-muted">'+(t.reference||'')+'</span></td>'
+                +'<td class="td-right" style="color:var(--out);font-weight:600">'+fmt(t.amount_out)+'</td>'
+                +'<td class="td-right"><button class="btn btn-outline btn-sm" onclick="expTxMenu(event,\''+t.id+'\')">Allocate &#9662;</button></td>'
+                +'</tr>';
+            }).join('')
+          +'</tbody></table></div>'
+        : '')
+    +'</div>';
+  }).join('');
 }
 
 // ── Context menu ────────────────────────────────────────────────────────────
