@@ -9507,50 +9507,117 @@ function expSetupNotice(what){
 function renderRecurringCards(){
   var host = eid('exp-recurring-body');
   if(!host) return;
-  if(S._recurringTableMissing || S._recurringInstTableMissing){
-    host.innerHTML = expSetupNotice('recurring expense tracking');
-    return;
-  }
-  var list = (S.recurringExpenses||[]).filter(function(r){ return r.active !== false; });
-  if(!list.length){
-    host.innerHTML = '<div class="empty">No recurring expenses yet. Right-click a transaction below and choose "Mark as Recurring".</div>';
-    return;
-  }
+  // Missing recurring tables no longer stop the whole section: one-off
+  // allocations live on `transactions` and can still be listed.
+  var notice = (S._recurringTableMissing || S._recurringInstTableMissing)
+    ? expSetupNotice('recurring expense tracking') : '';
+  var list = notice ? [] : (S.recurringExpenses||[]).filter(function(r){ return r.active !== false; });
   var key = expMonthKey();
 
-  // Grouped by allocation owner: Company first, then one box per participant
-  // that actually has a recurring expense. Owners with none are not rendered.
-  var owners = [{ id:'company', name:'Company', items:[] }];
-  var byPt = {};
+  // A transaction claimed by any recurring instance is that recurring expense's
+  // payment, not a one-off — so it must not be counted twice.
+  var claimed = {};
+  (S.recurringInstances||[]).forEach(function(i){ if(i.transaction_id) claimed[i.transaction_id]=1; });
+
+  var oneOffs = (S.tx||[]).filter(function(t){
+    return expIsTrackable(t) && expTxInMonth(t, key) && t.allocated_to && !claimed[t.id];
+  }).sort(function(a,b){ return String(b.date).localeCompare(String(a.date)); });
+
+  // Owners come from BOTH sources: a recurring expense pointing at them, or a
+  // one-off allocated to them this month. Company always sorts first; the rest
+  // by name so box order stays stable as allocations come and go.
+  var owners = [], byKey = {};
+  function ownerFor(id, name){
+    if(!byKey[id]){ byKey[id] = { id:id, name:name, items:[], oneOffs:[] }; owners.push(byKey[id]); }
+    return byKey[id];
+  }
+  function participantName(pid){
+    var p = (S.participants||[]).find(function(x){ return x.id===pid; });
+    return (p && p.name) || 'Unknown participant';
+  }
   list.forEach(function(re){
     if(re.default_allocated_to==='participant' && re.default_participant_id){
-      var pid = re.default_participant_id;
-      if(!byPt[pid]){
-        var p = (S.participants||[]).find(function(x){ return x.id===pid; });
-        byPt[pid] = { id:pid, name:(p&&p.name)||'Unknown participant', items:[] };
-        owners.push(byPt[pid]);
-      }
-      byPt[pid].items.push(re);
+      ownerFor(re.default_participant_id, participantName(re.default_participant_id)).items.push(re);
     } else {
-      owners[0].items.push(re);
+      ownerFor('company','Company').items.push(re);
     }
   });
-  owners = owners.filter(function(o){ return o.items.length; });
+  oneOffs.forEach(function(t){
+    if(t.allocated_to==='participant' && t.participant_id){
+      ownerFor(t.participant_id, participantName(t.participant_id)).oneOffs.push(t);
+    } else if(t.allocated_to==='company'){
+      ownerFor('company','Company').oneOffs.push(t);
+    }
+  });
 
-  host.innerHTML = '<div class="exp-owner-grid">' + owners.map(function(o){
-    var total = o.items.reduce(function(s,re){ return s+(+re.expected_amount||0); },0);
+  owners = owners.filter(function(o){ return o.items.length || o.oneOffs.length; })
+    .sort(function(a,b){
+      if(a.id==='company') return -1;
+      if(b.id==='company') return 1;
+      return String(a.name).localeCompare(String(b.name));
+    });
+
+  if(!owners.length){
+    host.innerHTML = notice || '<div class="empty">Nothing allocated for '+expMonthLabel()+' yet. '
+      +'Allocate a transaction below, or mark one as recurring.</div>';
+    return;
+  }
+
+  host.innerHTML = notice + '<div class="exp-owner-grid">' + owners.map(function(o){
+    // Running total = what actually went out this month: the real amount behind
+    // each paid recurring expense (falling back to its expected figure if the
+    // linked row isn't loaded), plus every one-off.
+    var recurringPaid = o.items.reduce(function(s,re){
+      var inst = expInstanceFor(re.id, key);
+      if(!(inst && inst.status==='paid')) return s;
+      var tx = inst.transaction_id ? expTxById(inst.transaction_id) : null;
+      return s + (tx ? (+tx.amount_out||0) : (+re.expected_amount||0));
+    },0);
+    var oneOffTotal = o.oneOffs.reduce(function(s,t){ return s+(+t.amount_out||0); },0);
     var paidN = o.items.filter(function(re){
       var i = expInstanceFor(re.id, key); return i && i.status==='paid';
     }).length;
+
+    var meta = [];
+    if(o.items.length)   meta.push(paidN+'/'+o.items.length+' recurring paid');
+    if(o.oneOffs.length) meta.push(o.oneOffs.length+' one-off');
+
     return '<div class="exp-owner-box">'
       +'<div class="exp-owner-head">'
-        +'<div style="font-size:12px;font-weight:700;letter-spacing:.01em">'+o.name+'</div>'
+        +'<div style="display:flex;align-items:baseline;justify-content:space-between;gap:10px">'
+          +'<div style="font-size:12px;font-weight:700;letter-spacing:.01em">'+o.name+'</div>'
+          +'<div style="font-size:13px;font-weight:700;color:var(--out);font-variant-numeric:tabular-nums">'
+            +fmt(recurringPaid+oneOffTotal)+'</div>'
+        +'</div>'
         +'<div style="font-size:10px;color:var(--text3);margin-top:2px">'
-          +paidN+'/'+o.items.length+' paid &middot; '+fmt(total)+' expected</div>'
+          +(meta.join(' &middot; ')||'Nothing yet')+' &middot; '+expMonthLabel()+'</div>'
       +'</div>'
       + o.items.map(function(re){ return expRecurringCardHtml(re, key); }).join('')
+      + (o.oneOffs.length ? expOneOffListHtml(o.oneOffs) : '')
     +'</div>';
   }).join('') + '</div>';
+}
+
+// One-off allocations for an owner this month: allocated directly, with no
+// recurring expense behind them.
+function expOneOffListHtml(txs){
+  var total = txs.reduce(function(s,t){ return s+(+t.amount_out||0); },0);
+  return '<div style="margin-top:12px;padding-top:11px;border-top:1px solid var(--hairline)">'
+    +'<div style="display:flex;align-items:baseline;justify-content:space-between;gap:10px;margin-bottom:7px">'
+      +'<div style="font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:.07em;font-weight:600">One-off this month</div>'
+      +'<div style="font-size:11px;font-weight:600;color:var(--out)">'+fmt(total)+'</div>'
+    +'</div>'
+    + txs.map(function(t){
+        return '<div oncontextmenu="expTxMenu(event,\''+t.id+'\');return false;" '
+          +'style="display:flex;align-items:baseline;justify-content:space-between;gap:10px;padding:5px 0;cursor:context-menu">'
+          +'<div style="min-width:0">'
+            +'<div style="font-size:11.5px;color:var(--text2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+(t.description||'—')+'</div>'
+            +'<div style="font-size:10px;color:var(--text3);margin-top:1px">'+(t.date||'')+'</div>'
+          +'</div>'
+          +'<div style="font-size:11.5px;font-weight:600;color:var(--out);white-space:nowrap">'+fmt(t.amount_out)+'</div>'
+        +'</div>';
+      }).join('')
+  +'</div>';
 }
 
 // One recurring-expense card for the given month. Unchanged in behaviour —
