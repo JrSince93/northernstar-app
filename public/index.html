@@ -433,6 +433,12 @@ input[type=number]{text-align:right;font-variant-numeric:tabular-nums}
       <div id="exp-recurring-body"><div class="loading"><div class="spin"></div>Loading...</div></div>
     </div>
 
+    <div class="card" id="exp-confirm-card" style="display:none">
+      <div class="card-title">Needs your confirmation <span id="exp-confirm-count" class="badge badge-gold" style="margin-left:6px;display:none"></span></div>
+      <div style="font-size:11px;color:var(--text3);margin:-4px 0 12px;line-height:1.6">Payments that look like a recurring expense but sit outside the 5% amount tolerance, so they were never matched automatically.</div>
+      <div id="exp-confirm-body"></div>
+    </div>
+
     <div class="card">
       <div class="card-title">Unallocated transactions <span id="exp-unalloc-count" class="badge badge-gold" style="margin-left:6px;display:none"></span></div>
       <div style="font-size:11px;color:var(--text3);margin:-4px 0 12px;line-height:1.6">Every unallocated expense across all months, newest first. Click a month to fold it away.</div>
@@ -461,6 +467,7 @@ input[type=number]{text-align:right;font-variant-numeric:tabular-nums}
       <div class="field"><label>Expected amount ($)</label><input type="number" id="exp-re-amount" step="0.01" min="0" placeholder="0.00"></div>
       <div class="field"><label>Expected day of month</label><input type="number" id="exp-re-day" min="1" max="31" placeholder="1"></div>
     </div>
+    <div class="field"><label>Charged how many times a month?</label><input type="number" id="exp-re-occ" min="1" max="31" step="1" value="1" placeholder="1"><div style="font-size:10px;color:var(--text3);margin-top:4px">Leave at 1 for a normal monthly bill. Set higher for something billed several times a month &mdash; each payment gets its own slot.</div></div>
     <div class="field"><label>Allocate to</label><select id="exp-re-alloc" onchange="expToggleRecurringParticipant()"><option value="company">Company</option><option value="participant">Participant</option></select></div>
     <div class="field" id="exp-re-participant-row" style="display:none"><label>Participant</label><select id="exp-re-participant"></select></div>
   </div>
@@ -9231,10 +9238,27 @@ function expAmountMatches(amt, expected){
   return Math.abs((+amt||0) - e) <= e*EXP_MATCH_TOLERANCE;
 }
 
-function expInstanceFor(reId, key){
-  return (S.recurringInstances||[]).find(function(i){
+// How many times a month this expense is charged. Rows written before the
+// occurrences_per_month column existed read as 1.
+function expOccurrences(re){
+  // If the schema can't store occurrences, never promise slots that cannot be
+  // created — the whole tab behaves as it did before the feature.
+  if(S._occurrenceColsMissing) return 1;
+  var n = parseInt(re && re.occurrences_per_month, 10);
+  return (n>=1 && n<=31) ? n : 1;
+}
+function expOccNo(inst){ return parseInt(inst && inst.occurrence_number,10) || 1; }
+
+// Every instance for a month, ordered by occurrence number.
+function expInstancesFor(reId, key){
+  return (S.recurringInstances||[]).filter(function(i){
     return i.recurring_expense_id===reId && i.month===key;
-  })||null;
+  }).sort(function(a,b){ return expOccNo(a)-expOccNo(b); });
+}
+// First instance of the month — the single-occurrence case, and the anchor for
+// anything that only needs one.
+function expInstanceFor(reId, key){
+  return expInstancesFor(reId, key)[0] || null;
 }
 function expTxById(id){ return (S.tx||[]).find(function(t){ return t.id===id; })||null; }
 
@@ -9254,14 +9278,39 @@ async function expUpdateTx(id, patch){
 async function ensureRecurringInstances(){
   if(S._recurringTableMissing || S._recurringInstTableMissing) return;
   var key = expMonthKey();
-  var missing = (S.recurringExpenses||[]).filter(function(re){
-    return re.active !== false && !expInstanceFor(re.id, key);
+  // One instance per occurrence: occurrence_number 1..N for the month.
+  var rows = [];
+  (S.recurringExpenses||[]).forEach(function(re){
+    if(re.active === false) return;
+    var have = {};
+    expInstancesFor(re.id, key).forEach(function(i){ have[expOccNo(i)] = 1; });
+    var n = S._occurrenceColsMissing ? 1 : expOccurrences(re);
+    for(var k=1; k<=n; k++){
+      if(have[k]) continue;
+      var row = { recurring_expense_id: re.id, month: key, status: 'pending', transaction_id: null };
+      if(!S._occurrenceColsMissing) row.occurrence_number = k;
+      rows.push(row);
+    }
   });
-  if(!missing.length) return;
-  var rows = missing.map(function(re){
-    return { recurring_expense_id: re.id, month: key, status: 'pending', transaction_id: null };
-  });
+  if(!rows.length) return;
+
   var res = await sb2.from('recurring_expense_instances').insert(rows).select();
+  // Migration not run yet: fall back to one instance per month, as before.
+  if(res.error && isMissingColumnError(res.error, ['occurrence_number'])){
+    S._occurrenceColsMissing = true;
+    console.warn('[expenses] recurring_expense_instances.occurrence_number missing — '
+      +'run the multi-occurrence migration; falling back to one instance per month');
+    var seen = {}, fallback = [];
+    rows.forEach(function(r){
+      if(seen[r.recurring_expense_id]) return;
+      seen[r.recurring_expense_id] = 1;
+      fallback.push({ recurring_expense_id: r.recurring_expense_id, month: r.month,
+                      status: 'pending', transaction_id: null });
+    });
+    fallback = fallback.filter(function(r){ return !expInstanceFor(r.recurring_expense_id, key); });
+    if(!fallback.length) return;
+    res = await sb2.from('recurring_expense_instances').insert(fallback).select();
+  }
   if(res.error){
     if(tsTableMissing(res.error)) S._recurringInstTableMissing = true;
     else console.warn('[expenses] instance create:', res.error.message);
@@ -9282,29 +9331,197 @@ async function autoMatchRecurringInstances(){
   });
 
   var matched = 0;
-  var pending = (S.recurringInstances||[]).filter(function(i){
-    return i.month===key && i.status!=='paid' && !i.transaction_id;
-  });
+  // Walk one recurring expense at a time so a multi-occurrence bill can claim
+  // several payments: earliest transaction fills the lowest pending occurrence.
+  var actives = (S.recurringExpenses||[]).filter(function(re){ return re.active !== false; });
 
-  for(var p=0; p<pending.length; p++){
-    var inst = pending[p];
-    var re = (S.recurringExpenses||[]).find(function(r){ return r.id===inst.recurring_expense_id; });
-    if(!re) continue;
-    var hit = candidates.find(function(t){
+  for(var r=0; r<actives.length; r++){
+    var re = actives[r];
+    var insts = expInstancesFor(re.id, key);
+    if(!insts.length) continue;
+
+    var pending = insts.filter(function(i){ return i.status!=='paid' && !i.transaction_id; });
+    if(!pending.length) continue;
+
+    // Cap total claims for the month at occurrences_per_month.
+    var claimedAlready = insts.filter(function(i){ return !!i.transaction_id; }).length;
+    var slots = Math.min(pending.length, expOccurrences(re) - claimedAlready);
+    if(slots <= 0) continue;
+
+    var hits = candidates.filter(function(t){
       return !used[t.id]
         && expLooseMatch(t.description, re.label)
         && expAmountMatches(t.amount_out, re.expected_amount);
-    });
-    if(!hit) continue;
-    var res = await sb2.from('recurring_expense_instances')
-      .update({ transaction_id: hit.id, status: 'paid' }).eq('id', inst.id).select();
-    if(res.error){ console.warn('[expenses] auto-match:', res.error.message); continue; }
-    inst.transaction_id = hit.id;
-    inst.status = 'paid';
-    used[hit.id] = 1;
-    matched++;
+    }).sort(function(a,b){ return String(a.date).localeCompare(String(b.date)); })
+      .slice(0, slots);
+
+    for(var h=0; h<hits.length; h++){
+      var inst = pending[h], hit = hits[h];
+      if(!inst || used[hit.id]) continue;
+      var res = await sb2.from('recurring_expense_instances')
+        .update({ transaction_id: hit.id, status: 'paid' }).eq('id', inst.id).select();
+      if(res.error){ console.warn('[expenses] auto-match:', res.error.message); continue; }
+      inst.transaction_id = hit.id;
+      inst.status = 'paid';
+      used[hit.id] = 1;
+      matched++;
+    }
   }
   return matched;
+}
+
+// ── Needs your confirmation ─────────────────────────────────────────────────
+// A payment whose description clearly matches a recurring expense but whose
+// amount sits outside the 5% tolerance is never auto-matched. Rather than
+// dropping it silently, surface it and let the operator decide.
+
+var _expNotMatched = {};   // tx id -> dismissed for this session (see note below)
+var _expAmountPrompts = [];// {reId,label,oldAmount,newAmount,txId} awaiting a choice
+var _expNearMatches = [];  // last computed, index-addressed by the UI
+
+function detectNearMatches(){
+  var key = expMonthKey();
+  var claimed = {};
+  (S.recurringInstances||[]).forEach(function(i){ if(i.transaction_id) claimed[i.transaction_id]=1; });
+
+  var actives = (S.recurringExpenses||[]).filter(function(re){
+    return re.active !== false && (+re.expected_amount||0) > 0;
+  });
+  if(!actives.length) return [];
+
+  var out = [];
+  (S.tx||[]).forEach(function(t){
+    if(!expIsTrackable(t) || !expTxInMonth(t, key)) return;
+    if(t.allocated_to || claimed[t.id] || _expNotMatched[t.id]) return;
+    var amt = +t.amount_out||0;
+    if(!amt) return;
+
+    // Description matches, amount does not — that is the whole point.
+    var hits = actives.filter(function(re){
+      return expLooseMatch(t.description, re.label) && !expAmountMatches(amt, re.expected_amount);
+    });
+    if(!hits.length) return;
+
+    // If several could claim it, offer the one closest in amount.
+    hits.sort(function(a,b){
+      return Math.abs(amt-(+a.expected_amount||0))/(+a.expected_amount||1)
+           - Math.abs(amt-(+b.expected_amount||0))/(+b.expected_amount||1);
+    });
+    var re = hits[0];
+    // Only worth confirming if there is a slot left to fill this month.
+    var insts = expInstancesFor(re.id, key);
+    var open  = insts.filter(function(i){ return i.status!=='paid' && !i.transaction_id; });
+    if(!open.length) return;
+
+    var exp = +re.expected_amount||0;
+    out.push({ re:re, tx:t, instId:open[0].id, expected:exp, actual:amt,
+               deltaPct: exp ? Math.round(((amt-exp)/exp)*1000)/10 : 0 });
+  });
+  return out.sort(function(a,b){ return String(a.tx.date).localeCompare(String(b.tx.date)); });
+}
+
+function renderNearMatches(){
+  var card = eid('exp-confirm-card'), host = eid('exp-confirm-body'), badge = eid('exp-confirm-count');
+  if(!card || !host) return;
+  _expNearMatches = (S._recurringTableMissing || S._recurringInstTableMissing) ? [] : detectNearMatches();
+
+  if(!_expNearMatches.length && !_expAmountPrompts.length){
+    card.style.display='none'; host.innerHTML=''; 
+    if(badge){ badge.style.display='none'; }
+    return;
+  }
+  card.style.display='';
+  if(badge){
+    badge.textContent = _expNearMatches.length ? _expNearMatches.length+' to review' : '';
+    badge.style.display = _expNearMatches.length ? '' : 'none';
+  }
+
+  // Amount prompts sit on top: "you confirmed it, should the expected figure move?"
+  var prompts = _expAmountPrompts.map(function(pr,i){
+    return '<div class="card" style="margin-bottom:12px;padding:12px 14px;border-color:var(--gold-dim);background:var(--gold-bg)">'
+      +'<div style="font-size:12px;color:var(--gold);line-height:1.6">'
+        +'Matched <b>'+(pr.label||'')+'</b> at '+fmt(pr.newAmount)+', but it expects '+fmt(pr.oldAmount)+'. '
+        +'Update the expected amount going forward?</div>'
+      +'<div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">'
+        +'<button class="btn btn-primary btn-sm" onclick="expApplyNewExpected('+i+')">Update to '+fmt(pr.newAmount)+'</button>'
+        +'<button class="btn btn-outline btn-sm" onclick="expKeepExpected('+i+')">Keep '+fmt(pr.oldAmount)+'</button>'
+      +'</div>'
+    +'</div>';
+  }).join('');
+
+  host.innerHTML = prompts + _expNearMatches.map(function(m,i){
+    var dir = m.deltaPct>0 ? '+' : '';
+    return '<div class="card" style="margin-bottom:12px;padding:14px 16px">'
+      +'<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap">'
+        +'<div style="min-width:210px">'
+          +'<div style="font-size:13px;font-weight:650">'+(m.re.label||'Untitled')+'</div>'
+          +'<div style="font-size:11px;color:var(--text3);margin-top:3px">expects '+fmt(m.expected)
+            +' &middot; this one is <b style="color:var(--gold)">'+fmt(m.actual)+'</b> ('+dir+m.deltaPct+'%)</div>'
+          +'<div style="font-size:11px;color:var(--text2);margin-top:5px">'
+            +(m.tx.date||'')+' &middot; '+(m.tx.description||'')+'</div>'
+        +'</div>'
+        +'<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">'
+          +'<button class="btn btn-primary btn-sm" onclick="expConfirmNearMatch('+i+')">Confirm match</button>'
+          +'<button class="btn btn-outline btn-sm" onclick="expRejectNearMatch('+i+')">Not a match</button>'
+        +'</div>'
+      +'</div>'
+    +'</div>';
+  }).join('');
+}
+
+async function expConfirmNearMatch(idx){
+  var m = _expNearMatches[idx];
+  if(!m) return;
+  var inst = (S.recurringInstances||[]).find(function(i){ return i.id===m.instId; });
+  if(!inst){ showToast('That slot is no longer open','err'); renderExpenses(); return; }
+
+  setSync('saving');
+  var res = await sb2.from('recurring_expense_instances')
+    .update({ transaction_id: m.tx.id, status: 'paid' }).eq('id', inst.id).select();
+  if(res.error){ setSync('error'); showToast('Could not link: '+res.error.message,'err'); return; }
+  inst.transaction_id = m.tx.id;
+  inst.status = 'paid';
+  setSync('ok');
+
+  // Then ask about the expected figure, inline rather than as a blocking dialog.
+  _expAmountPrompts.push({ reId:m.re.id, label:m.re.label, oldAmount:m.expected,
+                           newAmount:m.actual, txId:m.tx.id });
+  renderExpenses();
+  showToast('Matched to '+(m.re.label||'recurring expense'),'ok');
+}
+
+async function expApplyNewExpected(i){
+  var pr = _expAmountPrompts[i];
+  if(!pr) return;
+  var re = (S.recurringExpenses||[]).find(function(r){ return r.id===pr.reId; });
+  if(!re){ _expAmountPrompts.splice(i,1); renderExpenses(); return; }
+  setSync('saving');
+  var res = await sb2.from('recurring_expenses')
+    .update({ expected_amount: pr.newAmount }).eq('id', re.id).select();
+  if(res.error){ setSync('error'); showToast('Could not update: '+res.error.message,'err'); return; }
+  re.expected_amount = pr.newAmount;
+  _expAmountPrompts.splice(i,1);
+  setSync('ok');
+  renderExpenses();
+  showToast('Expected amount now '+fmt(pr.newAmount),'ok');
+}
+
+function expKeepExpected(i){
+  if(!_expAmountPrompts[i]) return;
+  var pr = _expAmountPrompts.splice(i,1)[0];
+  renderExpenses();
+  showToast('Left at '+fmt(pr.oldAmount),'ok');
+}
+
+// Not a match: this transaction stops being offered and falls back into
+// Unallocated Transactions as an ordinary row. Session-scoped by design — no
+// table was specified for this, so it returns after a reload.
+function expRejectNearMatch(idx){
+  var m = _expNearMatches[idx];
+  if(!m) return;
+  _expNotMatched[m.tx.id] = 1;
+  renderExpenses();
+  showToast('Left unallocated','ok');
 }
 
 async function refreshExpenses(){
@@ -9425,6 +9642,7 @@ function renderExpenses(){
   if(lbl) lbl.textContent = expMonthLabel();
   renderSuggestedCandidates();
   renderRecurringCards();
+  renderNearMatches();
   renderUnallocatedTx();
 }
 
@@ -9568,14 +9786,18 @@ function renderRecurringCards(){
     // each paid recurring expense (falling back to its expected figure if the
     // linked row isn't loaded), plus every one-off.
     var recurringPaid = o.items.reduce(function(s,re){
-      var inst = expInstanceFor(re.id, key);
-      if(!(inst && inst.status==='paid')) return s;
-      var tx = inst.transaction_id ? expTxById(inst.transaction_id) : null;
-      return s + (tx ? (+tx.amount_out||0) : (+re.expected_amount||0));
+      // Every paid occurrence counts, not just the first.
+      return s + expInstancesFor(re.id, key).reduce(function(a,inst){
+        if(inst.status!=='paid') return a;
+        var tx = inst.transaction_id ? expTxById(inst.transaction_id) : null;
+        return a + (tx ? (+tx.amount_out||0) : (+re.expected_amount||0));
+      },0);
     },0);
     var oneOffTotal = o.oneOffs.reduce(function(s,t){ return s+(+t.amount_out||0); },0);
+    // Fully settled = every occurrence for the month matched.
     var paidN = o.items.filter(function(re){
-      var i = expInstanceFor(re.id, key); return i && i.status==='paid';
+      var ins = expInstancesFor(re.id, key);
+      return ins.length && ins.filter(function(i){ return i.status==='paid'; }).length >= expOccurrences(re);
     }).length;
 
     var meta = [];
@@ -9623,54 +9845,97 @@ function expOneOffListHtml(txs){
 // One recurring-expense card for the given month. Unchanged in behaviour —
 // same Paid/Pending treatment, same match/unlink actions, same history toggle.
 function expRecurringCardHtml(re, key){
-  var inst = expInstanceFor(re.id, key);
-  var paid = inst && inst.status==='paid';
-  var tx = inst && inst.transaction_id ? expTxById(inst.transaction_id) : null;
+  var insts = expInstancesFor(re.id, key);
+  var n     = expOccurrences(re);
+  var paidN = insts.filter(function(i){ return i.status==='paid'; }).length;
 
-  var statusHtml = paid
-      ? '<span class="badge badge-green">&#10003; Paid</span>'
-      : '<span class="badge badge-gold">Pending</span>';
+  // Single occurrence keeps the original one-line treatment; multi-occurrence
+  // shows every slot for the month together on this one card.
+  var multi = n > 1;
+  var statusHtml = multi
+    ? (paidN>=n
+        ? '<span class="badge badge-green">&#10003; '+paidN+' of '+n+' paid</span>'
+        : '<span class="badge badge-gold">'+paidN+' of '+n+' paid this month</span>')
+    : (paidN
+        ? '<span class="badge badge-green">&#10003; Paid</span>'
+        : '<span class="badge badge-gold">Pending</span>');
 
-    var detail = paid && tx
-      ? '<div style="font-size:11px;color:var(--text2);margin-top:6px">'
-          +tx.date+' &middot; '+(tx.description||'')+' &middot; <b style="color:var(--out)">'+fmt(tx.amount_out)+'</b></div>'
-      : (paid
-          ? '<div style="font-size:11px;color:var(--text3);margin-top:6px">Marked paid (linked transaction not in view)</div>'
-          : '<div style="font-size:11px;color:var(--text3);margin-top:6px">No matching payment found this month</div>');
-
-    var action = paid
-      ? '<button class="btn btn-outline btn-sm" onclick="expUnlinkInstance(\''+(inst?inst.id:'')+'\')">Unlink</button>'
-      : '<button class="btn btn-outline btn-sm" style="border-color:var(--gold-dim);color:var(--gold)" onclick="openExpMatchModal(\''+(inst?inst.id:'')+'\')">Match manually</button>';
-
-    return '<div class="card" style="margin-bottom:12px;padding:14px 16px"'
-      +(inst?' oncontextmenu="expInstanceMenu(event,\''+inst.id+'\');return false;"':'')+'>'
-      +'<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap">'
-        +'<div style="min-width:200px">'
-          +'<div style="font-size:13px;font-weight:650">'+(re.label||'Untitled')+'</div>'
-          +'<div style="font-size:11px;color:var(--text3);margin-top:3px">'
-            +fmt(re.expected_amount)+' expected'
-            +(re.expected_day_of_month?' &middot; around the '+re.expected_day_of_month+'th':'')
-          +'</div>'
+  var body;
+  if(multi){
+    var slots = [];
+    for(var k=1; k<=n; k++){
+      var inst = insts.filter(function(i){ return expOccNo(i)===k; })[0] || null;
+      var tx   = inst && inst.transaction_id ? expTxById(inst.transaction_id) : null;
+      var isPaid = inst && inst.status==='paid';
+      slots.push('<div style="display:flex;align-items:baseline;justify-content:space-between;gap:8px;padding:4px 0;border-top:1px solid var(--hairline)">'
+        +'<div style="min-width:0">'
+          +'<span style="font-size:10px;color:var(--text3);margin-right:6px">#'+k+'</span>'
+          +'<span style="font-size:11px;color:'+(isPaid?'var(--text2)':'var(--text3)')+'">'
+            +(tx ? (tx.date+' &middot; '+(tx.description||''))
+                 : (isPaid ? 'Marked paid (linked transaction not in view)' : 'Not matched yet'))
+          +'</span>'
         +'</div>'
-        +'<div style="display:flex;align-items:center;gap:10px">'+statusHtml+action+'</div>'
+        +'<div style="display:flex;align-items:center;gap:7px;white-space:nowrap">'
+          +(tx ? '<b style="font-size:11px;color:var(--out)">'+fmt(tx.amount_out)+'</b>' : '')
+          +(inst
+            ? (isPaid
+                ? '<a href="#" onclick="expUnlinkInstance(\''+inst.id+'\');return false;" style="font-size:10px;color:var(--blue)">Unlink</a>'
+                : '<a href="#" onclick="openExpMatchModal(\''+inst.id+'\');return false;" style="font-size:10px;color:var(--gold)">Match</a>')
+            : '')
+        +'</div>'
+      +'</div>');
+    }
+    body = '<div style="margin-top:8px">'+slots.join('')+'</div>';
+  } else {
+    var inst1 = insts[0] || null;
+    var tx1   = inst1 && inst1.transaction_id ? expTxById(inst1.transaction_id) : null;
+    var paid1 = inst1 && inst1.status==='paid';
+    body = (paid1 && tx1
+      ? '<div style="font-size:11px;color:var(--text2);margin-top:6px">'
+          +tx1.date+' &middot; '+(tx1.description||'')+' &middot; <b style="color:var(--out)">'+fmt(tx1.amount_out)+'</b></div>'
+      : (paid1
+          ? '<div style="font-size:11px;color:var(--text3);margin-top:6px">Marked paid (linked transaction not in view)</div>'
+          : '<div style="font-size:11px;color:var(--text3);margin-top:6px">No matching payment found this month</div>'))
+      +'<div style="margin-top:8px;display:flex;justify-content:flex-end">'
+      +(paid1
+        ? '<button class="btn btn-outline btn-sm" onclick="expUnlinkInstance(\''+(inst1?inst1.id:'')+'\')">Unlink</button>'
+        : '<button class="btn btn-outline btn-sm" style="border-color:var(--gold-dim);color:var(--gold)" onclick="openExpMatchModal(\''+(inst1?inst1.id:'')+'\')">Match manually</button>')
+      +'</div>';
+  }
+
+  var anchor = insts[0] || null;
+  return '<div class="card" style="margin-bottom:12px;padding:14px 16px"'
+    +(anchor?' oncontextmenu="expInstanceMenu(event,\''+anchor.id+'\');return false;"':'')+'>'
+    +'<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap">'
+      +'<div style="min-width:170px">'
+        +'<div style="font-size:13px;font-weight:650">'+(re.label||'Untitled')+'</div>'
+        +'<div style="font-size:11px;color:var(--text3);margin-top:3px">'
+          +fmt(re.expected_amount)+' expected'
+          +(multi?' &times; '+n+' a month':'')
+          +(re.expected_day_of_month?' &middot; around the '+re.expected_day_of_month+'th':'')
+        +'</div>'
       +'</div>'
-      +detail
-      +'<div style="margin-top:8px">'
-        +'<a href="#" onclick="expToggleHistory(\''+re.id+'\');return false;" style="font-size:10px;color:var(--blue);text-decoration:underline">Last 6 months</a>'
-        +'<div id="exp-hist-'+re.id+'" style="display:none;margin-top:8px">'+expHistoryHtml(re)+'</div>'
-      +'</div>'
-    +'</div>';
+      +'<div style="display:flex;align-items:center;gap:10px">'+statusHtml+'</div>'
+    +'</div>'
+    +body
+    +'<div style="margin-top:8px">'
+      +'<a href="#" onclick="expToggleHistory(\''+re.id+'\');return false;" style="font-size:10px;color:var(--blue);text-decoration:underline">Last 6 months</a>'
+      +'<div id="exp-hist-'+re.id+'" style="display:none;margin-top:8px">'+expHistoryHtml(re)+'</div>'
+    +'</div>'
+  +'</div>';
 }
 
 function expHistoryHtml(re){
   var cells = [];
   for(var n=5; n>=0; n--){
     var key = expMonthKeyOffset(n);
-    var inst = expInstanceFor(re.id, key);
-    var paid = inst && inst.status==='paid';
-    var col = inst ? (paid?'var(--in)':'var(--gold)') : 'var(--text3)';
-    var bg  = inst ? (paid?'var(--in-dim)':'var(--gold-dim)') : 'var(--bg4)';
-    var txt = inst ? (paid?'Paid':'Pending') : '&mdash;';
+    var ins  = expInstancesFor(re.id, key);
+    var np   = ins.filter(function(i){ return i.status==='paid'; }).length;
+    var need = Math.max(expOccurrences(re), ins.length) || 1;
+    var paid = ins.length && np >= need;
+    var col = ins.length ? (paid?'var(--in)':'var(--gold)') : 'var(--text3)';
+    var bg  = ins.length ? (paid?'var(--in-dim)':'var(--gold-dim)') : 'var(--bg4)';
+    var txt = !ins.length ? '&mdash;' : (need>1 ? np+'/'+need : (paid?'Paid':'Pending'));
     cells.push('<div style="flex:1;min-width:64px;text-align:center;background:'+bg+';border-radius:var(--r);padding:6px 4px">'
       +'<div style="font-size:9px;color:var(--text3);text-transform:uppercase;letter-spacing:.06em">'+expMonthShort(key)+'</div>'
       +'<div style="font-size:11px;font-weight:600;color:'+col+';margin-top:2px">'+txt+'</div>'
@@ -9690,8 +9955,12 @@ function expToggleHistory(reId){
 var _expUnallocOpen = {};   // month key -> expanded?, persists across re-renders
 
 function expUnallocRows(){
+  // A row awaiting a decision in "Needs your confirmation" is not listed here
+  // as well; "Not a match" is what drops it back into this list.
+  var near = {};
+  (_expNearMatches||[]).forEach(function(m){ near[m.tx.id] = 1; });
   return (S.tx||[]).filter(function(t){
-    return expIsTrackable(t) && !t.allocated_to;
+    return expIsTrackable(t) && !t.allocated_to && !near[t.id];
   });
 }
 
@@ -9935,6 +10204,7 @@ function openExpRecurringModal(txId){
   eid('exp-re-label').value  = tx.description||'';
   eid('exp-re-amount').value = (+tx.amount_out||0).toFixed(2);
   eid('exp-re-day').value    = tx.date ? parseInt(String(tx.date).split('-')[2],10)||'' : '';
+  eid('exp-re-occ').value    = 1;
   eid('exp-re-alloc').value  = tx.allocated_to || 'company';
   var sel = eid('exp-re-participant');
   sel.innerHTML = '<option value="">— select participant —</option>'
@@ -9960,6 +10230,7 @@ function openExpRecurringFromCandidate(idx){
   eid('exp-re-label').value  = c.label||'';
   eid('exp-re-amount').value = (+c.avgAmount||0).toFixed(2);
   eid('exp-re-day').value    = c.day||'';
+  eid('exp-re-occ').value    = 1;
   eid('exp-re-alloc').value  = (tx && tx.allocated_to) || 'company';
   var sel = eid('exp-re-participant');
   sel.innerHTML = '<option value="">— select participant —</option>'
@@ -9981,20 +10252,30 @@ async function saveExpRecurring(){
   var day   = parseInt(eid('exp-re-day').value,10);
   var alloc = eid('exp-re-alloc').value;
   var ptId  = eid('exp-re-participant').value || null;
+  var occ   = parseInt(eid('exp-re-occ').value,10); if(!(occ>=1&&occ<=31)) occ = 1;
 
   if(!label){ showToast('Give the recurring expense a label','err'); return; }
   if(!amt || amt<=0){ showToast('Enter the expected amount','err'); return; }
   if(alloc==='participant' && !ptId){ showToast('Pick a participant, or allocate to Company','err'); return; }
 
   setSync('saving');
-  var res = await sb2.from('recurring_expenses').insert({
+  var reRow = {
     label: label,
     default_allocated_to: alloc,
     default_participant_id: alloc==='participant' ? ptId : null,
     expected_amount: amt,
     expected_day_of_month: (day>=1&&day<=31) ? day : null,
     active: true
-  }).select();
+  };
+  if(occ > 1) reRow.occurrences_per_month = occ;
+  var res = await sb2.from('recurring_expenses').insert(reRow).select();
+  // Migration not run yet: save it as an ordinary once-a-month expense.
+  if(res.error && isMissingColumnError(res.error, ['occurrences_per_month'])){
+    S._occurrenceColsMissing = true;
+    delete reRow.occurrences_per_month;
+    showToast('Saved as once a month — run the multi-occurrence migration to charge it more often','err');
+    res = await sb2.from('recurring_expenses').insert(reRow).select();
+  }
 
   if(res.error){
     setSync('error');
