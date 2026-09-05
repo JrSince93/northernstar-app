@@ -186,6 +186,10 @@ input[type=number]{text-align:right;font-variant-numeric:tabular-nums}
 .spin{width:15px;height:15px;border:1.5px solid rgba(255,255,255,.1);border-top-color:var(--blue);border-radius:50%;animation:spin .55s linear infinite;flex-shrink:0}
 @keyframes spin{to{transform:rotate(360deg)}}
 .empty{text-align:center;padding:2.8rem 1.5rem;color:var(--text3);font-size:12.5px;line-height:1.6}
+.exp-ctx-item{padding:8px 11px;border-radius:6px;font-size:12px;color:var(--text);cursor:pointer;white-space:nowrap}
+.exp-ctx-item:hover{background:var(--bg5)}
+.exp-pick-row{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:9px 11px;border-radius:var(--r);cursor:pointer;border:1px solid transparent}
+.exp-pick-row:hover{background:var(--bg4);border-color:var(--border2)}
 .empty::before{content:'◇';display:block;font-size:19px;margin-bottom:8px;opacity:.4;color:var(--blue)}
 .err-box{background:var(--out-bg);border:1px solid var(--out-dim);color:var(--out);border-radius:var(--r);padding:12px 16px;margin-bottom:16px;font-size:12px;display:none;word-break:break-all}
 @media(max-width:768px){
@@ -265,6 +269,8 @@ input[type=number]{text-align:right;font-variant-numeric:tabular-nums}
   <div class="sb-item" data-nav="invoices" onclick="nav('invoices')"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="15" x2="15" y2="15"/></svg>Invoices</div>
   <div class="sb-item" data-nav="tax" onclick="nav('tax')"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>Tax &amp; BAS</div>
   <div class="sb-item" data-nav="reports" onclick="nav('reports')"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>Reports</div>
+  <div class="sb-section">Expenses</div>
+  <div class="sb-item" data-nav="expenses" onclick="nav('expenses')"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="5" width="20" height="14" rx="2"/><line x1="2" y1="10" x2="22" y2="10"/><line x1="6" y1="15" x2="10" y2="15"/></svg>Expenses</div>
   <div class="sb-footer"><div class="sb-user"><div class="sb-avatar">NS</div><div><div class="sb-user-name">Admin</div><div style="font-size:9px;color:var(--text3);word-break:break-all;margin-top:2px">admin@northernstarsupport.com</div></div></div></div>
 </nav>
 <div class="main">
@@ -403,8 +409,59 @@ input[type=number]{text-align:right;font-variant-numeric:tabular-nums}
     <div id="participant-list"><div class="loading"><div class="spin"></div>Loading...</div></div>
   </div>
 
+  <div class="page" id="page-expenses">
+    <div class="section-header">
+      <div class="section-title">Expenses <span id="exp-month-label" style="font-size:12px;font-weight:500;color:var(--text3);margin-left:8px"></span></div>
+      <button class="btn btn-outline btn-sm" onclick="refreshExpenses()">&#8635; Re-check matches</button>
+    </div>
+    <div style="font-size:11px;color:var(--text3);margin-bottom:14px;line-height:1.6">Allocation and recurring-expense tracking live on this tab only &mdash; they do not affect Dashboard figures, Cash Book totals or invoicing. Right-click a row for actions.</div>
+
+    <div class="card">
+      <div class="card-title">Recurring expenses</div>
+      <div id="exp-recurring-body"><div class="loading"><div class="spin"></div>Loading...</div></div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Unallocated transactions</div>
+      <div id="exp-unalloc-body"><div class="loading"><div class="spin"></div>Loading...</div></div>
+    </div>
+  </div>
+
 </div>
 </div>
+<div id="exp-ctxmenu" style="display:none;position:fixed;z-index:400;min-width:210px;background:var(--bg3);border:1px solid var(--border2);border-radius:var(--r);padding:5px;box-shadow:0 18px 44px -14px rgba(0,0,0,.85)"></div>
+
+<div id="m-exp-alloc" style="display:none"><div class="modal-bg" onclick="if(event.target===this)closeM('m-exp-alloc')"><div class="modal" style="width:460px">
+  <div class="modal-title"><span style="color:var(--blue)">Allocate to participant</span><button class="btn-icon" onclick="closeM('m-exp-alloc')">&#x2715;</button></div>
+  <div id="exp-alloc-tx" style="background:var(--bg4);border:1px solid var(--border2);border-radius:var(--r);padding:9px 12px;font-size:12px;color:var(--text2);margin-bottom:12px">--</div>
+  <div class="field"><label>Search participants</label><input type="text" id="exp-alloc-search" placeholder="Start typing a name" oninput="renderExpAllocList(this.value)"></div>
+  <div id="exp-alloc-list" style="max-height:280px;overflow-y:auto;margin-top:10px"></div>
+  <div class="modal-footer"><button class="btn btn-outline" onclick="closeM('m-exp-alloc')">Cancel</button></div>
+</div></div></div>
+
+<div id="m-exp-recurring" style="display:none"><div class="modal-bg" onclick="if(event.target===this)closeM('m-exp-recurring')"><div class="modal" style="width:480px">
+  <div class="modal-title"><span style="color:var(--gold)">Mark as recurring expense</span><button class="btn-icon" onclick="closeM('m-exp-recurring')">&#x2715;</button></div>
+  <div style="background:var(--gold-bg);border:1px solid var(--gold-dim);border-radius:var(--r);padding:10px 13px;margin-bottom:15px;font-size:11px;color:var(--gold);line-height:1.6">Each month this expense will be listed here and matched automatically against a Cash Book payment with a similar description and an amount within 5% of the expected figure.</div>
+  <div class="form-grid">
+    <div class="field"><label>Label</label><input type="text" id="exp-re-label" placeholder="Office rent"></div>
+    <div class="form-row">
+      <div class="field"><label>Expected amount ($)</label><input type="number" id="exp-re-amount" step="0.01" min="0" placeholder="0.00"></div>
+      <div class="field"><label>Expected day of month</label><input type="number" id="exp-re-day" min="1" max="31" placeholder="1"></div>
+    </div>
+    <div class="field"><label>Allocate to</label><select id="exp-re-alloc" onchange="expToggleRecurringParticipant()"><option value="company">Company</option><option value="participant">Participant</option></select></div>
+    <div class="field" id="exp-re-participant-row" style="display:none"><label>Participant</label><select id="exp-re-participant"></select></div>
+  </div>
+  <div class="modal-footer"><button class="btn btn-outline" onclick="closeM('m-exp-recurring')">Cancel</button><button class="btn btn-primary" onclick="saveExpRecurring()">Create recurring expense</button></div>
+</div></div></div>
+
+<div id="m-exp-match" style="display:none"><div class="modal-bg" onclick="if(event.target===this)closeM('m-exp-match')"><div class="modal" style="width:520px">
+  <div class="modal-title"><span style="color:var(--gold)">Match to a transaction</span><button class="btn-icon" onclick="closeM('m-exp-match')">&#x2715;</button></div>
+  <div id="exp-match-label" style="background:var(--bg4);border:1px solid var(--border2);border-radius:var(--r);padding:9px 12px;font-size:12px;color:var(--text2);margin-bottom:12px">--</div>
+  <div class="field"><label>Search the Cash Book</label><input type="text" id="exp-match-search" placeholder="Description, reference or date" oninput="renderExpMatchList(this.value)"></div>
+  <div id="exp-match-list" style="max-height:300px;overflow-y:auto;margin-top:10px"></div>
+  <div class="modal-footer"><button class="btn btn-outline" onclick="closeM('m-exp-match')">Cancel</button></div>
+</div></div></div>
+
 <div id="m-tx" style="display:none"><div class="modal-bg" onclick="if(event.target===this)closeM('m-tx')"><div class="modal">
   <div class="modal-title">Add transaction <button class="btn-icon" onclick="closeM('m-tx')">&#x2715;</button></div>
   <div class="form-grid">
@@ -961,7 +1018,7 @@ var SCHADS_SLEEPOVER_ACTIVE_MIN_HRS = 1;
 // bill the participant's plan, a different concept — do not merge them).
 var EMPLOYEE_TRAVEL_KM_RATE = 0.99;
 var pendingExportPlatform = null;
-var S = {tx:[],emps:[],runs:[],participants:[],dd:{description:[],type:[]},curMonth:new Date().getMonth(),editEmpId:null,ddField:null,ddTargetId:null,ch:{},wiseTransfers:[],invoiceLedger:[],_lastGenInvoice:null,shiftTypes:[],scheduleBlocks:[],tsNameMap:[]};
+var S = {tx:[],emps:[],runs:[],participants:[],dd:{description:[],type:[]},curMonth:new Date().getMonth(),editEmpId:null,ddField:null,ddTargetId:null,ch:{},wiseTransfers:[],invoiceLedger:[],_lastGenInvoice:null,shiftTypes:[],scheduleBlocks:[],tsNameMap:[],recurringExpenses:[],recurringInstances:[]};
 
 function eid(id){return document.getElementById(id);}
 function fmt(n){var v=parseFloat(n);if(!v&&v!==0)return'--';return'$'+Math.abs(v).toLocaleString('en-AU',{minimumFractionDigits:2,maximumFractionDigits:2});}
@@ -1019,7 +1076,7 @@ function nav(p){
   eid('page-'+p).classList.add('active');
   var el=document.querySelector('[data-nav="'+p+'"]');
   if(el)el.classList.add('active');
-  var titles={dashboard:'Dashboard',cashbook:'Cash Book',employees:'Employees',participants:'Participants',payroll:'Payroll',invoices:'Invoices',tax:'Tax & BAS',reports:'Reports'};
+  var titles={dashboard:'Dashboard',cashbook:'Cash Book',employees:'Employees',participants:'Participants',payroll:'Payroll',invoices:'Invoices',tax:'Tax & BAS',reports:'Reports',expenses:'Expenses'};
   eid('pageTitle').textContent=titles[p]||p;
   closeSidebarOnNav();if(p==='cashbook')renderCB();
   if(p==='payroll')renderPR();
@@ -1028,6 +1085,7 @@ function nav(p){
   if(p==='employees')renderEmps();
   if(p==='participants')renderParticipants();
   if(p==='invoices')renderInvoices();
+  if(p==='expenses')refreshExpenses();
 }
 
 
@@ -1166,6 +1224,8 @@ async function loadAll(){
     S._shiftTypesTableMissing=false;S._nameMapTableMissing=false;S._scheduleBlocksTableMissing=false;
     try{var sbRes=await sb2.from('schedule_blocks').select('*').order('created_at',{ascending:true});if(sbRes.error){S.scheduleBlocks=[];if(tsTableMissing(sbRes.error))S._scheduleBlocksTableMissing=true;console.warn('[loadAll] schedule_blocks:',sbRes.error.message);}else{S.scheduleBlocks=sbRes.data||[];}}catch(e){S.scheduleBlocks=[];console.warn('[loadAll] schedule_blocks load error:',e);}
     try{var stRes=await sb2.from('shift_types').select('*').order('created_at',{ascending:true});if(stRes.error){S.shiftTypes=[];if(tsTableMissing(stRes.error))S._shiftTypesTableMissing=true;console.warn('[loadAll] shift_types:',stRes.error.message);}else{S.shiftTypes=stRes.data||[];}}catch(e){S.shiftTypes=[];console.warn('[loadAll] shift_types load error:',e);}
+    try{var reRes=await sb2.from('recurring_expenses').select('*').order('created_at',{ascending:true});if(reRes.error){S.recurringExpenses=[];if(tsTableMissing(reRes.error))S._recurringTableMissing=true;console.warn('[loadAll] recurring_expenses:',reRes.error.message);}else{S.recurringExpenses=reRes.data||[];}}catch(e){S.recurringExpenses=[];console.warn('[loadAll] recurring_expenses load error:',e);}
+    try{var riRes=await sb2.from('recurring_expense_instances').select('*').order('month',{ascending:false});if(riRes.error){S.recurringInstances=[];if(tsTableMissing(riRes.error))S._recurringInstTableMissing=true;console.warn('[loadAll] recurring_expense_instances:',riRes.error.message);}else{S.recurringInstances=riRes.data||[];}}catch(e){S.recurringInstances=[];console.warn('[loadAll] recurring_expense_instances load error:',e);}
     try{var nmRes=await sb2.from('timesheet_name_map').select('*').order('created_at',{ascending:true});if(nmRes.error){S.tsNameMap=[];if(tsTableMissing(nmRes.error))S._nameMapTableMissing=true;console.warn('[loadAll] timesheet_name_map:',nmRes.error.message);}else{S.tsNameMap=nmRes.data||[];}}catch(e){S.tsNameMap=[];console.warn('[loadAll] timesheet_name_map load error:',e);}
     setSync('ok');
     eid('errBox').style.display='none';
@@ -9077,6 +9137,521 @@ async function tsCreatePayRuns(){
 }
 
 // ────────────────────────────────────────────────────────────────────────────
+
+// ── Expense Tracker ─────────────────────────────────────────────────────────
+// Standalone: allocation and recurring-expense data are read ONLY on the
+// Expenses tab. Nothing here feeds Dashboard KPIs, charts, Cash Book totals,
+// or invoicing. Schema: migrations/2026-09-04-expense-tracker.sql.
+
+var EXP_MATCH_TOLERANCE = 0.05;   // amount within 5% of expected
+var _expCtxTx = null;             // transaction the context menu is open on
+var _expCtxInstance = null;       // instance the context menu is open on
+var _expMarkTxId = null;          // transaction being turned into a recurring expense
+var _expMatchInstanceId = null;   // instance being manually matched
+
+// Month shown on the tab. Follows the app's existing month selection so the
+// Cash Book month tabs and this tab stay in step.
+function expMonthKey(){ return YEAR+'-'+String(S.curMonth+1).padStart(2,'0'); }
+function expMonthLabel(){ return MONTHS[S.curMonth]+' '+YEAR; }
+function expMonthKeyOffset(n){
+  var d = new Date(YEAR, S.curMonth - n, 1);
+  return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0');
+}
+function expMonthShort(key){
+  var p = String(key||'').split('-');
+  return (MONTHS[(+p[1]||1)-1]||'').slice(0,3);
+}
+
+function expIsExpense(tx){ return (+tx.amount_out||0) > 0; }
+function expTxInMonth(tx, key){ return String(tx.date||'').indexOf(key||expMonthKey())===0; }
+
+// Loose label match: substring either way, else 60%+ of the label's
+// significant tokens appearing in the description.
+function expNorm(s){ return String(s||'').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim(); }
+function expLooseMatch(desc, label){
+  var d = expNorm(desc), l = expNorm(label);
+  if(!d || !l) return false;
+  if(d.indexOf(l)!==-1 || l.indexOf(d)!==-1) return true;
+  var toks = l.split(' ').filter(function(t){ return t.length>2; });
+  if(!toks.length) return false;
+  var hits = toks.filter(function(t){ return d.indexOf(t)!==-1; }).length;
+  return hits/toks.length >= 0.6;
+}
+function expAmountMatches(amt, expected){
+  var e = +expected||0;
+  if(e<=0) return false;
+  return Math.abs((+amt||0) - e) <= e*EXP_MATCH_TOLERANCE;
+}
+
+function expInstanceFor(reId, key){
+  return (S.recurringInstances||[]).find(function(i){
+    return i.recurring_expense_id===reId && i.month===key;
+  })||null;
+}
+function expTxById(id){ return (S.tx||[]).find(function(t){ return t.id===id; })||null; }
+
+// Update helper that tolerates the migration not having been run yet.
+async function expUpdateTx(id, patch){
+  var res = await sb2.from('transactions').update(patch).eq('id', id).select();
+  if(res.error && isMissingColumnError(res.error, Object.keys(patch))){
+    console.warn('[expenses] transactions missing allocation columns — run migrations/2026-09-04-expense-tracker.sql');
+    return { error: res.error, missingCols: true };
+  }
+  return res;
+}
+
+// ── Instance upkeep ─────────────────────────────────────────────────────────
+
+// Ensure every active recurring expense has an instance row for this month.
+async function ensureRecurringInstances(){
+  if(S._recurringTableMissing || S._recurringInstTableMissing) return;
+  var key = expMonthKey();
+  var missing = (S.recurringExpenses||[]).filter(function(re){
+    return re.active !== false && !expInstanceFor(re.id, key);
+  });
+  if(!missing.length) return;
+  var rows = missing.map(function(re){
+    return { recurring_expense_id: re.id, month: key, status: 'pending', transaction_id: null };
+  });
+  var res = await sb2.from('recurring_expense_instances').insert(rows).select();
+  if(res.error){
+    if(tsTableMissing(res.error)) S._recurringInstTableMissing = true;
+    else console.warn('[expenses] instance create:', res.error.message);
+    return;
+  }
+  (res.data||[]).forEach(function(r){ S.recurringInstances.push(r); });
+}
+
+// Link pending instances to a matching cash book expense for the same month.
+async function autoMatchRecurringInstances(){
+  if(S._recurringInstTableMissing) return 0;
+  var key = expMonthKey();
+  var used = {};
+  (S.recurringInstances||[]).forEach(function(i){ if(i.transaction_id) used[i.transaction_id]=1; });
+
+  var candidates = (S.tx||[]).filter(function(t){
+    return expIsExpense(t) && expTxInMonth(t, key) && !used[t.id];
+  });
+
+  var matched = 0;
+  var pending = (S.recurringInstances||[]).filter(function(i){
+    return i.month===key && i.status!=='paid' && !i.transaction_id;
+  });
+
+  for(var p=0; p<pending.length; p++){
+    var inst = pending[p];
+    var re = (S.recurringExpenses||[]).find(function(r){ return r.id===inst.recurring_expense_id; });
+    if(!re) continue;
+    var hit = candidates.find(function(t){
+      return !used[t.id]
+        && expLooseMatch(t.description, re.label)
+        && expAmountMatches(t.amount_out, re.expected_amount);
+    });
+    if(!hit) continue;
+    var res = await sb2.from('recurring_expense_instances')
+      .update({ transaction_id: hit.id, status: 'paid' }).eq('id', inst.id).select();
+    if(res.error){ console.warn('[expenses] auto-match:', res.error.message); continue; }
+    inst.transaction_id = hit.id;
+    inst.status = 'paid';
+    used[hit.id] = 1;
+    matched++;
+  }
+  return matched;
+}
+
+async function refreshExpenses(){
+  await ensureRecurringInstances();
+  await autoMatchRecurringInstances();
+  renderExpenses();
+}
+
+// ── Rendering ───────────────────────────────────────────────────────────────
+
+function renderExpenses(){
+  var lbl = eid('exp-month-label');
+  if(lbl) lbl.textContent = expMonthLabel();
+  renderRecurringCards();
+  renderUnallocatedTx();
+}
+
+function expSetupNotice(what){
+  return '<div class="empty" style="color:var(--gold)">Run <code>migrations/2026-09-04-expense-tracker.sql</code> '
+    +'in Supabase to enable '+what+'.</div>';
+}
+
+function renderRecurringCards(){
+  var host = eid('exp-recurring-body');
+  if(!host) return;
+  if(S._recurringTableMissing || S._recurringInstTableMissing){
+    host.innerHTML = expSetupNotice('recurring expense tracking');
+    return;
+  }
+  var list = (S.recurringExpenses||[]).filter(function(r){ return r.active !== false; });
+  if(!list.length){
+    host.innerHTML = '<div class="empty">No recurring expenses yet. Right-click a transaction below and choose "Mark as Recurring".</div>';
+    return;
+  }
+  var key = expMonthKey();
+  host.innerHTML = list.map(function(re){
+    var inst = expInstanceFor(re.id, key);
+    var paid = inst && inst.status==='paid';
+    var tx = inst && inst.transaction_id ? expTxById(inst.transaction_id) : null;
+    var who = re.default_allocated_to==='participant'
+      ? ((S.participants||[]).find(function(p){ return p.id===re.default_participant_id; })||{}).name || 'Participant'
+      : 'Company';
+
+    var statusHtml = paid
+      ? '<span class="badge badge-green">&#10003; Paid</span>'
+      : '<span class="badge badge-gold">Pending</span>';
+
+    var detail = paid && tx
+      ? '<div style="font-size:11px;color:var(--text2);margin-top:6px">'
+          +tx.date+' &middot; '+(tx.description||'')+' &middot; <b style="color:var(--out)">'+fmt(tx.amount_out)+'</b></div>'
+      : (paid
+          ? '<div style="font-size:11px;color:var(--text3);margin-top:6px">Marked paid (linked transaction not in view)</div>'
+          : '<div style="font-size:11px;color:var(--text3);margin-top:6px">No matching payment found this month</div>');
+
+    var action = paid
+      ? '<button class="btn btn-outline btn-sm" onclick="expUnlinkInstance(\''+(inst?inst.id:'')+'\')">Unlink</button>'
+      : '<button class="btn btn-outline btn-sm" style="border-color:var(--gold-dim);color:var(--gold)" onclick="openExpMatchModal(\''+(inst?inst.id:'')+'\')">Match manually</button>';
+
+    return '<div class="card" style="margin-bottom:12px;padding:14px 16px"'
+      +(inst?' oncontextmenu="expInstanceMenu(event,\''+inst.id+'\');return false;"':'')+'>'
+      +'<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap">'
+        +'<div style="min-width:200px">'
+          +'<div style="font-size:13px;font-weight:650">'+(re.label||'Untitled')+'</div>'
+          +'<div style="font-size:11px;color:var(--text3);margin-top:3px">'
+            +fmt(re.expected_amount)+' expected'
+            +(re.expected_day_of_month?' &middot; around the '+re.expected_day_of_month+'th':'')
+            +' &middot; '+who+'</div>'
+        +'</div>'
+        +'<div style="display:flex;align-items:center;gap:10px">'+statusHtml+action+'</div>'
+      +'</div>'
+      +detail
+      +'<div style="margin-top:8px">'
+        +'<a href="#" onclick="expToggleHistory(\''+re.id+'\');return false;" style="font-size:10px;color:var(--blue);text-decoration:underline">Last 6 months</a>'
+        +'<div id="exp-hist-'+re.id+'" style="display:none;margin-top:8px">'+expHistoryHtml(re)+'</div>'
+      +'</div>'
+    +'</div>';
+  }).join('');
+}
+
+function expHistoryHtml(re){
+  var cells = [];
+  for(var n=5; n>=0; n--){
+    var key = expMonthKeyOffset(n);
+    var inst = expInstanceFor(re.id, key);
+    var paid = inst && inst.status==='paid';
+    var col = inst ? (paid?'var(--in)':'var(--gold)') : 'var(--text3)';
+    var bg  = inst ? (paid?'var(--in-dim)':'var(--gold-dim)') : 'var(--bg4)';
+    var txt = inst ? (paid?'Paid':'Pending') : '&mdash;';
+    cells.push('<div style="flex:1;min-width:64px;text-align:center;background:'+bg+';border-radius:var(--r);padding:6px 4px">'
+      +'<div style="font-size:9px;color:var(--text3);text-transform:uppercase;letter-spacing:.06em">'+expMonthShort(key)+'</div>'
+      +'<div style="font-size:11px;font-weight:600;color:'+col+';margin-top:2px">'+txt+'</div>'
+      +'</div>');
+  }
+  return '<div style="display:flex;gap:6px;flex-wrap:wrap">'+cells.join('')+'</div>';
+}
+
+function expToggleHistory(reId){
+  var el = eid('exp-hist-'+reId);
+  if(el) el.style.display = el.style.display==='none' ? 'block' : 'none';
+}
+
+function renderUnallocatedTx(){
+  var host = eid('exp-unalloc-body');
+  if(!host) return;
+  var key = expMonthKey();
+  var rows = (S.tx||[]).filter(function(t){
+    return expIsExpense(t) && expTxInMonth(t, key) && !t.allocated_to;
+  }).sort(function(a,b){ return String(a.date).localeCompare(String(b.date)); });
+
+  if(!rows.length){
+    host.innerHTML = '<div class="empty">Every expense in '+expMonthLabel()+' is allocated.</div>';
+    return;
+  }
+  host.innerHTML = '<div class="tbl-wrap"><table><thead><tr>'
+    +'<th>Date</th><th>Description</th><th>Type</th><th>Ref</th><th class="td-right">Amount</th><th></th>'
+    +'</tr></thead><tbody>'
+    + rows.map(function(t){
+        return '<tr oncontextmenu="expTxMenu(event,\''+t.id+'\');return false;" style="cursor:context-menu">'
+          +'<td>'+(t.date||'')+'</td>'
+          +'<td>'+(t.description||'')+'</td>'
+          +'<td><span class="td-muted">'+(t.payment_type||'')+'</span></td>'
+          +'<td><span class="td-muted">'+(t.reference||'')+'</span></td>'
+          +'<td class="td-right" style="color:var(--out);font-weight:600">'+fmt(t.amount_out)+'</td>'
+          +'<td class="td-right"><button class="btn btn-outline btn-sm" onclick="expTxMenu(event,\''+t.id+'\')">Allocate &#9662;</button></td>'
+          +'</tr>';
+      }).join('')
+    +'</tbody></table></div>';
+}
+
+// ── Context menu ────────────────────────────────────────────────────────────
+
+function expCloseMenu(){
+  var m = eid('exp-ctxmenu');
+  if(m) m.style.display='none';
+  _expCtxTx = null; _expCtxInstance = null;
+}
+
+function expShowMenu(ev, itemsHtml){
+  ev.preventDefault(); ev.stopPropagation();
+  var m = eid('exp-ctxmenu');
+  if(!m) return;
+  m.innerHTML = itemsHtml;
+  m.style.display = 'block';
+  // Keep the menu on screen
+  var w = 220, h = m.offsetHeight||140;
+  var x = Math.min(ev.clientX, window.innerWidth  - w - 8);
+  var y = Math.min(ev.clientY, window.innerHeight - h - 8);
+  m.style.left = Math.max(8,x)+'px';
+  m.style.top  = Math.max(8,y)+'px';
+}
+
+function expMenuItem(label, onclick, color){
+  return '<div class="exp-ctx-item" style="'+(color?'color:'+color:'')+'" onclick="'+onclick+'">'+label+'</div>';
+}
+
+function expTxMenu(ev, txId){
+  _expCtxTx = txId;
+  expShowMenu(ev,
+    expMenuItem('Allocate to Participant', 'openExpAllocateModal(\''+txId+'\')')
+    + expMenuItem('Allocate to Company',   'expAllocateCompany(\''+txId+'\')')
+    + '<div style="height:1px;background:var(--border);margin:4px 0"></div>'
+    + expMenuItem('Mark as Recurring',     'openExpRecurringModal(\''+txId+'\')', 'var(--gold)')
+  );
+}
+
+function expInstanceMenu(ev, instId){
+  _expCtxInstance = instId;
+  var inst = (S.recurringInstances||[]).find(function(i){ return i.id===instId; });
+  if(!inst) return;
+  expShowMenu(ev, inst.status==='paid'
+    ? expMenuItem('Unlink transaction', 'expUnlinkInstance(\''+instId+'\')', 'var(--out)')
+      + expMenuItem('Re-match to another transaction', 'openExpMatchModal(\''+instId+'\')')
+    : expMenuItem('Match manually', 'openExpMatchModal(\''+instId+'\')')
+  );
+}
+
+// ── Allocation actions ──────────────────────────────────────────────────────
+
+async function expAllocateCompany(txId){
+  expCloseMenu();
+  var tx = expTxById(txId);
+  if(!tx) return;
+  setSync('saving');
+  var res = await expUpdateTx(txId, { allocated_to:'company', participant_id:null });
+  if(res.error){
+    setSync('error');
+    showToast(res.missingCols?'Run the expense tracker migration first':'Could not allocate: '+res.error.message,'err');
+    return;
+  }
+  tx.allocated_to='company'; tx.participant_id=null;
+  setSync('ok');
+  renderExpenses();
+  showToast('Allocated to Company','ok');
+}
+
+function openExpAllocateModal(txId){
+  expCloseMenu();
+  var tx = expTxById(txId);
+  if(!tx) return;
+  _expCtxTx = txId;
+  eid('exp-alloc-tx').textContent = (tx.date||'')+' · '+(tx.description||'')+' · '+fmt(tx.amount_out);
+  eid('exp-alloc-search').value = '';
+  renderExpAllocList('');
+  eid('m-exp-alloc').style.display='block';
+}
+
+function renderExpAllocList(q){
+  var host = eid('exp-alloc-list');
+  if(!host) return;
+  var term = expNorm(q);
+  var list = (S.participants||[]).filter(function(p){
+    return !term || expNorm(p.name).indexOf(term)!==-1;
+  });
+  host.innerHTML = list.length
+    ? list.map(function(p){
+        return '<div class="exp-pick-row" onclick="expAllocateParticipant(\''+p.id+'\')">'
+          +'<span style="font-size:12px;font-weight:600">'+p.name+'</span>'
+          +'<span class="td-muted" style="font-size:10px">'+(p.ndis_number||'')+'</span>'
+          +'</div>';
+      }).join('')
+    : '<div class="empty">No participants match</div>';
+}
+
+async function expAllocateParticipant(ptId){
+  var txId = _expCtxTx;
+  var tx = expTxById(txId);
+  var pt = (S.participants||[]).find(function(p){ return p.id===ptId; });
+  if(!tx||!pt) return;
+  setSync('saving');
+  var res = await expUpdateTx(txId, { allocated_to:'participant', participant_id:ptId });
+  if(res.error){
+    setSync('error');
+    showToast(res.missingCols?'Run the expense tracker migration first':'Could not allocate: '+res.error.message,'err');
+    return;
+  }
+  tx.allocated_to='participant'; tx.participant_id=ptId;
+  setSync('ok');
+  closeM('m-exp-alloc');
+  renderExpenses();
+  showToast('Allocated to '+pt.name,'ok');
+}
+
+// ── Mark as recurring ───────────────────────────────────────────────────────
+
+function openExpRecurringModal(txId){
+  expCloseMenu();
+  var tx = expTxById(txId);
+  if(!tx) return;
+  _expMarkTxId = txId;
+  eid('exp-re-label').value  = tx.description||'';
+  eid('exp-re-amount').value = (+tx.amount_out||0).toFixed(2);
+  eid('exp-re-day').value    = tx.date ? parseInt(String(tx.date).split('-')[2],10)||'' : '';
+  eid('exp-re-alloc').value  = tx.allocated_to || 'company';
+  var sel = eid('exp-re-participant');
+  sel.innerHTML = '<option value="">— select participant —</option>'
+    + (S.participants||[]).map(function(p){
+        return '<option value="'+p.id+'"'+(tx.participant_id===p.id?' selected':'')+'>'+p.name+'</option>';
+      }).join('');
+  expToggleRecurringParticipant();
+  eid('m-exp-recurring').style.display='block';
+}
+
+function expToggleRecurringParticipant(){
+  var row = eid('exp-re-participant-row');
+  if(row) row.style.display = eid('exp-re-alloc').value==='participant' ? '' : 'none';
+}
+
+async function saveExpRecurring(){
+  var label = (eid('exp-re-label').value||'').trim();
+  var amt   = parseFloat(eid('exp-re-amount').value);
+  var day   = parseInt(eid('exp-re-day').value,10);
+  var alloc = eid('exp-re-alloc').value;
+  var ptId  = eid('exp-re-participant').value || null;
+
+  if(!label){ showToast('Give the recurring expense a label','err'); return; }
+  if(!amt || amt<=0){ showToast('Enter the expected amount','err'); return; }
+  if(alloc==='participant' && !ptId){ showToast('Pick a participant, or allocate to Company','err'); return; }
+
+  setSync('saving');
+  var res = await sb2.from('recurring_expenses').insert({
+    label: label,
+    default_allocated_to: alloc,
+    default_participant_id: alloc==='participant' ? ptId : null,
+    expected_amount: amt,
+    expected_day_of_month: (day>=1&&day<=31) ? day : null,
+    active: true
+  }).select();
+
+  if(res.error){
+    setSync('error');
+    if(tsTableMissing(res.error)){
+      S._recurringTableMissing = true;
+      showToast('Run migrations/2026-09-04-expense-tracker.sql in Supabase first','err');
+    } else {
+      showToast('Could not save: '+res.error.message,'err');
+    }
+    return;
+  }
+  var re = res.data&&res.data[0];
+  if(re) S.recurringExpenses.push(re);
+
+  // Allocate the source transaction the same way, then link it as this
+  // month's instance so the card opens already reconciled.
+  var tx = expTxById(_expMarkTxId);
+  if(tx){
+    var patch = { allocated_to: alloc, participant_id: alloc==='participant' ? ptId : null };
+    var up = await expUpdateTx(_expMarkTxId, patch);
+    if(!up.error){ tx.allocated_to = patch.allocated_to; tx.participant_id = patch.participant_id; }
+  }
+  if(re && tx){
+    var ins = await sb2.from('recurring_expense_instances').insert({
+      recurring_expense_id: re.id, month: expMonthKey(),
+      transaction_id: tx.id, status: 'paid'
+    }).select();
+    if(!ins.error && ins.data && ins.data[0]) S.recurringInstances.push(ins.data[0]);
+    else if(ins.error && tsTableMissing(ins.error)) S._recurringInstTableMissing = true;
+  }
+
+  setSync('ok');
+  closeM('m-exp-recurring');
+  _expMarkTxId = null;
+  await refreshExpenses();
+  showToast('Recurring expense "'+label+'" created','ok');
+}
+
+// ── Manual match / unlink ───────────────────────────────────────────────────
+
+function openExpMatchModal(instId){
+  expCloseMenu();
+  var inst = (S.recurringInstances||[]).find(function(i){ return i.id===instId; });
+  if(!inst) return;
+  _expMatchInstanceId = instId;
+  var re = (S.recurringExpenses||[]).find(function(r){ return r.id===inst.recurring_expense_id; });
+  eid('exp-match-label').textContent = (re?re.label:'Recurring expense')
+    + (re&&re.expected_amount ? ' · '+fmt(re.expected_amount)+' expected' : '');
+  eid('exp-match-search').value = '';
+  renderExpMatchList('');
+  eid('m-exp-match').style.display='block';
+}
+
+function renderExpMatchList(q){
+  var host = eid('exp-match-list');
+  if(!host) return;
+  var term = expNorm(q);
+  var linked = {};
+  (S.recurringInstances||[]).forEach(function(i){
+    if(i.transaction_id && i.id!==_expMatchInstanceId) linked[i.transaction_id]=1;
+  });
+  var rows = (S.tx||[]).filter(function(t){
+    if(!expIsExpense(t) || linked[t.id]) return false;
+    if(!term) return expTxInMonth(t, expMonthKey());
+    return expNorm((t.description||'')+' '+(t.reference||'')+' '+(t.date||'')).indexOf(term)!==-1;
+  }).sort(function(a,b){ return String(b.date).localeCompare(String(a.date)); }).slice(0,60);
+
+  host.innerHTML = rows.length
+    ? rows.map(function(t){
+        return '<div class="exp-pick-row" onclick="expLinkInstance(\''+t.id+'\')">'
+          +'<span style="font-size:12px">'+(t.date||'')+' &middot; '+(t.description||'')+'</span>'
+          +'<span style="font-size:12px;font-weight:600;color:var(--out)">'+fmt(t.amount_out)+'</span>'
+          +'</div>';
+      }).join('')
+    : '<div class="empty">'+(term?'No transactions match':'No unlinked expenses in '+expMonthLabel()+' — search to widen')+'</div>';
+}
+
+async function expLinkInstance(txId){
+  var inst = (S.recurringInstances||[]).find(function(i){ return i.id===_expMatchInstanceId; });
+  if(!inst) return;
+  setSync('saving');
+  var res = await sb2.from('recurring_expense_instances')
+    .update({ transaction_id: txId, status: 'paid' }).eq('id', inst.id).select();
+  if(res.error){ setSync('error'); showToast('Could not link: '+res.error.message,'err'); return; }
+  inst.transaction_id = txId; inst.status = 'paid';
+  setSync('ok');
+  closeM('m-exp-match');
+  renderExpenses();
+  showToast('Linked to transaction','ok');
+}
+
+async function expUnlinkInstance(instId){
+  expCloseMenu();
+  var inst = (S.recurringInstances||[]).find(function(i){ return i.id===instId; });
+  if(!inst) return;
+  setSync('saving');
+  var res = await sb2.from('recurring_expense_instances')
+    .update({ transaction_id: null, status: 'pending' }).eq('id', inst.id).select();
+  if(res.error){ setSync('error'); showToast('Could not unlink: '+res.error.message,'err'); return; }
+  inst.transaction_id = null; inst.status = 'pending';
+  setSync('ok');
+  renderExpenses();
+  showToast('Unlinked — back to pending','ok');
+}
+
+// Dismiss the expenses context menu on any outside click or Escape.
+document.addEventListener('click', function(){ expCloseMenu(); });
+document.addEventListener('keydown', function(e){ if(e.key==='Escape') expCloseMenu(); });
 
 </script>
 </body>
