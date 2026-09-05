@@ -416,6 +416,12 @@ input[type=number]{text-align:right;font-variant-numeric:tabular-nums}
     </div>
     <div style="font-size:11px;color:var(--text3);margin-bottom:14px;line-height:1.6">Allocation and recurring-expense tracking live on this tab only &mdash; they do not affect Dashboard figures, Cash Book totals or invoicing. Right-click a row for actions.</div>
 
+    <div class="card" id="exp-suggest-card" style="display:none">
+      <div class="card-title">Suggested recurring expenses</div>
+      <div style="font-size:11px;color:var(--text3);margin:-4px 0 12px;line-height:1.6">Payments seen in two or more different months that aren&rsquo;t tracked yet.</div>
+      <div id="exp-suggest-body"></div>
+    </div>
+
     <div class="card">
       <div class="card-title">Recurring expenses</div>
       <div id="exp-recurring-body"><div class="loading"><div class="spin"></div>Loading...</div></div>
@@ -1018,7 +1024,7 @@ var SCHADS_SLEEPOVER_ACTIVE_MIN_HRS = 1;
 // bill the participant's plan, a different concept — do not merge them).
 var EMPLOYEE_TRAVEL_KM_RATE = 0.99;
 var pendingExportPlatform = null;
-var S = {tx:[],emps:[],runs:[],participants:[],dd:{description:[],type:[]},curMonth:new Date().getMonth(),editEmpId:null,ddField:null,ddTargetId:null,ch:{},wiseTransfers:[],invoiceLedger:[],_lastGenInvoice:null,shiftTypes:[],scheduleBlocks:[],tsNameMap:[],recurringExpenses:[],recurringInstances:[]};
+var S = {tx:[],emps:[],runs:[],participants:[],dd:{description:[],type:[]},curMonth:new Date().getMonth(),editEmpId:null,ddField:null,ddTargetId:null,ch:{},wiseTransfers:[],invoiceLedger:[],_lastGenInvoice:null,shiftTypes:[],scheduleBlocks:[],tsNameMap:[],recurringExpenses:[],recurringInstances:[],dismissedCandidates:[]};
 
 function eid(id){return document.getElementById(id);}
 function fmt(n){var v=parseFloat(n);if(!v&&v!==0)return'--';return'$'+Math.abs(v).toLocaleString('en-AU',{minimumFractionDigits:2,maximumFractionDigits:2});}
@@ -1226,6 +1232,7 @@ async function loadAll(){
     try{var stRes=await sb2.from('shift_types').select('*').order('created_at',{ascending:true});if(stRes.error){S.shiftTypes=[];if(tsTableMissing(stRes.error))S._shiftTypesTableMissing=true;console.warn('[loadAll] shift_types:',stRes.error.message);}else{S.shiftTypes=stRes.data||[];}}catch(e){S.shiftTypes=[];console.warn('[loadAll] shift_types load error:',e);}
     try{var reRes=await sb2.from('recurring_expenses').select('*').order('created_at',{ascending:true});if(reRes.error){S.recurringExpenses=[];if(tsTableMissing(reRes.error))S._recurringTableMissing=true;console.warn('[loadAll] recurring_expenses:',reRes.error.message);}else{S.recurringExpenses=reRes.data||[];}}catch(e){S.recurringExpenses=[];console.warn('[loadAll] recurring_expenses load error:',e);}
     try{var riRes=await sb2.from('recurring_expense_instances').select('*').order('month',{ascending:false});if(riRes.error){S.recurringInstances=[];if(tsTableMissing(riRes.error))S._recurringInstTableMissing=true;console.warn('[loadAll] recurring_expense_instances:',riRes.error.message);}else{S.recurringInstances=riRes.data||[];}}catch(e){S.recurringInstances=[];console.warn('[loadAll] recurring_expense_instances load error:',e);}
+    try{var dcRes=await sb2.from('dismissed_recurring_candidates').select('*').order('created_at',{ascending:true});if(dcRes.error){S.dismissedCandidates=[];if(tsTableMissing(dcRes.error))S._dismissedCandTableMissing=true;console.warn('[loadAll] dismissed_recurring_candidates:',dcRes.error.message);}else{S.dismissedCandidates=dcRes.data||[];}}catch(e){S.dismissedCandidates=[];console.warn('[loadAll] dismissed_recurring_candidates load error:',e);}
     try{var nmRes=await sb2.from('timesheet_name_map').select('*').order('created_at',{ascending:true});if(nmRes.error){S.tsNameMap=[];if(tsTableMissing(nmRes.error))S._nameMapTableMissing=true;console.warn('[loadAll] timesheet_name_map:',nmRes.error.message);}else{S.tsNameMap=nmRes.data||[];}}catch(e){S.tsNameMap=[];console.warn('[loadAll] timesheet_name_map load error:',e);}
     setSync('ok');
     eid('errBox').style.display='none';
@@ -9148,6 +9155,7 @@ var _expCtxTx = null;             // transaction the context menu is open on
 var _expCtxInstance = null;       // instance the context menu is open on
 var _expMarkTxId = null;          // transaction being turned into a recurring expense
 var _expMatchInstanceId = null;   // instance being manually matched
+var _expCandidate = null;         // suggested candidate being added, for back-fill
 
 // Month shown on the tab. Follows the app's existing month selection so the
 // Cash Book month tabs and this tab stay in step.
@@ -9164,6 +9172,26 @@ function expMonthShort(key){
 
 function expIsExpense(tx){ return (+tx.amount_out||0) > 0; }
 function expTxInMonth(tx, key){ return String(tx.date||'').indexOf(key||expMonthKey())===0; }
+// 'YYYY-MM' of a transaction's own date, or null if the date is unusable.
+function expTxMonthKey(tx){
+  var k = String(tx && tx.date || '').slice(0,7);
+  return /^\d{4}-\d{2}$/.test(k) ? k : null;
+}
+
+// Payroll never appears anywhere on the Expenses tab — it stays exclusively on
+// the Payroll tab. Cash book payroll rows carry a 'PAYROLL-' reference (both
+// the 'PAYROLL-PENDING-<runid>' placeholder written by savePayRun and the
+// reconciled 'PAYROLL-<runid>' row written by reconcilePendingPayroll /
+// manualMarkPayrollPaid) and/or a 'Payroll - <name>' description. Matched
+// case-insensitively so hand-entered rows are caught too.
+function expIsPayroll(tx){
+  var ref  = String(tx && tx.reference   || '').trim().toUpperCase();
+  var desc = String(tx && tx.description || '').trim().toUpperCase();
+  return ref.indexOf('PAYROLL-')===0 || desc.indexOf('PAYROLL - ')===0;
+}
+
+// The one gate every Expenses-tab transaction list goes through.
+function expIsTrackable(tx){ return expIsExpense(tx) && !expIsPayroll(tx); }
 
 // Loose label match: substring either way, else 60%+ of the label's
 // significant tokens appearing in the description.
@@ -9230,7 +9258,7 @@ async function autoMatchRecurringInstances(){
   (S.recurringInstances||[]).forEach(function(i){ if(i.transaction_id) used[i.transaction_id]=1; });
 
   var candidates = (S.tx||[]).filter(function(t){
-    return expIsExpense(t) && expTxInMonth(t, key) && !used[t.id];
+    return expIsTrackable(t) && expTxInMonth(t, key) && !used[t.id];
   });
 
   var matched = 0;
@@ -9265,13 +9293,174 @@ async function refreshExpenses(){
   renderExpenses();
 }
 
+// ── Suggested recurring expenses ────────────────────────────────────────────
+// Scans the whole cash book for expenses that repeat across months and are not
+// tracked yet. Grouping uses the same expLooseMatch / expAmountMatches rules as
+// autoMatchRecurringInstances, so a suggestion accepted here will be matched by
+// the auto-matcher next month on identical terms.
+
+var EXP_CANDIDATE_MIN_MONTHS = 2;   // distinct months before we suggest it
+var _expCandidates = [];            // last computed, index-addressed by the UI
+
+// Stable-ish signature for dismissals: normalised label + reference amount.
+// Compared with the loose helpers rather than string equality so a later
+// month nudging the average by a few cents doesn't resurrect a dismissal.
+function expCandidateSig(label, amount){
+  return expNorm(label)+'|'+(+amount||0).toFixed(2);
+}
+function expParseSig(sig){
+  var s = String(sig||''), i = s.lastIndexOf('|');
+  if(i===-1) return null;
+  return { label: s.slice(0,i), amount: parseFloat(s.slice(i+1))||0 };
+}
+function expIsDismissed(label, amount){
+  return (S.dismissedCandidates||[]).some(function(row){
+    var p = expParseSig(row.signature);
+    return p && expLooseMatch(label, p.label) && expAmountMatches(amount, p.amount);
+  });
+}
+
+// Already covered by a recurring expense the user has set up?
+function expIsTracked(desc, amount){
+  return (S.recurringExpenses||[]).some(function(re){
+    return re.active !== false
+      && expLooseMatch(desc, re.label)
+      && expAmountMatches(amount, re.expected_amount);
+  });
+}
+
+function expMostCommon(values){
+  var counts = {}, best = null, bestN = 0;
+  values.forEach(function(v){
+    var k = String(v);
+    counts[k] = (counts[k]||0) + 1;
+    if(counts[k] > bestN){ bestN = counts[k]; best = v; }
+  });
+  return best;
+}
+
+function detectRecurringCandidates(){
+  var groups = [];
+
+  (S.tx||[]).forEach(function(t){
+    if(!expIsTrackable(t)) return;                 // expense, and never payroll
+    var amt = +t.amount_out||0;
+    if(!amt) return;
+    if(expIsTracked(t.description, amt)) return;   // already a recurring expense
+
+    var g = groups.find(function(gr){
+      return expLooseMatch(t.description, gr.label)
+          && expAmountMatches(amt, gr.amount);
+    });
+    if(!g){
+      groups.push({ label: t.description||'', amount: amt, txs: [t] });
+    } else {
+      g.txs.push(t);
+    }
+  });
+
+  var out = [];
+  groups.forEach(function(g){
+    // Distinct months, keeping one representative transaction per month.
+    var byMonth = {};
+    g.txs.forEach(function(t){
+      var key = String(t.date||'').slice(0,7);
+      if(/^\d{4}-\d{2}$/.test(key) && !byMonth[key]) byMonth[key] = t;
+    });
+    var months = Object.keys(byMonth).sort();
+    if(months.length < EXP_CANDIDATE_MIN_MONTHS) return;
+
+    var amounts = g.txs.map(function(t){ return +t.amount_out||0; });
+    var avg = amounts.reduce(function(s,v){ return s+v; },0) / amounts.length;
+    var label = expMostCommon(g.txs.map(function(t){ return t.description||''; })) || g.label;
+    var day = expMostCommon(g.txs.map(function(t){
+      return parseInt(String(t.date||'').split('-')[2],10)||null;
+    }).filter(Boolean));
+
+    if(expIsDismissed(label, avg)) return;
+
+    out.push({
+      label: label,
+      avgAmount: Math.round(avg*100)/100,
+      day: day||null,
+      months: months,
+      monthTx: byMonth,
+      sig: expCandidateSig(label, avg)
+    });
+  });
+
+  // Most-seen first, then largest spend.
+  out.sort(function(a,b){
+    return (b.months.length - a.months.length) || (b.avgAmount - a.avgAmount);
+  });
+  return out;
+}
+
 // ── Rendering ───────────────────────────────────────────────────────────────
 
 function renderExpenses(){
   var lbl = eid('exp-month-label');
   if(lbl) lbl.textContent = expMonthLabel();
+  renderSuggestedCandidates();
   renderRecurringCards();
   renderUnallocatedTx();
+}
+
+function renderSuggestedCandidates(){
+  var card = eid('exp-suggest-card'), host = eid('exp-suggest-body');
+  if(!card || !host) return;
+  if(S._recurringTableMissing){ card.style.display='none'; return; }
+
+  _expCandidates = detectRecurringCandidates();
+  if(!_expCandidates.length){ card.style.display='none'; host.innerHTML=''; return; }
+  card.style.display = '';
+
+  host.innerHTML = _expCandidates.map(function(c, i){
+    var span = expMonthShort(c.months[0])+' – '+expMonthShort(c.months[c.months.length-1]);
+    return '<div class="card" style="margin-bottom:12px;padding:14px 16px;border-color:var(--blue-dim)">'
+      +'<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap">'
+        +'<div style="min-width:200px">'
+          +'<div style="font-size:13px;font-weight:650">'+(c.label||'Untitled')+'</div>'
+          +'<div style="font-size:11px;color:var(--text3);margin-top:3px">'
+            +fmt(c.avgAmount)+' average'
+            +(c.day?' &middot; around the '+c.day+'th':'')
+            +' &middot; seen in '+c.months.length+' month'+(c.months.length===1?'':'s')
+            +' <span style="opacity:.7">('+span+')</span>'
+          +'</div>'
+        +'</div>'
+        +'<div style="display:flex;align-items:center;gap:8px">'
+          +'<button class="btn btn-primary btn-sm" onclick="openExpRecurringFromCandidate('+i+')">Add as Recurring</button>'
+          +'<button class="btn btn-outline btn-sm" onclick="expDismissCandidate('+i+')">Dismiss</button>'
+        +'</div>'
+      +'</div>'
+    +'</div>';
+  }).join('');
+}
+
+async function expDismissCandidate(idx){
+  var c = _expCandidates[idx];
+  if(!c) return;
+  if(S._dismissedCandTableMissing){
+    showToast('Run the dismissed_recurring_candidates SQL to make dismissals stick','err');
+    return;
+  }
+  setSync('saving');
+  var res = await sb2.from('dismissed_recurring_candidates')
+    .insert({ signature: c.sig }).select();
+  if(res.error){
+    setSync('error');
+    if(tsTableMissing(res.error)){
+      S._dismissedCandTableMissing = true;
+      showToast('Run the dismissed_recurring_candidates SQL in Supabase first','err');
+    } else {
+      showToast('Could not dismiss: '+res.error.message,'err');
+    }
+    return;
+  }
+  if(res.data && res.data[0]) S.dismissedCandidates.push(res.data[0]);
+  setSync('ok');
+  renderExpenses();
+  showToast('Suggestion dismissed','ok');
 }
 
 function expSetupNotice(what){
@@ -9363,7 +9552,7 @@ function renderUnallocatedTx(){
   if(!host) return;
   var key = expMonthKey();
   var rows = (S.tx||[]).filter(function(t){
-    return expIsExpense(t) && expTxInMonth(t, key) && !t.allocated_to;
+    return expIsTrackable(t) && expTxInMonth(t, key) && !t.allocated_to;
   }).sort(function(a,b){ return String(a.date).localeCompare(String(b.date)); });
 
   if(!rows.length){
@@ -9505,6 +9694,7 @@ function openExpRecurringModal(txId){
   expCloseMenu();
   var tx = expTxById(txId);
   if(!tx) return;
+  _expCandidate = null;          // plain single-transaction path, no back-fill
   _expMarkTxId = txId;
   eid('exp-re-label').value  = tx.description||'';
   eid('exp-re-amount').value = (+tx.amount_out||0).toFixed(2);
@@ -9514,6 +9704,31 @@ function openExpRecurringModal(txId){
   sel.innerHTML = '<option value="">— select participant —</option>'
     + (S.participants||[]).map(function(p){
         return '<option value="'+p.id+'"'+(tx.participant_id===p.id?' selected':'')+'>'+p.name+'</option>';
+      }).join('');
+  expToggleRecurringParticipant();
+  eid('m-exp-recurring').style.display='block';
+}
+
+// Same modal, pre-filled from a detected candidate. Keeps the candidate on
+// _expCandidate so saveExpRecurring can back-fill the months it was seen in.
+function openExpRecurringFromCandidate(idx){
+  expCloseMenu();
+  var c = _expCandidates[idx];
+  if(!c) return;
+  _expCandidate = c;
+  // Most recent occurrence stands in as the "source" transaction.
+  var lastMonth = c.months[c.months.length-1];
+  var tx = c.monthTx[lastMonth];
+  _expMarkTxId = tx ? tx.id : null;
+
+  eid('exp-re-label').value  = c.label||'';
+  eid('exp-re-amount').value = (+c.avgAmount||0).toFixed(2);
+  eid('exp-re-day').value    = c.day||'';
+  eid('exp-re-alloc').value  = (tx && tx.allocated_to) || 'company';
+  var sel = eid('exp-re-participant');
+  sel.innerHTML = '<option value="">— select participant —</option>'
+    + (S.participants||[]).map(function(p){
+        return '<option value="'+p.id+'"'+((tx&&tx.participant_id)===p.id?' selected':'')+'>'+p.name+'</option>';
       }).join('');
   expToggleRecurringParticipant();
   eid('m-exp-recurring').style.display='block';
@@ -9566,18 +9781,42 @@ async function saveExpRecurring(){
     var up = await expUpdateTx(_expMarkTxId, patch);
     if(!up.error){ tx.allocated_to = patch.allocated_to; tx.participant_id = patch.participant_id; }
   }
-  if(re && tx){
-    var ins = await sb2.from('recurring_expense_instances').insert({
-      recurring_expense_id: re.id, month: expMonthKey(),
-      transaction_id: tx.id, status: 'paid'
-    }).select();
-    if(!ins.error && ins.data && ins.data[0]) S.recurringInstances.push(ins.data[0]);
-    else if(ins.error && tsTableMissing(ins.error)) S._recurringInstTableMissing = true;
+  // Instances. From a suggested candidate we back-fill every month it was seen
+  // in, so the card's history strip is populated on day one; otherwise just the
+  // source transaction's own month. Month always comes from the transaction
+  // date, never the tab's selected month, so a back-filled row lands correctly.
+  if(re){
+    var pairs = [];
+    if(_expCandidate){
+      _expCandidate.months.forEach(function(m){
+        var mtx = _expCandidate.monthTx[m];
+        if(mtx) pairs.push({ month: m, tx: mtx });
+      });
+    } else if(tx){
+      pairs.push({ month: expTxMonthKey(tx), tx: tx });
+    }
+    // Never claim a transaction another instance already owns.
+    var claimed = {};
+    (S.recurringInstances||[]).forEach(function(i){ if(i.transaction_id) claimed[i.transaction_id]=1; });
+    var rows = pairs.filter(function(p){ return p.month && !claimed[p.tx.id]; }).map(function(p){
+      claimed[p.tx.id] = 1;
+      return { recurring_expense_id: re.id, month: p.month, transaction_id: p.tx.id, status: 'paid' };
+    });
+    if(rows.length){
+      var ins = await sb2.from('recurring_expense_instances').insert(rows).select();
+      if(ins.error){
+        if(tsTableMissing(ins.error)) S._recurringInstTableMissing = true;
+        else console.warn('[expenses] instance back-fill:', ins.error.message);
+      } else {
+        (ins.data||[]).forEach(function(r){ S.recurringInstances.push(r); });
+      }
+    }
   }
 
   setSync('ok');
   closeM('m-exp-recurring');
   _expMarkTxId = null;
+  _expCandidate = null;
   await refreshExpenses();
   showToast('Recurring expense "'+label+'" created','ok');
 }
@@ -9606,7 +9845,7 @@ function renderExpMatchList(q){
     if(i.transaction_id && i.id!==_expMatchInstanceId) linked[i.transaction_id]=1;
   });
   var rows = (S.tx||[]).filter(function(t){
-    if(!expIsExpense(t) || linked[t.id]) return false;
+    if(!expIsTrackable(t) || linked[t.id]) return false;
     if(!term) return expTxInMonth(t, expMonthKey());
     return expNorm((t.description||'')+' '+(t.reference||'')+' '+(t.date||'')).indexOf(term)!==-1;
   }).sort(function(a,b){ return String(b.date).localeCompare(String(a.date)); }).slice(0,60);
