@@ -433,10 +433,17 @@ input[type=number]{text-align:right;font-variant-numeric:tabular-nums}
 
   <div class="page" id="page-expenses">
     <div class="section-header">
-      <div class="section-title">Expenses <span id="exp-month-label" style="font-size:12px;font-weight:500;color:var(--text3);margin-left:8px"></span></div>
+      <div class="section-title" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">Expenses
+        <span style="display:inline-flex;align-items:center;gap:4px;margin-left:4px">
+          <button class="btn btn-outline btn-sm" title="Previous month" onclick="expShiftMonth(-1)">&#8249;</button>
+          <span id="exp-month-label" style="font-size:12px;font-weight:600;color:var(--text2);min-width:112px;text-align:center"></span>
+          <button class="btn btn-outline btn-sm" title="Next month" onclick="expShiftMonth(1)">&#8250;</button>
+          <button class="btn btn-outline btn-sm" id="exp-this-month" style="margin-left:2px" onclick="expThisMonth()">This month</button>
+        </span>
+      </div>
       <button class="btn btn-outline btn-sm" onclick="refreshExpenses()">&#8635; Re-check matches</button>
     </div>
-    <div style="font-size:11px;color:var(--text3);margin-bottom:14px;line-height:1.6">Allocation and recurring-expense tracking live on this tab only &mdash; they do not affect Dashboard figures, Cash Book totals or invoicing. Right-click a row for actions.</div>
+    <div style="font-size:11px;color:var(--text3);margin-bottom:14px;line-height:1.6">Allocation and recurring-expense tracking live on this tab only &mdash; they do not affect Dashboard figures, Cash Book totals or invoicing. The month above scopes the owner boxes; Unallocated transactions always span every month. Right-click a row for actions.</div>
 
     <div class="card" id="exp-suggest-card" style="display:none">
       <div class="card-title">Suggested recurring expenses</div>
@@ -472,6 +479,13 @@ input[type=number]{text-align:right;font-variant-numeric:tabular-nums}
   <div class="field"><label>Allocate to</label><input type="text" id="exp-alloc-search" placeholder="Company, or start typing a participant name" oninput="renderExpAllocList(this.value)"></div>
   <div id="exp-alloc-list" style="max-height:280px;overflow-y:auto;margin-top:10px"></div>
   <div class="modal-footer"><button class="btn btn-outline" onclick="closeM('m-exp-alloc')">Cancel</button></div>
+</div></div></div>
+
+<div id="m-exp-bulk" style="display:none"><div class="modal-bg" onclick="if(event.target===this)closeM('m-exp-bulk')"><div class="modal" style="width:470px">
+  <div class="modal-title"><span style="color:var(--blue)">Apply to similar transactions?</span><button class="btn-icon" onclick="expBulkDecline()">&#x2715;</button></div>
+  <div id="exp-bulk-msg" style="font-size:12px;color:var(--text2);line-height:1.65;margin-bottom:12px">--</div>
+  <div id="exp-bulk-list" style="max-height:220px;overflow-y:auto"></div>
+  <div class="modal-footer"><button class="btn btn-outline" onclick="expBulkDecline()">No, just this one</button><button class="btn btn-primary" onclick="expBulkApply()">Yes, allocate all</button></div>
 </div></div></div>
 
 <div id="m-exp-recurring" style="display:none"><div class="modal-bg" onclick="if(event.target===this)closeM('m-exp-recurring')"><div class="modal" style="width:480px">
@@ -1061,7 +1075,7 @@ var SCHADS_SLEEPOVER_ACTIVE_MIN_HRS = 1;
 // bill the participant's plan, a different concept — do not merge them).
 var EMPLOYEE_TRAVEL_KM_RATE = 0.99;
 var pendingExportPlatform = null;
-var S = {tx:[],emps:[],runs:[],participants:[],dd:{description:[],type:[]},curMonth:new Date().getMonth(),editEmpId:null,ddField:null,ddTargetId:null,ch:{},wiseTransfers:[],invoiceLedger:[],_lastGenInvoice:null,shiftTypes:[],scheduleBlocks:[],tsNameMap:[],recurringExpenses:[],recurringInstances:[],dismissedCandidates:[]};
+var S = {tx:[],emps:[],runs:[],participants:[],dd:{description:[],type:[]},curMonth:new Date().getMonth(),editEmpId:null,ddField:null,ddTargetId:null,ch:{},wiseTransfers:[],invoiceLedger:[],_lastGenInvoice:null,shiftTypes:[],scheduleBlocks:[],tsNameMap:[],recurringExpenses:[],recurringInstances:[],dismissedCandidates:[],expMonth:null};
 
 function eid(id){return document.getElementById(id);}
 function fmt(n){var v=parseFloat(n);if(!v&&v!==0)return'--';return'$'+Math.abs(v).toLocaleString('en-AU',{minimumFractionDigits:2,maximumFractionDigits:2});}
@@ -9203,11 +9217,31 @@ var _expAllocLabel = '';          // what the modal header describes
 
 // Month shown on the tab. Follows the app's existing month selection so the
 // Cash Book month tabs and this tab stay in step.
-function expMonthKey(){ return YEAR+'-'+String(S.curMonth+1).padStart(2,'0'); }
-function expMonthLabel(){ return MONTHS[S.curMonth]+' '+YEAR; }
+// The Expenses tab keeps its own month, deliberately independent of S.curMonth
+// so flipping months here never disturbs the Cash Book, and vice versa. Held as
+// 'YYYY-MM' so the arrows can cross a year boundary.
+function expMonthKey(){
+  if(!S.expMonth){
+    var n = new Date();
+    S.expMonth = n.getFullYear()+'-'+String(n.getMonth()+1).padStart(2,'0');
+  }
+  return S.expMonth;
+}
+function expMonthLabel(){ return expMonthKeyLabel(expMonthKey()); }
 function expMonthKeyOffset(n){
-  var d = new Date(YEAR, S.curMonth - n, 1);
+  var p = expMonthKey().split('-');
+  var d = new Date(+p[0], (+p[1]-1) - n, 1);
   return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0');
+}
+// Step the Expenses month. Touches nothing outside this tab.
+function expShiftMonth(delta){
+  S.expMonth = expMonthKeyOffset(-delta);
+  refreshExpenses();
+}
+function expThisMonth(){
+  var n = new Date();
+  S.expMonth = n.getFullYear()+'-'+String(n.getMonth()+1).padStart(2,'0');
+  refreshExpenses();
 }
 function expMonthShort(key){
   var p = String(key||'').split('-');
@@ -9697,6 +9731,10 @@ function detectRecurringCandidates(){
 function renderExpenses(){
   var lbl = eid('exp-month-label');
   if(lbl) lbl.textContent = expMonthLabel();
+  var now = new Date();
+  var thisKey = now.getFullYear()+'-'+String(now.getMonth()+1).padStart(2,'0');
+  var tm = eid('exp-this-month');
+  if(tm) tm.style.display = (expMonthKey()===thisKey) ? 'none' : '';
   renderSuggestedCandidates();
   renderRecurringCards();
   renderNearMatches();
@@ -10202,6 +10240,91 @@ async function expAllocateCompany(txId){
   setSync('ok');
   renderExpenses();
   showToast('Allocated to Company','ok');
+  expOfferBulk(tx, [txId], 'company', null, 'Company');
+}
+
+// ── Bulk-apply an allocation to lookalike history ───────────────────────────
+// After a manual allocation, offer to apply the same owner to other unallocated
+// transactions that look like it. Purely a one-time sweep over existing rows:
+// it creates no recurring_expenses row and touches no instance.
+
+var _expBulk = null;   // {ids, kind, ptId, who, label, amount}
+
+// Other unallocated, non-payroll rows matching the reference transaction on the
+// same fuzzy label + 5% amount rules the recurring matcher uses.
+function expFindBulkMatches(refTx, excludeIds){
+  var ex = {};
+  (excludeIds||[]).forEach(function(id){ ex[id] = 1; });
+  var amt = +refTx.amount_out||0;
+  if(!amt) return [];
+  return (S.tx||[]).filter(function(t){
+    return !ex[t.id]
+      && expIsTrackable(t)
+      && !t.allocated_to
+      && expLooseMatch(t.description, refTx.description)
+      && expAmountMatches(t.amount_out, amt);
+  }).sort(function(a,b){ return String(b.date).localeCompare(String(a.date)); });
+}
+
+// One update for the whole set — same patch, matched by id.
+async function expUpdateTxMany(ids, patch){
+  var res = await sb2.from('transactions').update(patch).in('id', ids).select();
+  if(res.error && isMissingColumnError(res.error, Object.keys(patch))){
+    return { error: res.error, missingCols: true };
+  }
+  return res;
+}
+
+function expOfferBulk(refTx, allocatedIds, kind, ptId, who){
+  if(!refTx) return;
+  var matches = expFindBulkMatches(refTx, allocatedIds);
+  if(!matches.length) return;
+  _expBulk = { ids: matches.map(function(t){ return t.id; }), kind: kind, ptId: ptId,
+               who: who, label: refTx.description||'this expense',
+               amount: +refTx.amount_out||0 };
+  eid('exp-bulk-msg').innerHTML = 'Found <b>'+matches.length+'</b> other transaction'
+    +(matches.length===1?'':'s')+' that look like &ldquo;'+(refTx.description||'')+'&rdquo; '
+    +'(~'+fmt(refTx.amount_out)+' each). Allocate '+(matches.length===1?'it':'them all')
+    +' to <b>'+who+'</b> too?';
+  eid('exp-bulk-list').innerHTML = '<div class="exp-list">'
+    + matches.map(function(t){
+        return '<div><div class="exp-row">'
+          +'<div class="exp-row-main"><div class="lbl">'+(t.description||'&mdash;')+'</div>'
+            +'<div class="td-muted" style="font-size:10px">'+(t.date||'')+'</div></div>'
+          +'<div class="exp-row-amt" style="color:var(--out)">'+fmt(t.amount_out)+'</div>'
+        +'</div></div>';
+      }).join('')
+    +'</div>';
+  eid('m-exp-bulk').style.display='block';
+}
+
+function expBulkDecline(){
+  _expBulk = null;
+  closeM('m-exp-bulk');
+}
+
+async function expBulkApply(){
+  var b = _expBulk;
+  if(!b || !b.ids.length){ expBulkDecline(); return; }
+  setSync('saving');
+  var patch = { allocated_to: b.kind, participant_id: b.kind==='participant' ? b.ptId : null };
+  var res = await expUpdateTxMany(b.ids, patch);
+  if(res.error){
+    setSync('error');
+    showToast(res.missingCols ? 'Run the expense tracker migration first'
+                              : 'Could not allocate: '+res.error.message,'err');
+    return;
+  }
+  b.ids.forEach(function(id){
+    var t = expTxById(id);
+    if(t){ t.allocated_to = patch.allocated_to; t.participant_id = patch.participant_id; }
+  });
+  var n = b.ids.length;
+  _expBulk = null;
+  setSync('ok');
+  closeM('m-exp-bulk');
+  renderExpenses();
+  showToast('Allocated '+n+' more transaction'+(n===1?'':'s')+' to '+b.who,'ok');
 }
 
 // Opens the picker for one transaction (context menu path).
@@ -10278,10 +10401,13 @@ async function expAllocatePicked(kind, ptId){
   }
   setSync('ok');
   closeM('m-exp-alloc');
+  var refId = ids[0];
   _expAllocTxIds = []; _expAllocLabel = '';
   renderExpenses();
   showToast('Allocated '+done+(done===1?' transaction':' transactions')+' to '+who
             +(failed?' ('+failed+' failed)':''), failed?'err':'ok');
+  // Offer to sweep up lookalike history. Never reached from Mark as Recurring.
+  expOfferBulk(expTxById(refId), ids, kind, ptId, who);
 }
 
 // ── Mark as recurring ───────────────────────────────────────────────────────
