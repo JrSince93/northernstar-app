@@ -7226,7 +7226,8 @@ function mapWiseStatementTx(t) {
     recipientName: stripWiseHtml(details.recipientName || merchant.name || ''),
     direction: dir,
     status: 'COMPLETED',
-    type: detailType || typeStr
+    type: detailType || typeStr,
+    _raw: t   // TEMPORARY diagnostic passenger — see the jar-move console.log below
   };
 }
 
@@ -7278,7 +7279,8 @@ function mapWiseActivity(a) {
     recipientName: dir === 'out' ? plainTitle : '',
     direction: dir,
     status: String(a.status || 'COMPLETED').toUpperCase(),
-    type: String(a.type || resource.type || '').toUpperCase()
+    type: String(a.type || resource.type || '').toUpperCase(),
+    _raw: a   // TEMPORARY diagnostic passenger — see the jar-move console.log below
   };
 }
 
@@ -8149,6 +8151,13 @@ async function autoImportWiseExpenses() {
     // a jar whose name contains the word "jar" still imports.)
     var jarMove = (t.description||'').match(/^moved\s+[\d,.]+\s+[a-z]{3}\s+to\s+(.+)$/i);
     var jarName = jarMove ? jarMove[1].trim() : '';
+    // TEMPORARY diagnostic: dump the untouched Wise payload for jar moves so we
+    // can see whether a scheduled jar transfer carries a targetBalanceId /
+    // sourceBalanceId or a resource pointer, rather than only description text.
+    // Remove this (and the _raw fields above) once the shape is known.
+    if(jarMove) {
+      try { console.log('[Wise jar debug]', tDate, tAmt, 'raw=', JSON.stringify(t._raw)); } catch(_){}
+    }
 
     if(!jarMove) {
       if(internalTypesOut.indexOf(tTypeUpper)!==-1) { skipped.feeOrConv++; continue; }
