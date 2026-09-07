@@ -9932,7 +9932,8 @@ function renderRecurringCards(){
   // A not-due interval expense is skipped entirely — no card, rather than a
   // card with zero instances behind it.
   var list = notice ? [] : (S.recurringExpenses||[]).filter(function(r){
-    return r.active !== false && expIntervalDue(r, key);
+    return r.active !== false && expIntervalDue(r, key)
+      && (!r.tracked_since || key >= String(r.tracked_since).slice(0,7));
   });
 
   // A transaction claimed by an active recurring instance is that recurring
