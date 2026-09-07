@@ -9933,10 +9933,9 @@ function renderRecurringCards(){
     return r.active !== false && expIntervalDue(r, key);
   });
 
-  // A transaction claimed by any recurring instance is that recurring expense's
-  // payment, not a one-off — so it must not be counted twice.
-  var claimed = {};
-  (S.recurringInstances||[]).forEach(function(i){ if(i.transaction_id) claimed[i.transaction_id]=1; });
+  // A transaction claimed by an active recurring instance is that recurring
+  // expense's payment, not a one-off — so it must not be counted twice.
+  var claimed = expActiveClaimedTxIds(null);
 
   var oneOffs = (S.tx||[]).filter(function(t){
     return expIsTrackable(t) && expTxInMonth(t, key) && t.allocated_to && !claimed[t.id];
@@ -10192,13 +10191,27 @@ function expToggleHistory(reId){
 // expIsTrackable like everywhere else on this tab.
 var _expUnallocOpen = {};   // month key -> expanded?, persists across re-renders
 
+// Transaction ids currently claimed by an instance of an ACTIVE recurring
+// expense. A deactivated recurring expense's old links don't count — those
+// transactions should be free to match elsewhere.
+function expActiveClaimedTxIds(excludeInstanceId){
+  var activeRe = {};
+  (S.recurringExpenses||[]).forEach(function(r){ activeRe[r.id] = (r.active !== false); });
+  var claimed = {};
+  (S.recurringInstances||[]).forEach(function(i){
+    if(i.transaction_id && i.id!==excludeInstanceId && activeRe[i.recurring_expense_id]) claimed[i.transaction_id]=1;
+  });
+  return claimed;
+}
+
 function expUnallocRows(){
   // A row awaiting a decision in "Needs your confirmation" is not listed here
   // as well; "Not a match" is what drops it back into this list.
   var near = {};
   (_expNearMatches||[]).forEach(function(m){ near[m.tx.id] = 1; });
+  var claimed = expActiveClaimedTxIds(null);
   return (S.tx||[]).filter(function(t){
-    return expIsTrackable(t) && !t.allocated_to && !near[t.id];
+    return expIsTrackable(t) && !t.allocated_to && !claimed[t.id] && !near[t.id];
   });
 }
 
@@ -10723,10 +10736,7 @@ function renderExpMatchList(q){
   var host = eid('exp-match-list');
   if(!host) return;
   var term = expNorm(q);
-  var linked = {};
-  (S.recurringInstances||[]).forEach(function(i){
-    if(i.transaction_id && i.id!==_expMatchInstanceId) linked[i.transaction_id]=1;
-  });
+  var linked = expActiveClaimedTxIds(_expMatchInstanceId);
   var rows = (S.tx||[]).filter(function(t){
     if(!expIsTrackable(t) || linked[t.id]) return false;
     if(!term) return expTxInMonth(t, expMonthKey());
