@@ -9293,6 +9293,7 @@ var _expCtxInstance = null;       // instance the context menu is open on
 var _expMarkTxId = null;          // transaction being turned into a recurring expense
 var _expMatchInstanceId = null;   // instance being manually matched
 var _expCandidate = null;         // suggested candidate being added, for back-fill
+var _expEditingId = null;         // recurring expense being edited, null when creating
 // Transactions the allocate modal is currently targeting. MUST NOT live on
 // _expCtxTx: opening the modal from the context menu lets that click bubble to
 // the document listener, which runs expCloseMenu() and nulls _expCtxTx before
@@ -9475,6 +9476,7 @@ async function ensureRecurringInstances(){
   (S.recurringExpenses||[]).forEach(function(re){
     if(re.active === false) return;
     if(!expIntervalDue(re, key)) return;
+    if(re.tracked_since && key < String(re.tracked_since).slice(0,7)) return;
     var have = {};
     expInstancesFor(re.id, key).forEach(function(i){ have[expOccNo(i)] = 1; });
     var n = S._occurrenceColsMissing ? 1 : expOccurrences(re, key);
@@ -10142,6 +10144,7 @@ function expRecurringCardHtml(re, key){
       +'<div class="exp-row-amt" style="font-weight:400">'+matched+'</div>'
       +'<div class="exp-row-act">'+action
         +'<button class="exp-ico" title="Last 6 months" onclick="expToggleHistory(\''+re.id+'\')">&#9201;</button>'
+      +'<button class="exp-ico" title="Edit" onclick="openExpEditRecurringModal(\''+re.id+'\')">&#9998;</button>'
       +'</div>'
     +'</div>'
     +'<div class="exp-expand" id="exp-hist-'+re.id+'" style="display:none">'+slots+expHistoryHtml(re)+'</div>'
@@ -10549,6 +10552,9 @@ function openExpRecurringModal(txId){
   eid('exp-re-interval').value = 3;
   eid('exp-re-since').value = '';
   expToggleCadenceMode();
+  _expEditingId = null;
+  eid('m-exp-recurring').querySelector('.modal-title span').textContent = 'Mark as recurring expense';
+  eid('m-exp-recurring').querySelector('.modal-footer .btn-primary').textContent = 'Create recurring expense';
   eid('exp-re-alloc').value  = tx.allocated_to || 'company';
   var sel = eid('exp-re-participant');
   sel.innerHTML = '<option value="">— select participant —</option>'
@@ -10580,6 +10586,9 @@ function openExpRecurringFromCandidate(idx){
   eid('exp-re-interval').value = 3;
   eid('exp-re-since').value = '';
   expToggleCadenceMode();
+  _expEditingId = null;
+  eid('m-exp-recurring').querySelector('.modal-title span').textContent = 'Mark as recurring expense';
+  eid('m-exp-recurring').querySelector('.modal-footer .btn-primary').textContent = 'Create recurring expense';
   eid('exp-re-alloc').value  = (tx && tx.allocated_to) || 'company';
   var sel = eid('exp-re-participant');
   sel.innerHTML = '<option value="">— select participant —</option>'
@@ -10587,6 +10596,36 @@ function openExpRecurringFromCandidate(idx){
         return '<option value="'+p.id+'"'+((tx&&tx.participant_id)===p.id?' selected':'')+'>'+p.name+'</option>';
       }).join('');
   expToggleRecurringParticipant();
+  eid('m-exp-recurring').style.display='block';
+}
+
+// Open the same modal against an existing recurring expense.
+function openExpEditRecurringModal(reId){
+  expCloseMenu();
+  var re = (S.recurringExpenses||[]).find(function(r){ return r.id===reId; });
+  if(!re) return;
+  _expCandidate = null;
+  _expMarkTxId = null;
+  _expEditingId = reId;
+  eid('exp-re-label').value  = re.label||'';
+  eid('exp-re-amount').value = (+re.expected_amount||0).toFixed(2);
+  eid('exp-re-day').value    = re.expected_day_of_month||'';
+  eid('exp-re-since').value  = re.tracked_since ? String(re.tracked_since).slice(0,10) : '';
+  var mode = re.interval_months>1 ? 'interval' : (re.cadence_weekday!=null ? 'weekday' : 'count');
+  eid('exp-re-cadence-mode').value = mode;
+  eid('exp-re-occ').value = re.occurrences_per_month || 1;
+  eid('exp-re-weekday').value = re.cadence_weekday!=null ? String(re.cadence_weekday) : String(new Date().getDay());
+  eid('exp-re-interval').value = re.interval_months>1 ? re.interval_months : 3;
+  expToggleCadenceMode();
+  eid('exp-re-alloc').value = re.default_allocated_to || 'company';
+  var sel = eid('exp-re-participant');
+  sel.innerHTML = '<option value="">— select participant —</option>'
+    + (S.participants||[]).map(function(p){
+        return '<option value="'+p.id+'"'+(re.default_participant_id===p.id?' selected':'')+'>'+p.name+'</option>';
+      }).join('');
+  expToggleRecurringParticipant();
+  eid('m-exp-recurring').querySelector('.modal-title span').textContent = 'Edit recurring expense';
+  eid('m-exp-recurring').querySelector('.modal-footer .btn-primary').textContent = 'Save changes';
   eid('m-exp-recurring').style.display='block';
 }
 
@@ -10634,6 +10673,31 @@ async function saveExpRecurring(){
   if(wday !== null) reRow.cadence_weekday = wday;
   if(interval > 1) reRow.interval_months = interval;
   if(since) reRow.tracked_since = since;
+
+  if(_expEditingId){
+    var editing = (S.recurringExpenses||[]).find(function(r){ return r.id===_expEditingId; });
+    // An update only writes the keys present, so the cadence fields must be
+    // explicitly nulled when unset — otherwise switching a quarterly expense to
+    // monthly would leave interval_months behind and it would stay quarterly.
+    if(!('occurrences_per_month' in reRow)) reRow.occurrences_per_month = 1;
+    if(!('cadence_weekday' in reRow))       reRow.cadence_weekday = null;
+    if(!('interval_months' in reRow))       reRow.interval_months = null;
+    if(!('tracked_since' in reRow))         reRow.tracked_since = null;
+    // Editing settings must not quietly reactivate a deactivated expense.
+    if(editing) reRow.active = editing.active !== false;
+
+    setSync('saving');
+    var upd = await sb2.from('recurring_expenses').update(reRow).eq('id', _expEditingId).select();
+    if(upd.error){ setSync('error'); showToast('Could not save: '+upd.error.message,'err'); return; }
+    if(editing && upd.data && upd.data[0]) Object.assign(editing, upd.data[0]);
+    setSync('ok');
+    closeM('m-exp-recurring');
+    _expEditingId = null;
+    renderExpenses();
+    showToast('Saved','ok');
+    return;
+  }
+
   var res = await sb2.from('recurring_expenses').insert(reRow).select();
   // Migration not run yet: drop whichever column is missing and save it as an
   // ordinary once-a-month expense rather than failing outright.
@@ -10685,6 +10749,7 @@ async function saveExpRecurring(){
     var pairs = [];
     if(_expCandidate){
       _expCandidate.months.forEach(function(m){
+        if(since && m < since.slice(0,7)) return;   // never back-fill before the start date
         var mtx = _expCandidate.monthTx[m];
         if(mtx) pairs.push({ month: m, tx: mtx });
       });
