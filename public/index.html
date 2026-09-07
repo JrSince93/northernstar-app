@@ -476,6 +476,13 @@ input[type=number]{text-align:right;font-variant-numeric:tabular-nums}
 <div id="m-exp-alloc" style="display:none"><div class="modal-bg" onclick="if(event.target===this)closeM('m-exp-alloc')"><div class="modal" style="width:460px">
   <div class="modal-title"><span style="color:var(--blue)">Allocate expense</span><button class="btn-icon" onclick="closeM('m-exp-alloc')">&#x2715;</button></div>
   <div id="exp-alloc-tx" style="background:var(--bg4);border:1px solid var(--border2);border-radius:var(--r);padding:9px 12px;font-size:12px;color:var(--text2);margin-bottom:12px">--</div>
+  <div id="exp-alloc-note-wrap" style="display:none;margin-bottom:14px">
+    <label>Note (optional)</label>
+    <textarea id="exp-alloc-note" rows="2" style="width:100%"></textarea>
+    <label style="margin-top:8px;display:block">Receipt image (optional)</label>
+    <div id="exp-alloc-preview" style="margin-bottom:6px"></div>
+    <input type="file" id="exp-alloc-file" accept="image/*">
+  </div>
   <div class="field"><label>Allocate to</label><input type="text" id="exp-alloc-search" placeholder="Company, or start typing a participant name" oninput="renderExpAllocList(this.value)"></div>
   <div id="exp-alloc-list" style="max-height:280px;overflow-y:auto;margin-top:10px"></div>
   <div class="modal-footer"><button class="btn btn-outline" onclick="closeM('m-exp-alloc')">Cancel</button></div>
@@ -10469,6 +10476,20 @@ function expOpenAllocPicker(txIds, headerText){
   if(!_expAllocTxIds.length) return;
   eid('exp-alloc-tx').textContent = _expAllocLabel;
   eid('exp-alloc-search').value = '';
+  // A note and receipt only make sense against one transaction — a bulk
+  // allocation hides them rather than applying one note to several rows.
+  var noteWrap = eid('exp-alloc-note-wrap');
+  if(_expAllocTxIds.length===1){
+    var tx0 = expTxById(_expAllocTxIds[0]);
+    noteWrap.style.display = '';
+    eid('exp-alloc-note').value = (tx0 && tx0.note) || '';
+    eid('exp-alloc-file').value = '';
+    eid('exp-alloc-preview').innerHTML = (tx0 && tx0.attachment_url)
+      ? '<img src="'+tx0.attachment_url+'" style="max-width:100%;max-height:140px;border-radius:var(--r)">'
+      : '';
+  } else {
+    noteWrap.style.display = 'none';
+  }
   renderExpAllocList('');
   eid('m-exp-alloc').style.display='block';
 }
@@ -10525,6 +10546,40 @@ async function expAllocatePicked(kind, ptId){
                           : 'Could not allocate'+(lastErr?': '+lastErr.message:''),'err');
     return;
   }
+  // Note and receipt, single-transaction only. Read while the modal is still
+  // open and applied before the re-render, so the note shows immediately.
+  if(ids.length===1){
+    var noteVal = eid('exp-alloc-note') ? eid('exp-alloc-note').value : '';
+    var fileInput = eid('exp-alloc-file');
+    var file = fileInput && fileInput.files && fileInput.files[0];
+    var tx0 = expTxById(ids[0]);
+    var notePatch = {};
+    if(tx0 && noteVal !== (tx0.note||'')) notePatch.note = noteVal;
+    if(file){
+      if(file.size > 5*1024*1024){
+        showToast('Image exceeds 5MB — allocation saved, image skipped','err');
+      } else {
+        var filePath = 'transactions/'+ids[0]+'/'+Date.now()+'_'+file.name.replace(/[^a-zA-Z0-9._-]/g,'_');
+        var uploadRes = await sb2.storage.from('tx-attachments').upload(filePath, file, { cacheControl:'3600', upsert:false });
+        if(uploadRes.error){
+          showToast('Image upload failed: '+uploadRes.error.message,'err');
+        } else {
+          var urlRes = sb2.storage.from('tx-attachments').getPublicUrl(filePath);
+          notePatch.attachment_url = urlRes.data.publicUrl;
+          notePatch.attachment_path = filePath;
+        }
+      }
+    }
+    if(Object.keys(notePatch).length){
+      var noteRes = await expUpdateTx(ids[0], notePatch);
+      if(noteRes.error){
+        showToast(noteRes.missingCols ? 'Allocated — run the note/attachment migration to save notes' : 'Allocated, but note failed to save','err');
+      } else if(tx0){
+        Object.assign(tx0, notePatch);
+      }
+    }
+  }
+
   setSync('ok');
   closeM('m-exp-alloc');
   var refId = ids[0];
