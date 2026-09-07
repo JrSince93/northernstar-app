@@ -6,28 +6,26 @@
 -- sensibly describe several different transactions.
 --
 -- STORAGE: this SQL is not enough on its own. A bucket named `tx-attachments`
--- must also be created (Storage -> New bucket in the Supabase dashboard).
--- getPublicUrl() only returns a working link if that bucket is public, which is
--- how the existing `invoices` bucket is set up.
+-- must also be created (Storage -> New bucket in the Supabase dashboard), and
+-- it must be PRIVATE. Receipts are read through short-lived signed URLs minted
+-- on demand (createSignedUrl, 1 hour), so no permanent public link to a
+-- participant's receipt ever exists. Only attachment_path is persisted; there
+-- is deliberately no attachment_url column, because a signed URL expires and
+-- storing one would just go stale.
 --
--- PRIVACY: a public bucket means anyone holding the URL can view the receipt
--- with no login. These are participants' expense receipts and may show names,
--- addresses or health-related purchases. The URLs are unguessable but not
--- access-controlled. A private bucket with signed URLs is the alternative if
--- that trade-off isn't wanted — it would need the read path changed to
--- createSignedUrl().
+-- A private bucket needs a storage RLS policy allowing the signed-in app user
+-- to read and write objects in it — an authenticated-role policy on
+-- storage.objects scoped to bucket_id = 'tx-attachments'. Without one, uploads
+-- and signed-URL requests are rejected.
 --
 -- Nothing in the app executes this. Until it runs, allocation still succeeds
 -- and only the note/receipt write fails, with a toast saying so.
 
 alter table public.transactions
   add column if not exists note            text,
-  add column if not exists attachment_url  text,
   add column if not exists attachment_path text;
 
 comment on column public.transactions.note is
   'Free-text note recorded when the transaction was allocated. Expenses tab only.';
-comment on column public.transactions.attachment_url is
-  'Public URL of the receipt image in the tx-attachments bucket.';
 comment on column public.transactions.attachment_path is
-  'Storage path inside tx-attachments, kept alongside the URL so the object can be deleted later.';
+  'Storage path inside the private tx-attachments bucket. Read via a short-lived signed URL; also what lets the object be deleted later.';

@@ -10484,9 +10484,19 @@ function expOpenAllocPicker(txIds, headerText){
     noteWrap.style.display = '';
     eid('exp-alloc-note').value = (tx0 && tx0.note) || '';
     eid('exp-alloc-file').value = '';
-    eid('exp-alloc-preview').innerHTML = (tx0 && tx0.attachment_url)
-      ? '<img src="'+tx0.attachment_url+'" style="max-width:100%;max-height:140px;border-radius:var(--r)">'
-      : '';
+    eid('exp-alloc-preview').innerHTML = '';
+    if(tx0 && tx0.attachment_path){
+      eid('exp-alloc-preview').innerHTML = '<span class="td-muted" style="font-size:11px">Loading receipt…</span>';
+      sb2.storage.from('tx-attachments').createSignedUrl(tx0.attachment_path, 3600).then(function(res){
+        var box = eid('exp-alloc-preview');
+        if(!box) return; // modal may have closed before this resolved
+        if(res.data && res.data.signedUrl){
+          box.innerHTML = '<img src="'+res.data.signedUrl+'" style="max-width:100%;max-height:140px;border-radius:var(--r)">';
+        } else {
+          box.innerHTML = '<span class="td-muted" style="font-size:11px">Could not load receipt preview</span>';
+        }
+      });
+    }
   } else {
     noteWrap.style.display = 'none';
   }
@@ -10564,8 +10574,8 @@ async function expAllocatePicked(kind, ptId){
         if(uploadRes.error){
           showToast('Image upload failed: '+uploadRes.error.message,'err');
         } else {
-          var urlRes = sb2.storage.from('tx-attachments').getPublicUrl(filePath);
-          notePatch.attachment_url = urlRes.data.publicUrl;
+          // Private bucket: the path is the durable reference. A signed URL is
+          // short-lived, so it's minted on demand rather than stored.
           notePatch.attachment_path = filePath;
         }
       }
