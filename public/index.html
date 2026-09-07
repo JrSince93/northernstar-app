@@ -3253,7 +3253,7 @@ function genPayslip(id) {
       }
       if(Array.isArray(run.day_breakdown) && run.day_breakdown.length>0){
         var fmtDmy=function(ds){var dt=new Date(ds);return String(dt.getDate()).padStart(2,'0')+'/'+String(dt.getMonth()+1).padStart(2,'0')+'/'+dt.getFullYear();};
-        run.day_breakdown.forEach(function(d){
+        run.day_breakdown.forEach(function(d, dIdx){
           if(d.type==='sleepover_meta'||d.type==='import_meta') return; // handled separately below
           if(!d.worked) return; // unticked days don't appear on paystub
           var ds=d.date, isH=!!VIC_HOLIDAYS[ds];
@@ -3277,7 +3277,8 @@ function genPayslip(id) {
             var aHrs=parseFloat(d.active_hrs)||0;
             var inactiveHrs=Math.max(0,totHrs-aHrs);
             dayLines.push({date:fmtDmy(ds),day:dn,hrs:inactiveHrs,rate:0,rateLabel:'flat',
-              type:shiftLabel+' — Sleepover (inactive)',amt:+parseFloat(d.flat_amt).toFixed(2),hol:null});
+              type:shiftLabel+' — Sleepover (inactive)',amt:+parseFloat(d.flat_amt).toFixed(2),hol:null,
+              pairId:'sleep'+dIdx, pairRole:'start'});
             if(aHrs>0){
               var aDate=d.active_date||ds;
               var aDt=new Date(aDate);
@@ -3286,7 +3287,8 @@ function genPayslip(id) {
               var aRate=parseFloat(d.active_rate)||0;
               dayLines.push({date:fmtDmy(aDate),day:DN[aDt.getDay()].slice(0,3),hrs:aHrs,rate:aRate,
                 type:shiftLabel+' — Active — '+aTypeName,amt:+(aHrs*aRate).toFixed(2),
-                hol:aType==='holiday'?(VIC_HOLIDAYS[aDate]||null):null});
+                hol:aType==='holiday'?(VIC_HOLIDAYS[aDate]||null):null,
+                pairId:'sleep'+dIdx, pairRole:'cont'});
             }
             return;
           }
@@ -3358,7 +3360,45 @@ function genPayslip(id) {
     function k(d){var p=String(d.date||'').split('/');return p.length===3?(p[2]+p[1]+p[0]):'';}
     var ka=k(a),kb=k(b);return ka<kb?-1:ka>kb?1:0;
   });
-  var dr=dayLines.map(function(d){var bg=d.hol?'rgba(248,81,73,0.06)':/Saturday|Sunday/.test(d.type)?'rgba(210,153,34,0.06)':'transparent';if(d.salary){return '<tr style="background:'+bg+'"><td style="padding:6px 10px;border-bottom:1px solid #f0f0f0;font-size:12px">'+d.date+'</td><td style="padding:6px 10px;border-bottom:1px solid #f0f0f0;font-size:12px;font-weight:600">'+d.day+'</td><td style="padding:6px 10px;border-bottom:1px solid #f0f0f0;font-size:12px;color:'+(d.hol?'#dc2626':'#555')+'">'+d.type+(d.hol?' ('+d.hol+')':'')+'</td><td colspan="3" style="padding:6px 10px;border-bottom:1px solid #f0f0f0;font-size:12px;text-align:center;font-weight:600;color:#15803d">Worked</td></tr>';}return '<tr style="background:'+bg+'"><td style="padding:6px 10px;border-bottom:1px solid #f0f0f0;font-size:12px">'+d.date+'</td><td style="padding:6px 10px;border-bottom:1px solid #f0f0f0;font-size:12px;font-weight:600">'+d.day+'</td><td style="padding:6px 10px;border-bottom:1px solid #f0f0f0;font-size:12px;color:'+(d.hol?'#dc2626':'#555')+'">'+d.type+(d.hol?' ('+d.hol+')':'')+'</td><td style="padding:6px 10px;border-bottom:1px solid #f0f0f0;font-size:12px;text-align:right">'+d.hrs.toFixed(1)+'h</td><td style="padding:6px 10px;border-bottom:1px solid #f0f0f0;font-size:12px;text-align:right">'+(d.rateLabel?d.rateLabel:'$'+d.rate.toFixed(2))+'</td><td style="padding:6px 10px;border-bottom:1px solid #f0f0f0;font-size:12px;text-align:right;font-weight:600">$'+d.amt.toFixed(2)+'</td></tr>';}).join('');
+  // A sleepover's inactive-flat line and its active-hours line are rendered as
+  // one grouped block. Everything else renders exactly as before via
+  // renderDayRow(). If the pair is not adjacent after the sort above (something
+  // else fell on one of those two dates) both simply render as normal rows.
+  function renderDayRow(d){
+    var bg=d.hol?'rgba(248,81,73,0.06)':/Saturday|Sunday/.test(d.type)?'rgba(210,153,34,0.06)':'transparent';
+    if(d.salary){
+      return '<tr style="background:'+bg+'"><td style="padding:6px 10px;border-bottom:1px solid #f0f0f0;font-size:12px">'+d.date+'</td><td style="padding:6px 10px;border-bottom:1px solid #f0f0f0;font-size:12px;font-weight:600">'+d.day+'</td><td style="padding:6px 10px;border-bottom:1px solid #f0f0f0;font-size:12px;color:'+(d.hol?'#dc2626':'#555')+'">'+d.type+(d.hol?' ('+d.hol+')':'')+'</td><td colspan="3" style="padding:6px 10px;border-bottom:1px solid #f0f0f0;font-size:12px;text-align:center;font-weight:600;color:#15803d">Worked</td></tr>';
+    }
+    return '<tr style="background:'+bg+'"><td style="padding:6px 10px;border-bottom:1px solid #f0f0f0;font-size:12px">'+d.date+'</td><td style="padding:6px 10px;border-bottom:1px solid #f0f0f0;font-size:12px;font-weight:600">'+d.day+'</td><td style="padding:6px 10px;border-bottom:1px solid #f0f0f0;font-size:12px;color:'+(d.hol?'#dc2626':'#555')+'">'+d.type+(d.hol?' ('+d.hol+')':'')+'</td><td style="padding:6px 10px;border-bottom:1px solid #f0f0f0;font-size:12px;text-align:right">'+d.hrs.toFixed(1)+'h</td><td style="padding:6px 10px;border-bottom:1px solid #f0f0f0;font-size:12px;text-align:right">'+(d.rateLabel?d.rateLabel:'$'+d.rate.toFixed(2))+'</td><td style="padding:6px 10px;border-bottom:1px solid #f0f0f0;font-size:12px;text-align:right;font-weight:600">$'+d.amt.toFixed(2)+'</td></tr>';
+  }
+
+  function renderSleepoverPairRows(start, cont){
+    return '<tr style="background:rgba(188,140,255,0.07)">'
+      +'<td rowspan="2" style="padding:6px 10px;border-bottom:1px solid #e5ddf7;font-size:12px;vertical-align:top">'+start.date+'</td>'
+      +'<td rowspan="2" style="padding:6px 10px;border-bottom:1px solid #e5ddf7;font-size:12px;font-weight:600;vertical-align:top">'+start.day+'</td>'
+      +'<td style="padding:6px 10px;font-size:12px;font-weight:600">'+start.type+'</td>'
+      +'<td style="padding:6px 10px;font-size:12px;text-align:right">'+start.hrs.toFixed(1)+'h</td>'
+      +'<td style="padding:6px 10px;font-size:12px;text-align:right">'+(start.rateLabel?start.rateLabel:'$'+start.rate.toFixed(2))+'</td>'
+      +'<td style="padding:6px 10px;font-size:12px;text-align:right;font-weight:600">$'+start.amt.toFixed(2)+'</td>'
+      +'</tr>'
+      +'<tr style="background:rgba(188,140,255,0.07)">'
+      +'<td style="padding:2px 10px 6px;border-bottom:1px solid #e5ddf7;font-size:11px;color:#8a7ba8;padding-left:20px">&#8618; '+cont.type+'</td>'
+      +'<td style="padding:2px 10px 6px;border-bottom:1px solid #e5ddf7;font-size:11px;text-align:right;color:#8a7ba8">'+cont.hrs.toFixed(1)+'h</td>'
+      +'<td style="padding:2px 10px 6px;border-bottom:1px solid #e5ddf7;font-size:11px;text-align:right;color:#8a7ba8">$'+cont.rate.toFixed(2)+'</td>'
+      +'<td style="padding:2px 10px 6px;border-bottom:1px solid #e5ddf7;font-size:11px;text-align:right;font-weight:600;color:#6b21a8">$'+cont.amt.toFixed(2)+'</td>'
+      +'</tr>';
+  }
+
+  var dr='';
+  for(var di=0; di<dayLines.length; di++){
+    var cur=dayLines[di], nxt=dayLines[di+1];
+    if(cur.pairRole==='start' && nxt && nxt.pairId===cur.pairId && nxt.pairRole==='cont'){
+      dr += renderSleepoverPairRows(cur, nxt);
+      di++; // consume the paired continuation row, already rendered above
+    } else {
+      dr += renderDayRow(cur);
+    }
+  }
   var h='<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Payslip - '+emp.name+'</title><style>body{font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;margin:0;padding:0;background:#fff;color:#1a1a1a}.page{max-width:720px;margin:0 auto;padding:40px}@media print{.page{padding:20px}}</style></head><body><div class="page"><div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:28px;padding-bottom:20px;border-bottom:2px solid #1a1a1a"><div><div style="font-size:18px;font-weight:700;margin-bottom:4px">Northern Star Support Services</div><div style="font-size:12px;color:#555;line-height:1.6">Falaax Group Pty Ltd<br>ABN: 22 671 393 070<br>12 Dimboola Rd, Broadmeadows VIC 3064<br>Phone: 03 7057 1645</div></div><div style="text-align:right"><div style="font-size:11px;color:#888;text-transform:uppercase;letter-spacing:.05em">Payslip</div><div style="font-size:18px;font-weight:700">'+refNo+'</div><div style="font-size:12px;color:#888;margin-top:6px">Paid: '+paidDate+'</div></div></div><div style="background:#f8f9fa;border:1px solid #e5e5e5;border-radius:8px;padding:16px;margin-bottom:20px"><div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:13px"><div><span style="color:#888">Name:</span> <b>'+emp.name+'</b></div><div><span style="color:#888">Role:</span> '+(emp.role||'--')+'</div><div><span style="color:#888">Employment:</span> '+(emp.employment_type||'--')+'</div><div><span style="color:#888">Period:</span> '+periodStart+' to '+periodEnd+'</div></div></div><div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:#888;margin-bottom:8px">Days Worked</div><table style="width:100%;border-collapse:collapse;margin-bottom:20px"><thead><tr style="background:#f0f0f0"><th style="padding:8px 10px;text-align:left;font-size:10px;font-weight:700;text-transform:uppercase;color:#666">Date</th><th style="padding:8px 10px;text-align:left;font-size:10px;font-weight:700;text-transform:uppercase;color:#666">Day</th><th style="padding:8px 10px;text-align:left;font-size:10px;font-weight:700;text-transform:uppercase;color:#666">Type</th><th style="padding:8px 10px;text-align:right;font-size:10px;font-weight:700;text-transform:uppercase;color:#666">Hours</th><th style="padding:8px 10px;text-align:right;font-size:10px;font-weight:700;text-transform:uppercase;color:#666">Rate</th><th style="padding:8px 10px;text-align:right;font-size:10px;font-weight:700;text-transform:uppercase;color:#666">Amount</th></tr></thead><tbody>'+dr+sleepRows+travelRows+'</tbody></table><div style="display:flex;justify-content:flex-end;margin-bottom:20px"><div style="width:280px"><div style="display:flex;justify-content:space-between;padding:6px 0;font-size:13px"><span>Gross pay</span><span style="font-weight:600">$'+gross.toFixed(2)+'</span></div>'+(tax>0?'<div style="display:flex;justify-content:space-between;padding:6px 0;font-size:13px;color:#dc2626"><span>PAYG tax withheld</span><span>-$'+tax.toFixed(2)+'</span></div>':'<div style="display:flex;justify-content:space-between;padding:6px 0;font-size:13px;color:#888"><span>PAYG tax</span><span>Not withheld</span></div>')+'<div style="display:flex;justify-content:space-between;padding:6px 0;font-size:13px;color:#d97706"><span>'+superLabel+'</span><span>$'+sup.toFixed(2)+'</span></div><div style="display:flex;justify-content:space-between;padding:10px 0;font-size:16px;font-weight:700;border-top:2px solid #1a1a1a;margin-top:4px;color:#15803d"><span>Net pay to bank</span><span>$'+net.toFixed(2)+'</span></div></div></div>'+(bsb?'<div style="background:#f0f9f4;border:2px solid #22c55e;border-radius:10px;padding:16px;text-align:center;margin-bottom:20px"><div style="font-size:11px;font-weight:700;text-transform:uppercase;color:#16a34a;margin-bottom:6px">Deposited to your account</div><div style="font-size:13px;color:#15803d">BSB: '+bsb+' | Account: '+acctMask+'</div><div style="font-size:24px;font-weight:700;color:#15803d;margin-top:8px">$'+net.toFixed(2)+'</div></div>':'')+'<div style="margin-top:30px;padding-top:16px;border-top:1px solid #e5e5e5;font-size:11px;color:#aaa;text-align:center;line-height:1.6">Northern Star Support Services - Falaax Group Pty Ltd - ABN 22 671 393 070</div></div></body></html>';
   var w=window.open('','_blank');if(!w){showToast('Popup blocked — allow popups for this site','err');return;}w.document.write(h);w.document.close();w.focus();setTimeout(function(){w.print();},500);
 }
