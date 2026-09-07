@@ -1580,9 +1580,29 @@ function renderCB(){
     var outCell = (+r.amount_out>0) ? fmt(r.amount_out) : pendingOutHint;
     html+='<tr'+rowStyle+'><td class="td-muted">'+(r.date||'--')+'</td><td>'+displayDesc+pendingBadge+'</td><td class="td-muted">'+(r.payment_type||'--')+'</td><td class="td-muted">'+(r.reference||'--')+'</td><td class="td-right td-green">'+(+r.amount_in>0?fmt(r.amount_in):'')+'</td><td class="td-right td-red">'+outCell+'</td><td class="td-right" style="color:'+bc+';font-weight:700">'+fmt(run)+'</td><td><button class="btn-icon btn-sm" onclick="delTx(this.dataset.id)" data-id="'+r.id+'">x</button></td></tr>';
   });
+  // Drift guard: this month's closing balance must equal next month's opening
+  // balance. They diverge only when a transaction's `date` and `month` label
+  // disagree, which is exactly the payroll bug class this warns about.
+  var driftWarning = '';
+  if (S.curMonth < 11) {
+    var nextMonthStart = new Date(nowYear, S.curMonth + 1, 1);
+    var nextOpening = S.tx.reduce(function(s, r) {
+      if (!r.date) return s;
+      var d = new Date(r.date);
+      if (isNaN(d)) return s;
+      if (d.getFullYear() !== nowYear) return s;
+      if (d >= nextMonthStart) return s;
+      return s + (+r.amount_in || 0) - (+r.amount_out || 0);
+    }, 0);
+    nextOpening = +nextOpening.toFixed(2);
+    if (Math.abs(nextOpening - closing) > 0.01) {
+      driftWarning = ' <span title="This month\'s closing balance doesn\'t match ' + MONTHS[S.curMonth+1] + '\'s opening balance — a transaction\'s date and month label are out of sync" style="color:var(--out);font-size:10px;font-weight:700;cursor:help">&#9888; out of sync</span>';
+    }
+  }
+
   // Closing balance row — same visual weight as opening so it bookends the month
   var closeColor = closing>=0?'var(--in)':'var(--out)';
-  html += '<tr style="background:rgba(127,127,127,0.04);border-top:2px solid var(--border)"><td class="td-muted">--</td><td style="font-style:italic;font-weight:600;color:var(--text2)">Closing balance (carries to next month)</td><td class="td-muted">--</td><td class="td-muted">--</td><td></td><td></td><td class="td-right" style="color:'+closeColor+';font-weight:700">'+fmt(closing)+'</td><td></td></tr>';
+  html += '<tr style="background:rgba(127,127,127,0.04);border-top:2px solid var(--border)"><td class="td-muted">--</td><td style="font-style:italic;font-weight:600;color:var(--text2)">Closing balance (carries to next month)</td><td class="td-muted">--</td><td class="td-muted">--</td><td></td><td></td><td class="td-right" style="color:'+closeColor+';font-weight:700">'+fmt(closing)+driftWarning+'</td><td></td></tr>';
   eid('cb-body').innerHTML=html;
 }
 
@@ -2251,7 +2271,8 @@ async function savePayRun(){
   }
 
   setSync('saving');
-  var insertRow={employee_id:sel.value,period_start:s,period_end:e,hours_worked:hrs,gross_pay:p.gross,tax_withheld:p.tax,super_amount:p.sup,net_pay:p.net,status:'processed',wise_status:'pending',paid_date:e};
+  var paidDate=nextFriday(e);
+  var insertRow={employee_id:sel.value,period_start:s,period_end:e,hours_worked:hrs,gross_pay:p.gross,tax_withheld:p.tax,super_amount:p.sup,net_pay:p.net,status:'processed',wise_status:'pending',paid_date:paidDate};
   // Append sleepover meta-entry to dayBreakdown so the payslip can render it correctly.
   var prSleepShifts=parseFloat((eid('pr-sleep-shifts')||{value:'0'}).value)||0;
   if(prSleepShifts>0){
@@ -2280,13 +2301,13 @@ async function savePayRun(){
   var emp=S.emps.find(function(x){return x.id===sel.value;});
   var run=res.data[0];run._empName=emp?emp.name:'Unknown';
   S.runs.unshift(run);
-  var month=MONTHS[new Date(e).getMonth()];
+  var month=MONTHS[new Date(paidDate).getMonth()];
   // Insert cash book row as PENDING — amount_out is 0 until a Wise outbound
   // transfer matches the net pay, at which point reconcilePendingPayroll()
   // (auto or via the manual button) flips it to the real amount. This keeps
   // money-out totals honest: payroll only counts when it actually leaves.
   var pendingRef = 'PAYROLL-PENDING-'+run.id.slice(0,8);
-  var txRes=await sb2.from('transactions').insert({month:month,date:e,description:'Payroll - '+(opt?opt.text:'Employee')+' [pending]',payment_type:'EFT',reference:pendingRef,amount_in:0,amount_out:0}).select();
+  var txRes=await sb2.from('transactions').insert({month:month,date:paidDate,description:'Payroll - '+(opt?opt.text:'Employee')+' [pending]',payment_type:'EFT',reference:pendingRef,amount_in:0,amount_out:0}).select();
   if(txRes.data&&txRes.data[0])S.tx.push(txRes.data[0]);
   setSync('ok');closeM('m-pay');renderPR();renderDash();renderCB();showToast('Pay run processed (cash book entry pending Wise transfer)','ok');
 }
@@ -3433,6 +3454,16 @@ function fmtDate(d) {
   // Use local date to avoid UTC offset issues
   var y=d.getFullYear(), m=String(d.getMonth()+1).padStart(2,'0'), day=String(d.getDate()).padStart(2,'0');
   return y+'-'+m+'-'+day;
+}
+
+// Pay periods always end on a Sunday; wages actually land in the account
+// the following Friday. Returns that Friday as an ISO date (YYYY-MM-DD).
+function nextFriday(dateStr){
+  var d = new Date(dateStr);
+  var day = d.getDay(); // 0=Sun..6=Sat
+  var diff = (5 - day + 7) % 7; // days until Friday
+  d.setDate(d.getDate() + diff);
+  return fmtDate(d);
 }
 function fmtDisplay(d) {
   var months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
@@ -7424,15 +7455,17 @@ async function reconcilePendingPayroll() {
     var cleanDesc = (row.description||'').replace(' [pending]', '');
     var matchedDate = (match.date || row.date || '').slice(0,10) || row.date;
 
+    var matchedMonth = MONTHS[new Date(matchedDate).getMonth()];
     var upd = await sb2.from('transactions').update({
       amount_out: actualOut,
       reference:  cleanRef,
       description: cleanDesc,
-      date: matchedDate
+      date: matchedDate,
+      month: matchedMonth
     }).eq('id', row.id);
 
     if(!upd.error) {
-      Object.assign(row, { amount_out: actualOut, reference: cleanRef, description: cleanDesc, date: matchedDate });
+      Object.assign(row, { amount_out: actualOut, reference: cleanRef, description: cleanDesc, date: matchedDate, month: matchedMonth });
       reconciled++;
     } else {
       console.warn('[reconcilePendingPayroll] update failed for tx', row.id, upd.error.message);
@@ -9139,6 +9172,7 @@ async function tsCreatePayRuns(){
       imported_at:new Date().toISOString()
     });
 
+    var paidDate=nextFriday(er.periodEnd);
     var insertRow={
       employee_id:emp.id,
       period_start:er.periodStart,
@@ -9150,7 +9184,7 @@ async function tsCreatePayRuns(){
       net_pay:p.net,
       status:'processed',
       wise_status:'pending',
-      paid_date:er.periodEnd,
+      paid_date:paidDate,
       day_breakdown:dayBreakdown
     };
 
@@ -9167,10 +9201,10 @@ async function tsCreatePayRuns(){
 
     // Pending cash book entry — amount_out:0 until Wise transfer matches
     var pendingRef='PAYROLL-PENDING-'+run.id.slice(0,8);
-    var peParts=er.periodEnd.split('-');
+    var peParts=paidDate.split('-');
     var month=MONTHS[parseInt(peParts[1],10)-1];
     var txRes=await sb2.from('transactions').insert({
-      month:month,date:er.periodEnd,
+      month:month,date:paidDate,
       description:'Payroll - '+emp.name+' [pending]',
       payment_type:'EFT',reference:pendingRef,
       amount_in:0,amount_out:0
