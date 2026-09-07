@@ -501,11 +501,14 @@ input[type=number]{text-align:right;font-variant-numeric:tabular-nums}
       <select id="exp-re-cadence-mode" onchange="expToggleCadenceMode()">
         <option value="count">Fixed number of times, no set day</option>
         <option value="weekday">Repeats on a specific weekday</option>
+        <option value="interval">Every N months (not monthly)</option>
       </select>
     </div>
     <div class="field" id="exp-re-occ-row"><label>Charged how many times a month?</label><input type="number" id="exp-re-occ" min="1" max="31" step="1" value="1" placeholder="1"><div style="font-size:10px;color:var(--text3);margin-top:4px">Leave at 1 for a normal monthly bill. Set higher for something billed several times a month &mdash; each payment gets its own slot.</div></div>
     <div class="field" id="exp-re-weekday-row" style="display:none"><label>Which weekday?</label><select id="exp-re-weekday"><option value="0">Sunday</option><option value="1">Monday</option><option value="2">Tuesday</option><option value="3">Wednesday</option><option value="4">Thursday</option><option value="5">Friday</option><option value="6">Saturday</option></select><div style="font-size:10px;color:var(--text3);margin-top:4px">The number of slots follows the calendar &mdash; a month with five Mondays expects five payments, one with four expects four.</div></div>
+    <div class="field" id="exp-re-interval-row" style="display:none"><label>Every how many months?</label><input type="number" id="exp-re-interval" min="2" max="12" step="1" value="3"><div style="font-size:10px;color:var(--text3);margin-top:4px">Only appears on the owner&rsquo;s card in months it&rsquo;s actually due &mdash; silent the rest of the time.</div></div>
     <div class="field"><label>Allocate to</label><select id="exp-re-alloc" onchange="expToggleRecurringParticipant()"><option value="company">Company</option><option value="participant">Participant</option></select></div>
+    <div class="field"><label>Start tracking from (optional)</label><input type="date" id="exp-re-since"><div style="font-size:10px;color:var(--text3);margin-top:4px">For &ldquo;every N months&rdquo;, the date of the most recent (or next) due bill. For anything else, leave blank unless you want to stop it matching old transactions from before this date.</div></div>
     <div class="field" id="exp-re-participant-row" style="display:none"><label>Participant</label><select id="exp-re-participant"></select></div>
   </div>
   <div class="modal-footer"><button class="btn btn-outline" onclick="closeM('m-exp-recurring')">Cancel</button><button class="btn btn-primary" onclick="saveExpRecurring()">Create recurring expense</button></div>
@@ -9382,6 +9385,24 @@ function expAmountMatches(amt, expected){
 // occurrences_per_month column existed read as 1.
 var EXP_WEEKDAYS = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
 
+// Is this expense due in the given 'YYYY-MM'? Anything without an interval is
+// due every month. With one, due months step out from tracked_since — so an
+// interval of 3 anchored on 2026-08 is due Aug, Nov, Feb, May and silent
+// otherwise. No anchor means we can't phase it, so it stays monthly.
+function expIntervalDue(re, key){
+  var n = parseInt(re && re.interval_months, 10) || 1;
+  if(n <= 1) return true;
+  if(!re.tracked_since) return true;
+  var since = String(re.tracked_since).slice(0,7).split('-');
+  var sy = +since[0], sm = +since[1];
+  var p = String(key||'').split('-');
+  var ky = +p[0], km = +p[1];
+  if(!sy||!sm||!ky||!km) return true;
+  var diff = (ky*12+km) - (sy*12+sm);
+  if(diff < 0) return false;
+  return (diff % n) === 0;
+}
+
 // 0=Sunday..6=Saturday, or null when this expense isn't weekday-based.
 function expCadenceWeekday(re){
   if(S._cadenceColMissing) return null;
@@ -9453,6 +9474,7 @@ async function ensureRecurringInstances(){
   var rows = [];
   (S.recurringExpenses||[]).forEach(function(re){
     if(re.active === false) return;
+    if(!expIntervalDue(re, key)) return;
     var have = {};
     expInstancesFor(re.id, key).forEach(function(i){ have[expOccNo(i)] = 1; });
     var n = S._occurrenceColsMissing ? 1 : expOccurrences(re, key);
@@ -9904,8 +9926,12 @@ function renderRecurringCards(){
   // allocations live on `transactions` and can still be listed.
   var notice = (S._recurringTableMissing || S._recurringInstTableMissing)
     ? expSetupNotice('recurring expense tracking') : '';
-  var list = notice ? [] : (S.recurringExpenses||[]).filter(function(r){ return r.active !== false; });
   var key = expMonthKey();
+  // A not-due interval expense is skipped entirely — no card, rather than a
+  // card with zero instances behind it.
+  var list = notice ? [] : (S.recurringExpenses||[]).filter(function(r){
+    return r.active !== false && expIntervalDue(r, key);
+  });
 
   // A transaction claimed by any recurring instance is that recurring expense's
   // payment, not a one-off — so it must not be counted twice.
@@ -10507,6 +10533,8 @@ function openExpRecurringModal(txId){
   eid('exp-re-occ').value    = 1;
   eid('exp-re-cadence-mode').value = 'count';
   eid('exp-re-weekday').value = String(new Date().getDay());
+  eid('exp-re-interval').value = 3;
+  eid('exp-re-since').value = '';
   expToggleCadenceMode();
   eid('exp-re-alloc').value  = tx.allocated_to || 'company';
   var sel = eid('exp-re-participant');
@@ -10536,6 +10564,8 @@ function openExpRecurringFromCandidate(idx){
   eid('exp-re-occ').value    = 1;
   eid('exp-re-cadence-mode').value = 'count';
   eid('exp-re-weekday').value = String(new Date().getDay());
+  eid('exp-re-interval').value = 3;
+  eid('exp-re-since').value = '';
   expToggleCadenceMode();
   eid('exp-re-alloc').value  = (tx && tx.allocated_to) || 'company';
   var sel = eid('exp-re-participant');
@@ -10548,10 +10578,11 @@ function openExpRecurringFromCandidate(idx){
 }
 
 function expToggleCadenceMode(){
-  var weekday = eid('exp-re-cadence-mode').value === 'weekday';
-  var wr = eid('exp-re-weekday-row'), or_ = eid('exp-re-occ-row');
-  if(wr) wr.style.display = weekday ? '' : 'none';
-  if(or_) or_.style.display = weekday ? 'none' : '';
+  var mode = eid('exp-re-cadence-mode').value;
+  var wr = eid('exp-re-weekday-row'), or_ = eid('exp-re-occ-row'), ir = eid('exp-re-interval-row');
+  if(wr) wr.style.display = mode==='weekday' ? '' : 'none';
+  if(or_) or_.style.display = mode==='count' ? '' : 'none';
+  if(ir) ir.style.display = mode==='interval' ? '' : 'none';
 }
 
 function expToggleRecurringParticipant(){
@@ -10568,6 +10599,9 @@ async function saveExpRecurring(){
   var mode  = eid('exp-re-cadence-mode').value;
   var occ   = parseInt(eid('exp-re-occ').value,10); if(!(occ>=1&&occ<=31)) occ = 1;
   var wday  = parseInt(eid('exp-re-weekday').value,10);
+  var interval = parseInt(eid('exp-re-interval').value,10)||0;
+  var since = eid('exp-re-since').value || null;
+  if(mode==='interval'){ if(interval<2) interval=3; } else { interval=0; }
   if(mode==='weekday'){ if(!(wday>=0&&wday<=6)) wday = 1; occ = 1; } else { wday = null; }
 
   if(!label){ showToast('Give the recurring expense a label','err'); return; }
@@ -10585,6 +10619,8 @@ async function saveExpRecurring(){
   };
   if(occ > 1) reRow.occurrences_per_month = occ;
   if(wday !== null) reRow.cadence_weekday = wday;
+  if(interval > 1) reRow.interval_months = interval;
+  if(since) reRow.tracked_since = since;
   var res = await sb2.from('recurring_expenses').insert(reRow).select();
   // Migration not run yet: drop whichever column is missing and save it as an
   // ordinary once-a-month expense rather than failing outright.
@@ -10592,6 +10628,12 @@ async function saveExpRecurring(){
     S._cadenceColMissing = true;
     delete reRow.cadence_weekday;
     showToast('Saved without the weekday cadence — run the weekday-cadence migration first','err');
+    res = await sb2.from('recurring_expenses').insert(reRow).select();
+  }
+  if(res.error && isMissingColumnError(res.error, ['interval_months','tracked_since'])){
+    S._intervalColsMissing = true;
+    delete reRow.interval_months; delete reRow.tracked_since;
+    showToast('Saved without the interval — run the migration first','err');
     res = await sb2.from('recurring_expenses').insert(reRow).select();
   }
   if(res.error && isMissingColumnError(res.error, ['occurrences_per_month'])){
