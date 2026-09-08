@@ -12,6 +12,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 <style>*{box-sizing:border-box;margin:0;padding:0}
 :root{
   /* "Expensive dark": deep navy-black surfaces, layered elevation, refined
@@ -442,6 +443,7 @@ input[type=number]{text-align:right;font-variant-numeric:tabular-nums}
         </span>
       </div>
       <button class="btn btn-outline btn-sm" onclick="refreshExpenses()">&#8635; Re-check matches</button>
+      <button class="btn btn-outline btn-sm" onclick="downloadTaxPackage()">&#8595; Download tax package</button>
     </div>
     <div style="font-size:11px;color:var(--text3);margin-bottom:14px;line-height:1.6">Allocation and recurring-expense tracking live on this tab only &mdash; they do not affect Dashboard figures, Cash Book totals or invoicing. The month above scopes the owner boxes; Unallocated transactions always span every month. Right-click a row for actions.</div>
 
@@ -3204,6 +3206,80 @@ function renderNDISBudget() {
 }
 
 function dl(c,n,t){var a=document.createElement('a');a.href=URL.createObjectURL(new Blob([c],{type:t}));a.download=n;a.click();showToast('Downloaded','ok');}
+// Who an expense belongs to, for the tax package CSV. Falls back to the
+// recurring expense's default owner when the transaction itself carries no
+// allocation but is matched to a recurring instance.
+function expTxOwnerLabel(t){
+  if(t.allocated_to==='participant' && t.participant_id){
+    var p=(S.participants||[]).find(function(x){return x.id===t.participant_id;});
+    return p?p.name:'Participant';
+  }
+  if(t.allocated_to==='company') return 'Company';
+  var inst=(S.recurringInstances||[]).find(function(i){return i.transaction_id===t.id;});
+  if(inst){
+    var re=(S.recurringExpenses||[]).find(function(r){return r.id===inst.recurring_expense_id;});
+    if(re){
+      if(re.default_allocated_to==='participant' && re.default_participant_id){
+        var p2=(S.participants||[]).find(function(x){return x.id===re.default_participant_id;});
+        return p2?p2.name:'Participant';
+      }
+      return 'Company';
+    }
+  }
+  return '';
+}
+
+// One ZIP for the accountant: every expense this year as CSV, plus the
+// receipt images that go with them.
+async function downloadTaxPackage(){
+  var yearTx = (S.tx||[]).filter(function(t){
+    return expIsTrackable(t) && String(t.date||'').indexOf(String(YEAR))===0 && (+t.amount_out||0)>0;
+  }).sort(function(a,b){ return String(a.date).localeCompare(String(b.date)); });
+
+  if(!yearTx.length){ showToast('No expenses found for '+YEAR,'err'); return; }
+
+  setSync('saving');
+  showToast('Building tax package — this may take a moment…','ok');
+  var zip = new JSZip();
+
+  var csv = 'Date,Description,Type,Reference,Amount,Allocated To,Note,Has Receipt\n';
+  yearTx.forEach(function(t){
+    csv += [
+      t.date||'',
+      '"'+(t.description||'').replace(/"/g,'""')+'"',
+      '"'+(t.payment_type||'')+'"',
+      t.reference||'',
+      (+t.amount_out||0).toFixed(2),
+      '"'+expTxOwnerLabel(t)+'"',
+      '"'+(t.note||'').replace(/"/g,'""')+'"',
+      t.attachment_path?'Yes':'No'
+    ].join(',')+'\n';
+  });
+  zip.file('expenses_'+YEAR+'.csv', csv);
+
+  var withReceipt = yearTx.filter(function(t){ return t.attachment_path; });
+  var receiptsFolder = zip.folder('receipts');
+  var failed = 0;
+  for(var i=0;i<withReceipt.length;i++){
+    var t = withReceipt[i];
+    try {
+      var signRes = await sb2.storage.from('tx-attachments').createSignedUrl(t.attachment_path, 300);
+      if(signRes.error || !signRes.data){ failed++; continue; }
+      var imgResp = await fetch(signRes.data.signedUrl);
+      if(!imgResp.ok){ failed++; continue; }
+      var blob = await imgResp.blob();
+      var ext = (t.attachment_path.split('.').pop()||'jpg').toLowerCase().slice(0,5);
+      var safeName = (t.date||'undated')+'_'+(t.description||'receipt').replace(/[^a-zA-Z0-9]+/g,'_').slice(0,40)+'.'+ext;
+      receiptsFolder.file(safeName, blob);
+    } catch(e){ failed++; console.warn('[tax package] receipt fetch failed for', t.id, e); }
+  }
+
+  var content = await zip.generateAsync({type:'blob'});
+  setSync('ok');
+  dl(content, 'NSS_Expenses_'+YEAR+'.zip', 'application/zip');
+  if(failed>0) showToast(failed+' receipt(s) could not be included — CSV still has all transactions','err');
+}
+
 function exportCSV(){var c='Month,Date,Description,Type,Reference,Amount In,Amount Out\n';S.tx.forEach(function(r){c+=[r.month,r.date,'"'+(r.description||'')+'"','"'+(r.payment_type||'')+'"',r.reference||'',r.amount_in||0,r.amount_out||0].join(',')+'\n';});dl(c,'CashBook_'+YEAR+'.csv','text/csv');}
 function exportPayroll(){var c='Employee,Period Start,Period End,Hours,Gross,Tax,Super,Net\n';S.runs.forEach(function(r){c+=[r._empName,r.period_start,r.period_end,r.hours_worked,r.gross_pay,r.tax_withheld,r.super_amount,r.net_pay].join(',')+'\n';});dl(c,'Payroll_'+YEAR+'.csv','text/csv');}
 function exportTax(){var c='Month,Gross,PAYG,Super,Net\n';MONTHS.forEach(function(m,i){var r=S.runs.filter(function(p){return(p.paid_date||p.period_end||'').startsWith(YEAR+'-'+String(i+1).padStart(2,'0'));});c+=[m,r.reduce(function(s,p){return s+(+p.gross_pay||0);},0).toFixed(2),r.reduce(function(s,p){return s+(+p.tax_withheld||0);},0).toFixed(2),r.reduce(function(s,p){return s+(+p.super_amount||0);},0).toFixed(2),r.reduce(function(s,p){return s+(+p.net_pay||0);},0).toFixed(2)].join(',')+'\n';});dl(c,'Tax_'+YEAR+'.csv','text/csv');}
