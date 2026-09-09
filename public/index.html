@@ -191,9 +191,9 @@ input[type=number]{text-align:right;font-variant-numeric:tabular-nums}
 .exp-ctx-item:hover{background:var(--bg5)}
 .exp-pick-row{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:9px 11px;border-radius:var(--r);cursor:pointer;border:1px solid transparent}
 .exp-pick-row:hover{background:var(--bg4);border-color:var(--border2)}
-.exp-owner-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:16px}
-.exp-owner-box{background:var(--bg2);border:1px solid var(--border);border-radius:var(--r2);padding:12px 13px}
-.exp-owner-head{padding:2px 3px 10px;border-bottom:1px solid var(--hairline);margin-bottom:11px}
+.exp-owner-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:16px;align-items:start}
+.exp-owner-box{background:var(--bg2);border:1px solid var(--border);border-radius:var(--r2);padding:12px 13px;max-height:520px;overflow-y:auto}
+.exp-owner-head{position:sticky;top:0;z-index:2;background:var(--bg2);padding:12px 3px 10px;margin:-12px 0 11px;border-bottom:1px solid var(--hairline)}
 .exp-owner-box .card{background:var(--bg3)}
 .exp-owner-box .card:last-child{margin-bottom:0!important}
 /* Compact rows reusing Cash Book's td metrics (9px 12px, 12px, same hairline,
