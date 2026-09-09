@@ -3255,7 +3255,24 @@ async function downloadTaxPackage(){
       t.attachment_path?'Yes':'No'
     ].join(',')+'\n';
   });
+  var total = yearTx.reduce(function(s,t){ return s + (+t.amount_out||0); }, 0);
+  csv += ['','"TOTAL"','','',total.toFixed(2),'','',''].join(',')+'\n';
   zip.file('expenses_'+YEAR+'.csv', csv);
+
+  // Second file: one row per month, for a quick read without the detail.
+  var byMonth = {};
+  yearTx.forEach(function(t){
+    var m = String(t.date||'').slice(0,7);
+    if(!byMonth[m]) byMonth[m] = { total:0, count:0 };
+    byMonth[m].total += (+t.amount_out||0);
+    byMonth[m].count++;
+  });
+  var summaryCsv = 'Month,Total,Transaction Count\n';
+  Object.keys(byMonth).sort().forEach(function(m){
+    summaryCsv += [m, byMonth[m].total.toFixed(2), byMonth[m].count].join(',')+'\n';
+  });
+  summaryCsv += ['TOTAL', total.toFixed(2), yearTx.length].join(',')+'\n';
+  zip.file('summary_'+YEAR+'.csv', summaryCsv);
 
   var withReceipt = yearTx.filter(function(t){ return t.attachment_path; });
   var receiptsFolder = zip.folder('receipts');
