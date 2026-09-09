@@ -3114,6 +3114,7 @@ function renderNDISBudget() {
   // Find tracked participants. A participant is "tracked" when their
   // ndis_plan (or primary budget line) has plan_start, plan_end, total_funding.
   var tracked = (S.participants||[]).filter(function(p){
+    if(p && p.archived_at) return false;
     var pl = p && p.ndis_plan;
     if(pl && ndisDateToIso(pl.plan_start) && ndisDateToIso(pl.plan_end) && +pl.total_funding > 0) return true;
     // Also accept participants whose primary active budget line has the required fields
@@ -4016,7 +4017,10 @@ function renderParticipants(){
     return;
   }
   var html = '';
-  S.participants.forEach(function(p){
+  var activeParticipants   = (S.participants||[]).filter(function(p){ return !p.archived_at; });
+  var archivedParticipants = (S.participants||[]).filter(function(p){ return p.archived_at; });
+
+  activeParticipants.forEach(function(p){
     var workerNames = (p.assigned_workers||[]).map(function(wid){
       var emp = S.emps.find(function(e){ return e.id===wid; });
       return emp ? emp.name : null;
@@ -4063,6 +4067,7 @@ function renderParticipants(){
       +'</div>'
       +'<div style="display:flex;gap:6px;flex-shrink:0">'
       +'<button class="btn-icon" data-id="'+p.id+'" onclick="openParticipantModal(this.dataset.id)" title="Edit">&#9998;</button>'
+      +'<button class="btn-icon" data-id="'+p.id+'" onclick="archiveParticipant(this.dataset.id)" title="Archive">&#128230;</button>'
       +'<button class="btn-icon" data-id="'+p.id+'" onclick="delParticipant(this.dataset.id)" title="Delete" style="color:var(--out);border-color:var(--out-dim)">&#x2715;</button>'
       +'</div></div>'
       // Invoice archive section
@@ -4106,6 +4111,25 @@ function renderParticipants(){
       +'</div>'
       +'</div>';
   });
+  // Archived participants: name, archive date and a locked total only. No
+  // roster, chart or budget-line editing — nothing here is deleted, just
+  // collapsed out of the way.
+  if(archivedParticipants.length){
+    html += '<div style="font-size:11px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:.04em;margin:20px 0 10px">Archived</div>';
+    archivedParticipants.forEach(function(p){
+      var totalInvoiced = collectNDISReceiptsForParticipant(p).reduce(function(s,r){ return s+(+r.amount||0); }, 0);
+      html += '<div style="background:var(--bg3);border:1px solid var(--border);border-radius:var(--r2);padding:16px;margin-bottom:10px;opacity:0.6">'
+        + '<div style="display:flex;align-items:center;gap:12px">'
+        + '<div style="width:44px;height:44px;border-radius:50%;background:var(--purple-bg);display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:700;color:var(--purple);flex-shrink:0">'+ini(p.name)+'</div>'
+        + '<div style="flex:1">'
+        + '<div style="font-size:14px;font-weight:600">'+p.name+'</div>'
+        + '<div style="font-size:11px;color:var(--text3)">Archived '+fmtDate(new Date(p.archived_at))+' &middot; Total invoiced: '+fmt(totalInvoiced)+'</div>'
+        + '</div>'
+        + '<button class="btn btn-outline btn-sm" data-id="'+p.id+'" onclick="unarchiveParticipant(this.dataset.id)">Unarchive</button>'
+        + '</div></div>';
+    });
+  }
+
   el.innerHTML = html;
 }
 
@@ -5460,6 +5484,39 @@ function ctRematchShiftTypes(enrichedResults){
 }
 
 // ────────────────────────────────────────────────────────────────────────────
+
+// Archive is a non-destructive alternative to Delete: it only stamps
+// archived_at. No transaction, invoice, budget line or receipt is touched.
+async function archiveParticipant(id){
+  var p = (S.participants||[]).find(function(x){ return x.id===id; });
+  if(!p) return;
+  if(!confirm('Archive '+p.name+'? They\'ll stop appearing in the NDIS Budget Tracker and active roster, but their invoice history stays intact and nothing is deleted.')) return;
+  setSync('saving');
+  var res = await sb2.from('participants').update({archived_at:new Date().toISOString()}).eq('id',id).select();
+  if(res.error){
+    setSync('error');
+    showToast(/archived_at/.test(res.error.message||'') ? 'Run the archived_at migration first' : 'Could not archive: '+res.error.message,'err');
+    return;
+  }
+  Object.assign(p, res.data[0]);
+  setSync('ok');
+  renderParticipants();
+  renderNDISBudget();
+  showToast('Archived','ok');
+}
+
+async function unarchiveParticipant(id){
+  var p = (S.participants||[]).find(function(x){ return x.id===id; });
+  if(!p) return;
+  setSync('saving');
+  var res = await sb2.from('participants').update({archived_at:null}).eq('id',id).select();
+  if(res.error){ setSync('error'); showToast('Could not unarchive: '+res.error.message,'err'); return; }
+  Object.assign(p, res.data[0]);
+  setSync('ok');
+  renderParticipants();
+  renderNDISBudget();
+  showToast('Unarchived','ok');
+}
 
 async function delParticipant(id){
   var p=(S.participants||[]).find(function(x){return x.id===id;});
