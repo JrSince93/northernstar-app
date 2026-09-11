@@ -61,13 +61,16 @@ All data lives in Supabase (project `bhqjsqwbsbhjuhjwxwcp`). The anon key and pr
 - `timesheet_name_map` — maps Connecteam employee/participant name strings to app records
 - `recurring_expenses` — recurring monthly expense definitions (label, expected amount, expected day of month, default allocation). Expenses tab only.
 - `recurring_expense_instances` — one row per recurring expense per month (`month` is `'YYYY-MM'`), with `status` (`pending`/`paid`) and the `transaction_id` that paid it. Unique on `(recurring_expense_id, month)`. Expenses tab only.
-- `dismissed_recurring_candidates` — signatures of suggested recurring expenses the operator dismissed. **Not yet created** — see Pending work.
+- `dismissed_recurring_candidates` — signatures of suggested recurring expenses the operator dismissed.
 
 `loadAll()` (~line 1200) fetches all tables on startup and populates `S`. The timesheet and expense tables load with graceful degradation (missing-table flags `S._scheduleBlocksTableMissing`, `S._recurringTableMissing`, `S._recurringInstTableMissing`, `S._dismissedCandTableMissing`) if their SQL hasn't run.
 
-**Storage:** Supabase Storage bucket `invoices` for uploaded invoice PDFs.
+**Storage:** both buckets are **private**; only the object path is persisted, and the app mints short-lived signed URLs on demand (`createSignedUrl`). Never store a URL or call `getPublicUrl`.
+- `tx-attachments` — receipt images on transactions (`transactions.attachment_path`). Policies: authenticated insert + select (no update/delete — add them before building replace/remove).
+- `invoices` — uploaded invoice PDFs, referenced from `participants.invoice_files[].path`. **Not yet created** — see Pending work. Until it exists, uploads fall back to base64 inline in `invoice_files` (`storage:'inline'`); 14 such files (~6.6 MB) are in the two participant rows today.
+- Other buckets in the project (`onboarding-docs`, `executed-contracts`, `sign-documents`, `participant-documents`) and tables (`onboarding_submissions`, `doc_signatures`, `agreement_drafts`) belong to anon-facing onboarding/e-sign pages outside this repo. Don't touch their policies.
 
-**Auth:** Supabase Auth email/password (`sb2.auth.signInWithPassword` in `doLogin`, ~line 5444) with a client-side lockout mechanism (`getLockoutState` / `setLockoutState` — 3 failed attempts → 15-minute lockout). The old hardcoded gate `APP_PW` (~line 3142) is **deprecated, kept only for rollback safety — remove once new auth is verified live**. Still pending: creating the admin Supabase Auth user (Phase 2) and RLS lockdown SQL (Phase 3).
+**Auth:** Supabase Auth email/password (`sb2.auth.signInWithPassword` in `doLogin`) with a client-side lockout mechanism (`getLockoutState` / `setLockoutState` — 3 failed attempts → 15-minute lockout). The app only calls `loadAll()` once a session exists, so all its queries run as `authenticated`. The admin Auth user exists and has signed in (Phase 2 done); the old `APP_PW` constant has been removed. RLS lockdown (Phase 3) is written but not yet run — see Pending work.
 
 ## Global state object `S`
 
@@ -206,12 +209,12 @@ Data-side (Supabase, not code) — confirm executed before relying on schedule d
 
 ## Pending work
 
-1. **Supabase Auth Phase 2 + 3** — create the admin Auth user; write and apply RLS lockdown SQL; then delete the deprecated `APP_PW` constant.
+1. **RLS lockdown (Auth Phase 3)** — `migrations/2026-09-11-rls-lockdown.sql`, written but not run. Until it runs, the anon key embedded in the page can read and write transactions, employees, pay_runs, participants, invoice_ledger, dropdown_options and dismissed_recurring_candidates (open "Allow all" policies), and recurring_expenses / recurring_expense_instances (RLS disabled). Before running it, confirm the external onboarding/e-sign pages don't use any of those tables with the anon key. The file has a verification curl and a rollback block.
+1a. **Create the `invoices` bucket** — `migrations/2026-09-11-invoices-bucket.sql`. Run it only **after** the index.html change that signs invoice URLs from `path` is deployed. The inline base64 invoices keep working; moving them into storage is optional follow-up.
 2. **Wise auto-import bug** — all transfers currently being skipped by the matching logic in `autoImportWiseExpenses`/`autoImportWiseIncome`; trace the `skipped` counters to find which filter is over-firing, dedupe by Wise transfer ID so re-runs stay idempotent.
 3. **Payroll status lifecycle** — the `status` field on `pay_runs` should follow `wise_status`: advance to `paid` only when `syncPayRunWiseStatuses` confirms the outgoing transfer settled.
 4. **KPI "Money out" excludes pending payroll** — dashboard/cash-book money-out KPIs should only count payroll transactions whose pay run is `paid`.
 5. **Sleepover/duplicate data fixes** — run and verify the two data-fix docs above.
-6. **`dismissed_recurring_candidates` table not created** — run `migrations/2026-09-05-dismissed-recurring-candidates.sql` in Supabase. Until then the Expenses tab's "Dismiss" button on a suggested recurring expense fails with a toast; everything else on the tab works and suggestions still render, they just can't be dismissed permanently.
 7. **Expenses tab unverified in a browser** — the expense tracker's logic is covered by Node-level checks but the rendering path and its live Supabase writes have never been exercised against real data. The multi-row instance back-fill (accepting a suggested recurring expense) is the write to watch first; it relies on the `unique (recurring_expense_id, month)` constraint holding when a month already has an instance.
 8. **`fix-receipt-bucketing-by-period.md`** — not applied, and **not confirmed to be a live problem**; see "Status of build docs" for how to check before spending effort on it.
 9. Confirm Lita's plan manager and resolve her address discrepancy (6 Maroon St vs 23 Leeward Dr, Tarneit) before finalising her participant record.

@@ -3311,10 +3311,6 @@ function toggleSidebar(){
   sb.classList.toggle('open');
   ov.classList.toggle('show');
 }
-// DEPRECATED: hardcoded password gate replaced by Supabase Auth (see doLogin).
-// Kept temporarily for rollback safety — remove once new auth is verified live.
-var APP_PW='Bd28281993';
-
 function genPayslip(id) {
   var run = S.runs.find(function(r){ return r.id === id; });
   if(!run){ showToast('Pay run not found','err'); return; }
@@ -7024,9 +7020,18 @@ function openInvoiceFile(ptId, fileIndex) {
   if(fileIndex < 0 || fileIndex >= files.length) return;
   var f = files[fileIndex];
 
-  // If it's a supabase storage URL, open directly
-  if(f.storage === 'supabase' && f.url && f.url.indexOf('data:') !== 0) {
-    window.open(f.url, '_blank');
+  // Private bucket: mint a short-lived signed URL from the stored path. The tab
+  // is opened before the await so the popup blocker still sees a user gesture.
+  if(f.storage === 'supabase' && f.path) {
+    var win = window.open('', '_blank');
+    sb2.storage.from('invoices').createSignedUrl(f.path, 300).then(function(res){
+      if(res.data && res.data.signedUrl){
+        if(win) win.location = res.data.signedUrl; else window.open(res.data.signedUrl, '_blank');
+      } else {
+        if(win) win.close();
+        showToast('Could not open file'+(res.error ? ': '+res.error.message : ''),'err');
+      }
+    });
     return;
   }
 
@@ -7075,13 +7080,11 @@ async function uploadInvoices(input, ptId) {
 
       if(uploadRes.error) throw uploadRes.error;
 
-      // Get public URL
-      var urlRes = sb2.storage.from('invoices').getPublicUrl(filePath);
-      var publicUrl = urlRes.data.publicUrl;
-
+      // The bucket is private: only the path is kept, and openInvoiceFile signs
+      // a URL on demand. A stored URL would either be public or go stale.
       invoiceFiles.push({
         name: file.name,
-        url: publicUrl,
+        url: null,
         path: filePath,
         date: tod(),
         size: file.size,
