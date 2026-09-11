@@ -2698,13 +2698,20 @@ function computeFundingScheduleRowsForParticipant(pt, bl, _receipts){
     if(todayIso>=periods[i].start_iso && todayIso<=periods[i].end_iso){ currentIdx=i; break; }
   }
 
+  var archivedAtIso = pt && pt.archived_at ? fmtDate(new Date(pt.archived_at)) : null;
   var rolling = 0, trackingStarted = !ovStart;
   var rows = periods.map(function(q, idx){
     // Periods before the takeover override: prior provider's responsibility —
     // no spend tracked or displayed, and they contribute nothing to rollover.
     if(ovStart && q.start_iso < ovStart){
       return { q:q, bucket:[], received:0, opening:null, available:null, carry:null,
-               untracked:true, pctUsed:0, status:null,
+               untracked:true, untrackedReason:'prior-provider', pctUsed:0, status:null,
+               isCurrent: idx===currentIdx, isPast: todayIso>q.end_iso, isFuture: todayIso<q.start_iso };
+    }
+    // Periods ending on/after the archive date: participant no longer with NSS.
+    if(archivedAtIso && q.end_iso >= archivedAtIso){
+      return { q:q, bucket:[], received:0, opening:null, available:null, carry:null,
+               untracked:true, untrackedReason:'archived', pctUsed:0, status:null,
                isCurrent: idx===currentIdx, isPast: todayIso>q.end_iso, isFuture: todayIso<q.start_iso };
     }
     var isOvPeriod = ovStart && q.start_iso===ovStart;
@@ -2774,7 +2781,15 @@ function computeNDISBudgetRowsForParticipant(pt, plan, _receipts, _schedBl) {
   // Per NDIS rules deficits don't carry forward, but for display we show the
   // paper rollover (matches the PDF's "paper view").
   var rollingBalance = 0;
+  var archivedAtIso = pt && pt.archived_at ? fmtDate(new Date(pt.archived_at)) : null;
   var rows = quarters.map(function(q, idx){
+    // Quarters ending on/after the archive date (the one archived mid-way
+    // through, and every one after) are greyed out like prior-provider rows.
+    if(archivedAtIso && q.end_iso >= archivedAtIso){
+      return { q:q, bucket:[], received:0, opening:null, available:null, carry:null,
+               untracked:true, untrackedReason:'archived', pctUsed:0, status:null,
+               isCurrent: idx===currentIdx, isPast: todayIso>q.end_iso, isFuture: todayIso<q.start_iso };
+    }
     var bucket = buckets[idx];
     var received = bucket.reduce(function(s,r){ return s + r.amount; }, 0);
     var pctUsed = q.fresh > 0 ? received / q.fresh : 0;
@@ -2797,9 +2812,9 @@ function computeNDISBudgetRowsForParticipant(pt, plan, _receipts, _schedBl) {
   });
 
   var totalFresh = quarters.reduce(function(s,q){ return s + q.fresh; }, 0);
-  var totalReceived = rows.reduce(function(s,r){ return s + r.received; }, 0);
-  var ytdFresh    = rows.filter(function(r){ return !r.isFuture; }).reduce(function(s,r){ return s + r.q.fresh; }, 0);
-  var ytdReceived = rows.filter(function(r){ return !r.isFuture; }).reduce(function(s,r){ return s + r.received; }, 0);
+  var totalReceived = rows.filter(function(r){ return !r.untracked; }).reduce(function(s,r){ return s + r.received; }, 0);
+  var ytdFresh    = rows.filter(function(r){ return !r.isFuture && !r.untracked; }).reduce(function(s,r){ return s + r.q.fresh; }, 0);
+  var ytdReceived = rows.filter(function(r){ return !r.isFuture && !r.untracked; }).reduce(function(s,r){ return s + r.received; }, 0);
 
   return {
     quarters: quarters,
@@ -2952,15 +2967,18 @@ function renderNDISBudgetLineSection(pt, bl, plan, computed, keyPrefix) {
     var key = keyPrefix + ':' + idx;
     var open = !!_ndisBudgetOpen[key];
     if(row.untracked){
-      // Pre-takeover period: prior provider's spend, not tracked by NSS.
+      // Pre-takeover period (prior provider's spend) or post-archive period
+      // (participant no longer with NSS): not tracked either way.
+      var untrackedBadge = row.untrackedReason === 'archived' ? 'Archived' : 'Prior provider';
+      var untrackedNote = row.untrackedReason === 'archived' ? 'No longer tracked' : 'Not tracked';
       quartersHtml += '<div style="border:1px solid var(--border);background:var(--bg4);border-radius:var(--r2);margin-bottom:8px;opacity:.55">'
         + '<div style="display:grid;grid-template-columns:auto 1fr auto auto;gap:14px;align-items:center;padding:10px 16px">'
         + '<div style="width:14px"></div>'
         + '<div><div style="font-size:13px;font-weight:700">'+q.label
-          + '<span style="background:var(--bg5);color:var(--text3);font-size:9px;font-weight:700;padding:2px 6px;border-radius:10px;letter-spacing:.05em;text-transform:uppercase;margin-left:8px">Prior provider</span></div>'
+          + '<span style="background:var(--bg5);color:var(--text3);font-size:9px;font-weight:700;padding:2px 6px;border-radius:10px;letter-spacing:.05em;text-transform:uppercase;margin-left:8px">'+untrackedBadge+'</span></div>'
           + '<div class="td-muted" style="font-size:10px;margin-top:2px">'+q.start_iso.split('-').reverse().join('/')+' – '+q.end_iso.split('-').reverse().join('/')+'</div></div>'
         + '<div style="text-align:right"><div class="td-muted" style="font-size:10px">'+freshLabel+'</div><div style="font-size:12px;font-weight:600">'+fmt(q.fresh)+'</div></div>'
-        + '<div class="td-muted" style="font-size:10px">Not tracked</div>'
+        + '<div class="td-muted" style="font-size:10px">'+untrackedNote+'</div>'
         + '</div></div>';
       return;
     }
