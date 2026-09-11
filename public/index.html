@@ -388,7 +388,7 @@ input[type=number]{text-align:right;font-variant-numeric:tabular-nums}
     <div class="card" id="rpt-ndis-budget-summary-card">
       <div class="card-title">NDIS Budget Tracker</div>
       <div style="font-size:11px;color:var(--text3);margin-bottom:14px">Aggregated across all tracked participants. Tracks NDIS income received each quarter against fresh funding released that quarter; rollover carries unused funding forward.</div>
-      <div id="ndis-budget-summary" style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px"></div>
+      <div id="ndis-budget-summary" style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px"></div>
     </div>
     <div id="ndis-budget-cards-host"></div>
     <div class="card"><div class="card-title" id="pl-title">Profit &amp; Loss</div>
@@ -3057,6 +3057,7 @@ function renderNDISBudgetLineSection(pt, bl, plan, computed, keyPrefix) {
 // sections: [{bl, plan, computed, keyPrefix}]
 function renderNDISBudgetParticipantCard(pt, sections, unattributed) {
   var ptId = pt.id;
+  var isArchived = !!pt.archived_at;
   var body = sections.map(function(sec){
     return renderNDISBudgetLineSection(pt, sec.bl, sec.plan, sec.computed, sec.keyPrefix);
   }).join('');
@@ -3081,6 +3082,7 @@ function renderNDISBudgetParticipantCard(pt, sections, unattributed) {
   var subline = lineCount > 0
     ? lineCount + ' budget line' + (lineCount===1?'':'s') + ' tracked'
     : 'Legacy plan fields';
+  if(isArchived) subline += ' · Archived ' + fmtDate(new Date(pt.archived_at)).split('-').reverse().join('/');
 
   // Initial render state: read from _ndisCardOpen so a re-render (triggered
   // by a quarter toggle) restores the user's expanded card instead of
@@ -3089,11 +3091,13 @@ function renderNDISBudgetParticipantCard(pt, sections, unattributed) {
   var bodyDisplay = cardOpen ? '' : 'none';
   var chevRotate  = cardOpen ? 'rotate(90deg)' : 'rotate(0deg)';
 
-  return '<div class="card" data-pt-id="'+ptId+'">'
+  return '<div class="card" data-pt-id="'+ptId+'" style="'+(isArchived?'opacity:.6':'')+'">'
     + '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;cursor:pointer;user-select:none" onclick="toggleNDISCard(this)">'
       + '<div style="display:flex;align-items:center;gap:10px">'
         + '<span class="ndis-card-chev" style="display:inline-block;transition:transform .15s ease;color:var(--text3);font-size:12px;transform:'+chevRotate+'">&#9654;</span>'
-        + '<div class="card-title" style="margin-bottom:0">'+pt.name+' &mdash; NDIS Budget Tracker</div>'
+        + '<div class="card-title" style="margin-bottom:0">'+pt.name+' &mdash; NDIS Budget Tracker'
+          + (isArchived ? ' <span style="background:rgba(255,255,255,.08);color:var(--text3);font-size:9px;font-weight:700;padding:2px 7px;border-radius:10px;letter-spacing:.05em;text-transform:uppercase;vertical-align:middle">Archived</span>' : '')
+          + '</div>'
       + '</div>'
       + '<div style="font-size:11px;color:var(--text3)">'+subline+'</div>'
     + '</div>'
@@ -3113,8 +3117,9 @@ function renderNDISBudget() {
 
   // Find tracked participants. A participant is "tracked" when their
   // ndis_plan (or primary budget line) has plan_start, plan_end, total_funding.
+  // Archived participants stay in (their funding and receipts are real), but
+  // sort to the bottom so active participants lead the card list.
   var tracked = (S.participants||[]).filter(function(p){
-    if(p && p.archived_at) return false;
     var pl = p && p.ndis_plan;
     if(pl && ndisDateToIso(pl.plan_start) && ndisDateToIso(pl.plan_end) && +pl.total_funding > 0) return true;
     // Also accept participants whose primary active budget line has the required fields
@@ -3122,24 +3127,22 @@ function renderNDISBudget() {
     if(!Array.isArray(bls)) return false;
     return bls.some(function(bl){ return bl.active!==false && bl.plan_start && bl.plan_end && +bl.funding_amount>0; });
   });
+  tracked.sort(function(a,b){ return (a.archived_at?1:0) - (b.archived_at?1:0); });
 
   // Empty state — render summary as zeros and a friendly empty card list
   if(tracked.length === 0) {
     sumHost.innerHTML =
         '<div class="kpi"><div class="kpi-label">Plan funding total</div><div class="kpi-val purple">'+fmt(0)+'</div><div class="td-muted" style="font-size:10px">no participants tracked</div></div>'
       + '<div class="kpi"><div class="kpi-label">Received to date</div><div class="kpi-val green">'+fmt(0)+'</div><div class="td-muted" style="font-size:10px">0 receipts</div></div>'
-      + '<div class="kpi"><div class="kpi-label">Current quarter</div><div class="kpi-val">&mdash;</div><div class="td-muted" style="font-size:10px">no plans configured</div></div>'
-      + '<div class="kpi"><div class="kpi-label">YTD progress</div><div class="kpi-val">&mdash;</div><div class="td-muted" style="font-size:10px">&mdash;</div></div>';
+      + '<div class="kpi"><div class="kpi-label">Current quarter</div><div class="kpi-val">&mdash;</div><div class="td-muted" style="font-size:10px">no plans configured</div></div>';
     cardsHost.innerHTML = '<div class="card"><div class="empty" style="padding:20px;text-align:center">No participants are being tracked yet. Open a participant, add a budget line, and fill in plan start, plan end, and funding amount. Or expand <b>Budget tracker</b> inside the participant modal to set totals directly.</div></div>';
     return;
   }
 
   // Compute per-participant sections (one per tracked budget line) and
-  // aggregate the four summary KPIs across every section — no double counting.
+  // aggregate the three summary KPIs across every section — no double counting.
   var aggTotalFresh = 0;
   var aggTotalReceived = 0;
-  var aggYtdFresh = 0;
-  var aggYtdReceived = 0;
   var aggReceiptCount = 0;
   var aggCurrentFresh = 0;
   var aggCurrentReceived = 0;
@@ -3173,8 +3176,6 @@ function renderNDISBudget() {
       var c = sec.computed;
       aggTotalFresh    += c.totalFresh;
       aggTotalReceived += c.totalReceived;
-      aggYtdFresh      += c.ytdFresh;
-      aggYtdReceived   += c.ytdReceived;
       aggReceiptCount  += c.receipts.length;
       if(c.currentIdx >= 0) {
         anyCurrent = true;
@@ -3187,9 +3188,7 @@ function renderNDISBudget() {
     cardsHtml += renderNDISBudgetParticipantCard(pt, sections, unattributed);
   });
 
-  var ytdPct     = aggYtdFresh > 0     ? aggYtdReceived / aggYtdFresh         : 0;
   var currentPct = aggCurrentFresh > 0 ? aggCurrentReceived / aggCurrentFresh : 0;
-  var ytdStatus     = ndisBudgetStatus(ytdPct);
   var currentStatus = ndisBudgetStatus(currentPct);
 
   sumHost.innerHTML =
@@ -3200,8 +3199,7 @@ function renderNDISBudget() {
             ? '<div class="kpi-val" style="color:'+currentStatus.color+'">'+Math.round(currentPct*100)+'%</div>'
               +'<div class="td-muted" style="font-size:10px">'+fmt(aggCurrentReceived)+' / '+fmt(aggCurrentFresh)+'</div>'
             : '<div class="kpi-val">&mdash;</div><div class="td-muted" style="font-size:10px">outside all plan windows</div>')
-      +'</div>'
-    + '<div class="kpi"><div class="kpi-label">YTD progress</div><div class="kpi-val" style="color:'+ytdStatus.color+'">'+Math.round(ytdPct*100)+'%</div><div class="td-muted" style="font-size:10px">'+fmt(aggYtdReceived)+' / '+fmt(aggYtdFresh)+'</div></div>';
+      +'</div>';
 
   cardsHost.innerHTML = cardsHtml;
 }
