@@ -97,6 +97,20 @@ body{
 .card-title{display:flex;align-items:center;gap:8px;font-size:11px;font-weight:650;color:var(--text2);text-transform:uppercase;letter-spacing:.09em;margin-bottom:15px}
 .card-title::before{content:'';width:5px;height:5px;border-radius:50%;background:linear-gradient(135deg,var(--gold),var(--blue));box-shadow:0 0 6px var(--glow-gold);flex-shrink:0}
 .two-col{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+/* ── Dashboard-only polish (2026-09-12) ──────────────────────────────────────
+   Scoped to #page-dashboard deliberately: .two-col, .kpi-val, .card and .kpi
+   are shared with Cash Book, Tax, Reports and the Accountant page, none of
+   which should change. Put further dashboard-only rules in this block.
+   - align-items:start  — grid's default `stretch` forced Recent transactions
+     and Employees overview to equal height despite different row counts.
+   - card/kpi surface   — #111726 sat at 1.085 contrast against the #090d18
+     page background, which read as flat. #161d31 lifts that to 1.159 while
+     keeping a step down to --bg4 (#171f31) for nested surfaces.
+   Cards carrying an inline background (Wise balance, Net surplus) keep their
+   tint: an inline style outranks these rules, which is what we want. */
+#page-dashboard .two-col{align-items:start}
+#page-dashboard .kpi-val{font-size:32px}
+#page-dashboard .card,#page-dashboard .kpi{background:linear-gradient(180deg,rgba(255,255,255,.03),rgba(255,255,255,0) 45%),#161d31;box-shadow:0 1px 0 rgba(255,255,255,.04) inset,0 14px 34px -20px rgba(0,0,0,.85)}
 .three-col{display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px}
 .tbl-wrap{border:1px solid var(--hairline);border-radius:var(--r2);overflow:hidden;overflow-x:auto;background:rgba(255,255,255,.01)}
 table{width:100%;border-collapse:collapse;font-size:12px;min-width:500px}
@@ -311,7 +325,7 @@ input[type=number]{text-align:right;font-variant-numeric:tabular-nums}
     <div class="kpi-grid">
       <div class="kpi"><div class="kpi-label">Total income (YTD)</div><div class="kpi-val green" id="d-in">--</div></div>
       <div class="kpi"><div class="kpi-label">Total outgoings (YTD)</div><div class="kpi-val red" id="d-out">--</div></div>
-      <div class="kpi"><div class="kpi-label">Net surplus / deficit</div><div class="kpi-val gold" id="d-net">--</div></div>
+      <div class="kpi" style="border-color:var(--gold-dim);background:var(--gold-bg)"><div class="kpi-label">Net surplus / deficit</div><div class="kpi-val gold" id="d-net">--</div></div>
       <div class="kpi"><div class="kpi-label">Active employees</div><div class="kpi-val blue" id="d-emp">--</div></div>
       <div class="kpi" style="border-color:var(--in-dim);background:var(--in-bg)"><div class="kpi-label" style="display:flex;align-items:center;gap:6px"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--in)" stroke-width="2"><path d="M21 12V7H5a2 2 0 0 1 0-4h14v4"/><path d="M3 5v14a2 2 0 0 0 2 2h16v-5"/><path d="M18 12a2 2 0 0 0 0 4h4v-4h-4z"/></svg>Wise balance (AUD)</div><div class="kpi-val green" id="d-wise-bal"><div class="spin" style="width:12px;height:12px"></div></div></div>
       <div class="kpi" style="border-color:var(--purple-bg)"><div class="kpi-label" style="display:flex;align-items:center;gap:6px"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--purple)" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>Invoices outstanding</div><div class="kpi-val purple" id="d-inv-out">--</div></div>
@@ -1095,6 +1109,18 @@ var pendingExportPlatform = null;
 var S = {tx:[],emps:[],runs:[],participants:[],dd:{description:[],type:[]},curMonth:new Date().getMonth(),editEmpId:null,ddField:null,ddTargetId:null,ch:{},wiseTransfers:[],invoiceLedger:[],_lastGenInvoice:null,shiftTypes:[],scheduleBlocks:[],tsNameMap:[],recurringExpenses:[],recurringInstances:[],dismissedCandidates:[],expMonth:null,role:null,staff:null};
 
 function eid(id){return document.getElementById(id);}
+// Resolve a CSS custom property to an rgba() string, so Chart.js datasets read
+// the same palette the stylesheet does instead of repeating colour literals.
+// `fallback` keeps the chart correct anywhere getComputedStyle can't resolve
+// custom properties; it must match the variable's value in :root.
+function cssRgba(name, alpha, fallback){
+  var hex = '';
+  try { hex = getComputedStyle(document.documentElement).getPropertyValue(name).trim(); } catch(e) {}
+  if(!/^#?[0-9a-f]{3}([0-9a-f]{3})?$/i.test(hex)) hex = fallback;
+  var h = hex.replace('#','');
+  if(h.length===3) h = h[0]+h[0]+h[1]+h[1]+h[2]+h[2];
+  return 'rgba('+parseInt(h.slice(0,2),16)+','+parseInt(h.slice(2,4),16)+','+parseInt(h.slice(4,6),16)+','+alpha+')';
+}
 function fmt(n){var v=parseFloat(n);if(!v&&v!==0)return'--';return'$'+Math.abs(v).toLocaleString('en-AU',{minimumFractionDigits:2,maximumFractionDigits:2});}
 function ini(n){return(n||'?').split(' ').map(function(w){return w[0];}).join('').slice(0,2).toUpperCase();}
 function tod(){return new Date().toISOString().slice(0,10);}
@@ -1471,7 +1497,9 @@ function renderDash(){
   var base={responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:ttO},scales:axO};
 
   dkc('bar');
-  S.ch['bar']=new Chart(eid('cv-bar'),{type:'bar',data:{labels:SHORT,datasets:[{label:'In',data:mIn,backgroundColor:'rgba(62,207,122,.72)',hoverBackgroundColor:'rgba(62,207,122,.95)',borderRadius:5,maxBarThickness:26},{label:'Out',data:mOut,backgroundColor:'rgba(236,106,94,.65)',hoverBackgroundColor:'rgba(236,106,94,.9)',borderRadius:5,maxBarThickness:26}]},options:base});
+  // Bar colours resolve from --in / --out so the chart can't drift from the
+  // palette. Same values as the literals they replace, so no visual change.
+  S.ch['bar']=new Chart(eid('cv-bar'),{type:'bar',data:{labels:SHORT,datasets:[{label:'In',data:mIn,backgroundColor:cssRgba('--in',.72,'#3ecf7a'),hoverBackgroundColor:cssRgba('--in',.95,'#3ecf7a'),borderRadius:5,maxBarThickness:26},{label:'Out',data:mOut,backgroundColor:cssRgba('--out',.65,'#ec6a5e'),hoverBackgroundColor:cssRgba('--out',.9,'#ec6a5e'),borderRadius:5,maxBarThickness:26}]},options:base});
 
   dkc('net');
   S.ch['net']=new Chart(eid('cv-net'),{type:'bar',data:{labels:SHORT,datasets:[{label:'Net',data:mNet,backgroundColor:mNet.map(function(n){return n>=0?'rgba(62,207,122,.72)':'rgba(236,106,94,.65)';}),borderRadius:5,maxBarThickness:26}]},options:base});
@@ -1481,7 +1509,7 @@ function renderDash(){
   dkc('line');
   S.ch['line']=new Chart(eid('cv-line'),{type:'line',data:{labels:SHORT,datasets:[{label:'Balance',data:cv,borderColor:'#c9a227',backgroundColor:'rgba(201,162,39,.08)',fill:true,tension:.35,pointRadius:0,pointHoverRadius:5,pointHoverBackgroundColor:'#c9a227',pointHoverBorderColor:'rgba(201,162,39,.3)',pointHoverBorderWidth:6,borderWidth:2}]},options:base});
 
-  var recent=activeTx.slice().sort(function(a,b){return new Date(b.created_at)-new Date(a.created_at);}).slice(0,6);
+  var recent=activeTx.slice().sort(function(a,b){return new Date(b.created_at)-new Date(a.created_at);}).slice(0,12);
   var rHtml=recent.length===0?'<div class="empty">No transactions yet</div>':'<div class="tbl-wrap"><table><thead><tr><th>Date</th><th>Description</th><th class="td-right">In</th><th class="td-right">Out</th></tr></thead><tbody>';
   if(recent.length>0){
     recent.forEach(function(r){rHtml+='<tr><td class="td-muted">'+(r.date||'--')+'</td><td>'+(r.description||'--')+'</td><td class="td-right td-green">'+(+r.amount_in>0?fmt(r.amount_in):'')+'</td><td class="td-right td-red">'+(+r.amount_out>0?fmt(r.amount_out):'')+'</td></tr>';});
