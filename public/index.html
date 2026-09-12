@@ -292,6 +292,8 @@ input[type=number]{text-align:right;font-variant-numeric:tabular-nums}
   <div class="sb-item" data-nav="invoices" onclick="nav('invoices')"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="15" x2="15" y2="15"/></svg>Invoices</div>
   <div class="sb-item" data-nav="tax" onclick="nav('tax')"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>Tax &amp; BAS</div>
   <div class="sb-item" data-nav="reports" onclick="nav('reports')"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>Reports</div>
+  <div class="sb-section">Accountant</div>
+  <div class="sb-item" data-nav="accountant" onclick="nav('accountant')"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><line x1="9" y1="15" x2="15" y2="15"/></svg>Accountant</div>
   <div class="sb-section">Expenses</div>
   <div class="sb-item" data-nav="expenses" onclick="nav('expenses')"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="5" width="20" height="14" rx="2"/><line x1="2" y1="10" x2="22" y2="10"/><line x1="6" y1="15" x2="10" y2="15"/></svg>Expenses</div>
   <div class="sb-footer"><div class="sb-user"><div class="sb-avatar">NS</div><div><div class="sb-user-name">Admin</div><div style="font-size:9px;color:var(--text3);word-break:break-all;margin-top:2px">admin@northernstarsupport.com</div></div></div></div>
@@ -432,6 +434,9 @@ input[type=number]{text-align:right;font-variant-numeric:tabular-nums}
     <div id="participant-list"><div class="loading"><div class="spin"></div>Loading...</div></div>
   </div>
 
+  <!-- Accountant: read-only, period-scoped summaries + CSV exports. Rendered
+       entirely by renderAccountant(); no create/edit/delete controls here. -->
+  <div class="page" id="page-accountant"></div>
   <div class="page" id="page-expenses">
     <div class="section-header">
       <div class="section-title" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">Expenses
@@ -1146,7 +1151,7 @@ function nav(p){
   eid('page-'+p).classList.add('active');
   var el=document.querySelector('[data-nav="'+p+'"]');
   if(el)el.classList.add('active');
-  var titles={dashboard:'Dashboard',cashbook:'Cash Book',employees:'Employees',participants:'Participants',payroll:'Payroll',invoices:'Invoices',tax:'Tax & BAS',reports:'Reports',expenses:'Expenses'};
+  var titles={dashboard:'Dashboard',cashbook:'Cash Book',employees:'Employees',participants:'Participants',payroll:'Payroll',invoices:'Invoices',tax:'Tax & BAS',reports:'Reports',expenses:'Expenses',accountant:'Accountant'};
   eid('pageTitle').textContent=titles[p]||p;
   closeSidebarOnNav();if(p==='cashbook')renderCB();
   if(p==='payroll')renderPR();
@@ -1156,6 +1161,7 @@ function nav(p){
   if(p==='participants')renderParticipants();
   if(p==='invoices')renderInvoices();
   if(p==='expenses')refreshExpenses();
+  if(p==='accountant')renderAccountant();
 }
 
 
@@ -1276,7 +1282,9 @@ async function loadAll(){
     S.emps=r2.data||[];
     S.runs=(r3.data||[]).map(function(r){
       var emp=S.emps.find(function(e){return e.id===r.employee_id;});
-      r._empName=emp?emp.name:'Unknown';
+      // employee_name is the denormalised fallback: the accountant role can't
+      // read `employees`, so S.emps is empty for them (2026-09-12 migration).
+      r._empName=emp?emp.name:(r.employee_name||'Unknown');
       return r;
     });
     var ddD=(r4.data||[]).filter(function(d){return d.field==='description';}).map(function(d){return d.value;});
@@ -2299,7 +2307,7 @@ async function savePayRun(){
 
   setSync('saving');
   var paidDate=nextFriday(e);
-  var insertRow={employee_id:sel.value,period_start:s,period_end:e,hours_worked:hrs,gross_pay:p.gross,tax_withheld:p.tax,super_amount:p.sup,net_pay:p.net,status:'processed',wise_status:'pending',paid_date:paidDate};
+  var insertRow={employee_id:sel.value,employee_name:(opt?opt.text:null),period_start:s,period_end:e,hours_worked:hrs,gross_pay:p.gross,tax_withheld:p.tax,super_amount:p.sup,net_pay:p.net,status:'processed',wise_status:'pending',paid_date:paidDate};
   // Append sleepover meta-entry to dayBreakdown so the payslip can render it correctly.
   var prSleepShifts=parseFloat((eid('pr-sleep-shifts')||{value:'0'}).value)||0;
   if(prSleepShifts>0){
@@ -3331,6 +3339,282 @@ async function downloadTaxPackage(){
 
 function exportCSV(){var c='Month,Date,Description,Type,Reference,Amount In,Amount Out\n';S.tx.forEach(function(r){c+=[r.month,r.date,'"'+(r.description||'')+'"','"'+(r.payment_type||'')+'"',r.reference||'',r.amount_in||0,r.amount_out||0].join(',')+'\n';});dl(c,'CashBook_'+YEAR+'.csv','text/csv');}
 function exportPayroll(){var c='Employee,Period Start,Period End,Hours,Gross,Tax,Super,Net\n';S.runs.forEach(function(r){c+=[r._empName,r.period_start,r.period_end,r.hours_worked,r.gross_pay,r.tax_withheld,r.super_amount,r.net_pay].join(',')+'\n';});dl(c,'Payroll_'+YEAR+'.csv','text/csv');}
+// ── Accountant page ─────────────────────────────────────────────────────────
+// Read-only, period-scoped summaries plus CSV exports, for the external
+// accountant (role 'accountant'; see ROLE_TABS). Everything here reads what
+// their RLS already permits — transactions, pay_runs, invoice_ledger — and
+// renders NO create/edit/delete controls for any role.
+//
+// Periods are Australian financial-year quarters (Q1 Jul-Sep … Q4 Apr-Jun),
+// deliberately unrelated to buildNDISQuartersForPlan(), which is anchored to a
+// participant's plan dates.
+var ACC_PERIOD = null;   // {fy:<starting year>, q:1..4 or 0 for full year}
+
+function accFYOfDate(d){ return d.getMonth() >= 6 ? d.getFullYear() : d.getFullYear()-1; }
+function accFYLabel(fy){ return 'FY' + fy + '-' + String((fy+1)%100).padStart(2,'0'); }
+
+// Inclusive ISO range for an FY quarter (q 1-4) or the whole FY (q 0).
+function accPeriodRange(fy, q){
+  var spans = {
+    1: [fy,   6, fy,   8], 2: [fy,   9, fy,  11],
+    3: [fy+1, 0, fy+1, 2], 4: [fy+1, 3, fy+1, 5],
+    0: [fy,   6, fy+1, 5]
+  };
+  var s = spans[q] || spans[0];
+  var start = new Date(s[0], s[1], 1);
+  var end   = new Date(s[2], s[3]+1, 0);   // day 0 of next month = last day
+  return {
+    start: fmtDate(start), end: fmtDate(end),
+    label: (q ? 'Q'+q+' ' : 'Full year ') + accFYLabel(fy),
+    slug:  accFYLabel(fy) + '_' + (q ? 'Q'+q : 'FullYear')
+  };
+}
+
+// FYs offered in the picker: every FY the data touches, plus the current one.
+function accAvailableFYs(){
+  var years = {};
+  years[accFYOfDate(new Date())] = true;
+  (S.tx||[]).forEach(function(t){ if(t.date) years[accFYOfDate(new Date(t.date))] = true; });
+  (S.runs||[]).forEach(function(r){
+    var d = r.paid_date || r.period_end; if(d) years[accFYOfDate(new Date(d))] = true;
+  });
+  ((S.invoiceLedger)||[]).forEach(function(i){ if(i.invoice_date) years[accFYOfDate(new Date(i.invoice_date))] = true; });
+  return Object.keys(years).map(Number).sort(function(a,b){ return b-a; });
+}
+
+function accCurrentPeriod(){
+  if(ACC_PERIOD) return ACC_PERIOD;
+  var now = new Date(), fy = accFYOfDate(now);
+  // Jan-Dec → FY quarter: Jan-Mar Q3, Apr-Jun Q4, Jul-Sep Q1, Oct-Dec Q2.
+  var q = [3,3,3,4,4,4,1,1,1,2,2,2][now.getMonth()];
+  ACC_PERIOD = { fy: fy, q: q };
+  return ACC_PERIOD;
+}
+
+// A pay run belongs to the period it was PAID in, falling back to period_end —
+// the same anchor exportTax() uses.
+function accRunDate(r){ return r.paid_date || r.period_end || ''; }
+
+function accData(){
+  var p = accCurrentPeriod(), range = accPeriodRange(p.fy, p.q);
+  var inRange = function(d){ return d && d >= range.start && d <= range.end; };
+  var tx  = (S.tx||[]).filter(function(t){ return inRange(t.date); });
+  return {
+    range: range,
+    tx: tx,
+    expenses: tx.filter(function(t){ return expIsExpense(t) && !expIsPayroll(t); }),
+    payrollTx: tx.filter(function(t){ return expIsExpense(t) && expIsPayroll(t); }),
+    runs: (S.runs||[]).filter(function(r){ return inRange(accRunDate(r)); }),
+    invoices: ((S.invoiceLedger)||[]).filter(function(i){ return inRange(i.invoice_date); })
+  };
+}
+
+function accSetPeriod(){
+  var fySel = eid('acc-fy'), qSel = eid('acc-q');
+  if(!fySel || !qSel) return;
+  ACC_PERIOD = { fy: +fySel.value, q: +qSel.value };
+  renderAccountant();
+}
+
+function accSum(rows, field){
+  return rows.reduce(function(s,r){ return s + (+r[field]||0); }, 0);
+}
+function accCsv(v){
+  var s = v === null || v === undefined ? '' : String(v);
+  return /[",\n]/.test(s) ? '"' + s.replace(/"/g,'""') + '"' : s;
+}
+function accRow(arr){ return arr.map(accCsv).join(',') + '\n'; }
+function accFile(name){ return 'Accountant_' + name + '_' + accPeriodRange(accCurrentPeriod().fy, accCurrentPeriod().q).slug + '.csv'; }
+
+// ── Exports: same column shapes as exportCSV / exportPayroll / exportTax,
+// scoped to the selected period instead of the whole calendar year. ──
+function accExportCashBook(){
+  var d = accData();
+  var c = accRow(['Date','Description','Type','Reference','Amount In','Amount Out']);
+  d.tx.forEach(function(t){ c += accRow([t.date,t.description,t.payment_type,t.reference,+t.amount_in||0,+t.amount_out||0]); });
+  c += accRow(['TOTAL','','','',accSum(d.tx,'amount_in').toFixed(2),accSum(d.tx,'amount_out').toFixed(2)]);
+  dl(c, accFile('CashBook'), 'text/csv');
+}
+function accExportExpenses(){
+  var d = accData();
+  var c = accRow(['Date','Description','Type','Reference','Amount Out','Category']);
+  d.expenses.forEach(function(t){ c += accRow([t.date,t.description,t.payment_type,t.reference,+t.amount_out||0,'Expense']); });
+  d.payrollTx.forEach(function(t){ c += accRow([t.date,t.description,t.payment_type,t.reference,+t.amount_out||0,'Payroll']); });
+  c += accRow(['TOTAL','','','',(accSum(d.expenses,'amount_out')+accSum(d.payrollTx,'amount_out')).toFixed(2),'']);
+  dl(c, accFile('Expenses'), 'text/csv');
+}
+function accExportInvoices(){
+  var d = accData();
+  var c = accRow(['Invoice Ref','Participant','Invoice Date','Period Start','Period End','Amount','Status','Payment Date','Payment Amount']);
+  d.invoices.forEach(function(i){
+    c += accRow([i.invoice_ref,i.participant_name,i.invoice_date,i.period_start,i.period_end,+i.amount||0,i.status,i.payment_date,+i.payment_amount||0]);
+  });
+  c += accRow(['TOTAL','','','','',accSum(d.invoices,'amount').toFixed(2),'','','']);
+  dl(c, accFile('Invoices'), 'text/csv');
+}
+function accExportPayroll(){
+  var d = accData();
+  var c = accRow(['Employee','Period Start','Period End','Paid Date','Hours','Gross','Tax','Super','Net']);
+  d.runs.forEach(function(r){
+    c += accRow([r._empName||r.employee_name||'Unknown',r.period_start,r.period_end,r.paid_date,r.hours_worked,r.gross_pay,r.tax_withheld,r.super_amount,r.net_pay]);
+  });
+  c += accRow(['TOTAL','','','','',accSum(d.runs,'gross_pay').toFixed(2),accSum(d.runs,'tax_withheld').toFixed(2),accSum(d.runs,'super_amount').toFixed(2),accSum(d.runs,'net_pay').toFixed(2)]);
+  dl(c, accFile('Payroll'), 'text/csv');
+}
+function accExportTax(){
+  var d = accData(), months = accMonthsInRange(d.range);
+  var c = accRow(['Month','Gross','PAYG','Super','Net','Money In','GST estimate (1/11 of money in)']);
+  months.forEach(function(m){
+    var runs = d.runs.filter(function(r){ return (accRunDate(r)||'').slice(0,7) === m.key; });
+    var tx   = d.tx.filter(function(t){ return (t.date||'').slice(0,7) === m.key; });
+    var mIn  = accSum(tx,'amount_in');
+    c += accRow([m.label,accSum(runs,'gross_pay').toFixed(2),accSum(runs,'tax_withheld').toFixed(2),
+                 accSum(runs,'super_amount').toFixed(2),accSum(runs,'net_pay').toFixed(2),
+                 mIn.toFixed(2),(mIn/11).toFixed(2)]);
+  });
+  var totIn = accSum(d.tx,'amount_in');
+  c += accRow(['TOTAL',accSum(d.runs,'gross_pay').toFixed(2),accSum(d.runs,'tax_withheld').toFixed(2),
+               accSum(d.runs,'super_amount').toFixed(2),accSum(d.runs,'net_pay').toFixed(2),
+               totIn.toFixed(2),(totIn/11).toFixed(2)]);
+  dl(c, accFile('TaxBAS'), 'text/csv');
+}
+
+// Calendar months spanned by the period, oldest first.
+function accMonthsInRange(range){
+  var out = [], d = new Date(range.start.slice(0,4), +range.start.slice(5,7)-1, 1),
+      last = range.end.slice(0,7);
+  while(true){
+    var key = d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0');
+    out.push({ key: key, label: MONTHS[d.getMonth()] + ' ' + d.getFullYear() });
+    if(key >= last) break;
+    d.setMonth(d.getMonth()+1);
+  }
+  return out;
+}
+
+function renderAccountant(){
+  var host = eid('page-accountant');
+  if(!host) return;
+  var p = accCurrentPeriod(), d = accData();
+  var kpi = function(label, val, cls, sub){
+    return '<div class="kpi"><div class="kpi-label">'+label+'</div>'
+      + '<div class="kpi-val'+(cls?' '+cls:'')+'">'+val+'</div>'
+      + (sub ? '<div class="td-muted" style="font-size:10px">'+sub+'</div>' : '') + '</div>';
+  };
+  var section = function(title, note, exportFn, body){
+    return '<div class="card">'
+      + '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:12px;flex-wrap:wrap">'
+        + '<div><div class="card-title" style="margin-bottom:2px">'+title+'</div>'
+        + (note ? '<div style="font-size:11px;color:var(--text3)">'+note+'</div>' : '') + '</div>'
+        + '<button class="btn btn-outline btn-sm" onclick="'+exportFn+'()">Export CSV</button>'
+      + '</div>' + body + '</div>';
+  };
+
+  // Period picker
+  var fyOpts = accAvailableFYs().map(function(fy){
+    return '<option value="'+fy+'"'+(fy===p.fy?' selected':'')+'>'+accFYLabel(fy)+'</option>';
+  }).join('');
+  var qOpts = [[1,'Q1 — Jul to Sep'],[2,'Q2 — Oct to Dec'],[3,'Q3 — Jan to Mar'],[4,'Q4 — Apr to Jun'],[0,'Full year']]
+    .map(function(o){ return '<option value="'+o[0]+'"'+(o[0]===p.q?' selected':'')+'>'+o[1]+'</option>'; }).join('');
+
+  var html = '<div class="section-header"><div class="section-title">Accountant</div></div>'
+    + '<div class="card" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">'
+      + '<div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:.05em;font-weight:700">Period</div>'
+      + '<select id="acc-fy" onchange="accSetPeriod()" style="min-width:130px">'+fyOpts+'</select>'
+      + '<select id="acc-q" onchange="accSetPeriod()" style="min-width:170px">'+qOpts+'</select>'
+      + '<div style="font-size:11px;color:var(--text3)">'+d.range.start.split('-').reverse().join('/')+' to '+d.range.end.split('-').reverse().join('/')+'</div>'
+    + '</div>';
+
+  // 1. Cash book
+  var tIn = accSum(d.tx,'amount_in'), tOut = accSum(d.tx,'amount_out');
+  html += section('Cash Book', d.range.label, 'accExportCashBook',
+    '<div class="strip">'
+      + '<div class="strip-card in"><div class="strip-label">Money in</div><div class="strip-val">'+fmt(tIn)+'</div></div>'
+      + '<div class="strip-card out"><div class="strip-label">Money out</div><div class="strip-val">'+fmt(tOut)+'</div></div>'
+      + '<div class="strip-card net"><div class="strip-label">Net</div><div class="strip-val">'+fmt(tIn-tOut)+'</div></div>'
+    + '</div>'
+    + '<div class="td-muted" style="font-size:11px;margin-top:8px">'+d.tx.length+' transaction'+(d.tx.length===1?'':'s')+' in this period</div>');
+
+  // 2. Expenses — payroll split out so it doesn't double-count against section 4
+  var expTotal = accSum(d.expenses,'amount_out'), payTotal = accSum(d.payrollTx,'amount_out');
+  var byDesc = {};
+  d.expenses.forEach(function(t){
+    var k = (t.description||'(no description)').replace(/\s*\[(pending|recurring)\]\s*/gi,'').trim() || '(no description)';
+    byDesc[k] = (byDesc[k]||0) + (+t.amount_out||0);
+  });
+  var descRows = Object.keys(byDesc).sort(function(a,b){ return byDesc[b]-byDesc[a]; });
+  html += section('Expenses', 'Money out, excluding payroll — payroll is listed separately below and in full under Payroll.', 'accExportExpenses',
+    '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;margin-bottom:12px">'
+      + kpi('Expenses (excl. payroll)', fmt(expTotal), 'purple', d.expenses.length+' row'+(d.expenses.length===1?'':'s'))
+      + kpi('Payroll paid', fmt(payTotal), '', d.payrollTx.length+' row'+(d.payrollTx.length===1?'':'s'))
+      + kpi('Total money out', fmt(expTotal+payTotal), '', '')
+    + '</div>'
+    + (descRows.length
+        ? '<div class="tbl-wrap"><table><thead><tr><th>Description</th><th class="td-right">Amount</th></tr></thead><tbody>'
+          + descRows.map(function(k){ return '<tr><td>'+k+'</td><td class="td-right">'+fmt(byDesc[k])+'</td></tr>'; }).join('')
+          + '</tbody></table></div>'
+        : '<div class="empty" style="padding:14px">No expenses in this period.</div>'));
+
+  // 3. Invoices
+  html += section('Invoices', 'From the invoice ledger, by invoice date.', 'accExportInvoices',
+    (d.invoices.length
+      ? '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;margin-bottom:12px">'
+          + kpi('Invoiced', fmt(accSum(d.invoices,'amount')), 'purple', d.invoices.length+' invoice'+(d.invoices.length===1?'':'s'))
+          + kpi('Paid', fmt(accSum(d.invoices.filter(function(i){ return i.status==='paid'; }),'amount')), 'green', '')
+        + '</div>'
+        + '<div class="tbl-wrap"><table><thead><tr><th>Ref</th><th>Participant</th><th>Invoice date</th><th class="td-right">Amount</th><th>Status</th></tr></thead><tbody>'
+        + d.invoices.map(function(i){
+            return '<tr><td style="font-family:monospace">'+(i.invoice_ref||'--')+'</td><td>'+(i.participant_name||'--')+'</td>'
+              + '<td class="td-muted">'+(i.invoice_date||'--')+'</td><td class="td-right">'+fmt(i.amount)+'</td>'
+              + '<td class="td-muted">'+(i.status||'--')+'</td></tr>';
+          }).join('')
+        + '</tbody></table></div>'
+      : '<div class="empty" style="padding:14px">No invoices in this period.</div>'));
+
+  // 4. Payroll — every employee, no exclusions
+  var byEmp = {};
+  d.runs.forEach(function(r){
+    var k = r._empName || r.employee_name || 'Unknown';
+    if(!byEmp[k]) byEmp[k] = { gross:0, tax:0, sup:0, net:0, n:0 };
+    byEmp[k].gross += +r.gross_pay||0; byEmp[k].tax += +r.tax_withheld||0;
+    byEmp[k].sup   += +r.super_amount||0; byEmp[k].net += +r.net_pay||0; byEmp[k].n++;
+  });
+  var empNames = Object.keys(byEmp).sort();
+  html += section('Payroll', 'All employees. '+d.runs.length+' pay run'+(d.runs.length===1?'':'s')+' paid in this period.', 'accExportPayroll',
+    '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:12px">'
+      + kpi('Gross', fmt(accSum(d.runs,'gross_pay')), 'green', '')
+      + kpi('PAYG withheld', fmt(accSum(d.runs,'tax_withheld')), '', '')
+      + kpi('Super', fmt(accSum(d.runs,'super_amount')), 'gold', '')
+      + kpi('Net paid', fmt(accSum(d.runs,'net_pay')), 'purple', '')
+    + '</div>'
+    + (empNames.length
+        ? '<div class="tbl-wrap"><table><thead><tr><th>Employee</th><th class="td-right">Runs</th><th class="td-right">Gross</th><th class="td-right">PAYG</th><th class="td-right">Super</th><th class="td-right">Net</th></tr></thead><tbody>'
+          + empNames.map(function(k){ var e = byEmp[k];
+              return '<tr><td>'+k+'</td><td class="td-right td-muted">'+e.n+'</td><td class="td-right">'+fmt(e.gross)+'</td>'
+                + '<td class="td-right">'+fmt(e.tax)+'</td><td class="td-right">'+fmt(e.sup)+'</td>'
+                + '<td class="td-right" style="font-weight:700">'+fmt(e.net)+'</td></tr>';
+            }).join('')
+          + '</tbody></table></div>'
+        : '<div class="empty" style="padding:14px">No pay runs in this period.</div>'));
+
+  // 5. Tax / BAS
+  var months = accMonthsInRange(d.range);
+  html += section('Tax &amp; BAS', 'PAYG and super by month, from pay runs paid in the period. GST is an estimate only — 1/11 of money in; no GST is recorded per transaction.', 'accExportTax',
+    '<div class="tbl-wrap"><table><thead><tr><th>Month</th><th class="td-right">Gross</th><th class="td-right">PAYG</th><th class="td-right">Super</th><th class="td-right">Net</th><th class="td-right">Money in</th><th class="td-right">GST est.</th></tr></thead><tbody>'
+    + months.map(function(m){
+        var runs = d.runs.filter(function(r){ return (accRunDate(r)||'').slice(0,7) === m.key; });
+        var tx   = d.tx.filter(function(t){ return (t.date||'').slice(0,7) === m.key; });
+        var mIn  = accSum(tx,'amount_in');
+        return '<tr><td>'+m.label+'</td><td class="td-right">'+fmt(accSum(runs,'gross_pay'))+'</td>'
+          + '<td class="td-right">'+fmt(accSum(runs,'tax_withheld'))+'</td><td class="td-right">'+fmt(accSum(runs,'super_amount'))+'</td>'
+          + '<td class="td-right">'+fmt(accSum(runs,'net_pay'))+'</td><td class="td-right">'+fmt(mIn)+'</td>'
+          + '<td class="td-right td-muted">'+fmt(mIn/11)+'</td></tr>';
+      }).join('')
+    + '</tbody></table></div>');
+
+  host.innerHTML = html;
+}
+
 function exportTax(){var c='Month,Gross,PAYG,Super,Net\n';MONTHS.forEach(function(m,i){var r=S.runs.filter(function(p){return(p.paid_date||p.period_end||'').startsWith(YEAR+'-'+String(i+1).padStart(2,'0'));});c+=[m,r.reduce(function(s,p){return s+(+p.gross_pay||0);},0).toFixed(2),r.reduce(function(s,p){return s+(+p.tax_withheld||0);},0).toFixed(2),r.reduce(function(s,p){return s+(+p.super_amount||0);},0).toFixed(2),r.reduce(function(s,p){return s+(+p.net_pay||0);},0).toFixed(2)].join(',')+'\n';});dl(c,'Tax_'+YEAR+'.csv','text/csv');}
 
 function closeSidebarOnNav(){
@@ -5707,7 +5991,9 @@ function renderHoursUtilisation() {
 var ROLE_TABS = {
   admin:          ['dashboard','cashbook','employees','participants','payroll','invoices','tax','reports','expenses'],
   office_manager: ['dashboard','cashbook','employees','participants','payroll','invoices','tax','reports','expenses'],
-  accountant:     ['dashboard','cashbook','payroll','invoices','tax','reports','expenses']
+  // The Accountant page is for the accountant only: admin and office_manager
+  // have the full tabs and don't need a read-only summary of them.
+  accountant:     ['accountant','dashboard','cashbook','payroll','invoices','tax','reports','expenses']
 };
 function canAccess(tab){ return (ROLE_TABS[S.role]||[]).indexOf(tab) !== -1; }
 function isAdmin(){ return S.role === 'admin'; }
@@ -9490,6 +9776,7 @@ async function tsCreatePayRuns(){
     var paidDate=nextFriday(er.periodEnd);
     var insertRow={
       employee_id:emp.id,
+      employee_name:emp.name,
       period_start:er.periodStart,
       period_end:er.periodEnd,
       hours_worked:+(tot.wd+tot.sat+tot.sun+tot.ph).toFixed(2),

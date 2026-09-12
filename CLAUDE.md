@@ -11,7 +11,7 @@ Northern Star Support Services — a private financial operations dashboard for 
 This is a **zero-build, single-file SPA** deployed on Netlify:
 
 - `public/index.html` — The entire application: ~9,900 lines of HTML + CSS + vanilla JS in one file. No framework, no bundler, no npm.
-- `netlify/functions/wise.js` — A serverless function that proxies authenticated requests to `api.wise.com` (keeps `WISE_API_TOKEN` off the client). Allowed path prefixes: `v1/profiles`, `v3/profiles`, `v4/profiles`, `v1/borderless-accounts`. The `path` query param is passed through verbatim (may include its own query string). Add `?debug=1` to dump the first response item to Netlify function logs.
+- `netlify/functions/wise.js` — A serverless function that proxies requests to `api.wise.com` (keeps `WISE_API_TOKEN` off the client). **Admin only:** every request must carry `Authorization: Bearer <supabase access token>`; the function verifies it against Supabase `/auth/v1/user` (401), reads the caller's role from `staff` server-side — never from the token (403 unless `admin`), and only then checks the path. Allowed path prefixes: `v1/profiles`, `v3/profiles`, `v4/profiles`, `v1/borderless-accounts`. The `path` query param is passed through verbatim (may include its own query string). Add `?debug=1` to dump the first response item to Netlify function logs. Clients must call it through `wiseFetch(path)` in index.html, which attaches the token — never `fetch(WISE_FN_URL…)` directly.
 - `netlify.toml` — Publishes `public/`, serves functions from `netlify/functions/`.
 - `public/robots.txt` — `Disallow: /` (site is private; noindex).
 - `migrations/*.sql` — Schema changes, run **manually** in the Supabase SQL editor. Nothing in the app executes them; every migration is written so the app degrades gracefully before it runs. Named `YYYY-MM-DD-description.sql`.
@@ -43,7 +43,12 @@ There is no build step, no `npm install`, no test suite.
 
 ## Deployment
 
-Push to `main`. Netlify auto-deploys — `public/` is the publish directory. Live at northernstarcontrolcenter.netlify.app. The Wise API token must be set as a Netlify environment variable: `WISE_API_TOKEN`.
+Push to `main`. Netlify auto-deploys — `public/` is the publish directory. Live at northernstarcontrolcenter.netlify.app.
+
+Netlify environment variables:
+- `WISE_API_TOKEN` (required) — the Wise Business API token.
+- `SUPABASE_SERVICE_ROLE_KEY` (optional, recommended) — lets `wise.js` read `staff` bypassing RLS when checking the caller's role. Without it the lookup uses the caller's own token and relies on the `staff` read-own-row policy. **Secret — service role bypasses all RLS, so never put it in `public/`.**
+- `SUPABASE_URL` / `SUPABASE_ANON_KEY` (optional) — default to the constants in `wise.js`; both are public values already in index.html.
 
 ## Backend: Supabase
 
@@ -52,10 +57,11 @@ All data lives in Supabase (project `bhqjsqwbsbhjuhjwxwcp`). The anon key and pr
 **Tables:**
 - `transactions` — cash book. Also carries `allocated_to` (`participant` | `company` | null) and `participant_id`, both **read only by the Expenses tab**.
 - `employees`
-- `pay_runs` — has `status` and `wise_status` fields; new runs insert with `status:'processed'`, `wise_status:'pending'`
+- `pay_runs` — has `status` and `wise_status` fields; new runs insert with `status:'processed'`, `wise_status:'pending'`. Also carries `employee_name`, denormalised at insert (both `savePayRun` and the timesheet importer write it) because the accountant role can't read `employees`; `loadAll` falls back to it when `S.emps` is empty. Keep writing it on every new pay run.
 - `participants` — includes `ndis_plan` (JSONB, legacy single-plan overrides) and `budget_lines` (JSONB array, current multi-line model). Save code degrades gracefully if those columns are missing.
 - `dropdown_options`
-- `invoice_ledger` — includes `wise_transfer_id` for payment matching
+- `staff` — one row per app login: `id` (FK to `auth.users`), `name`, `role` (`admin` | `office_manager` | `accountant`), optional `employee_id`. Read-own-row only; there are no insert/update policies, so a role can only be changed from the SQL editor. **Not yet created** — see Pending work.
+- `invoice_ledger` — the real source of `S.invoiceLedger` (not `participants.invoice_files`, which is just the uploaded-PDF archive). Includes `wise_transfer_id` for payment matching, and a denormalised `participant_name` — which is why the Accountant page can list invoices with no `participants` access. Accountant gets SELECT only.
 - `schedule_blocks` — the current weekly-schedule model: `participant_id`, `start_time`, `end_time`, `shift_kind`, `days_of_week`, `tolerance_mins`, `rate_mode`, `hourly_rate_source`, `manual_hourly_rate`, `flat_rate_source`, `manual_flat_rate`, `flat_hours`, `assigned_employee_ids`, `active`
 - `shift_types` — **legacy**, superseded by `schedule_blocks`. Still loaded for old payslip compatibility; do not build new features on it.
 - `timesheet_name_map` — maps Connecteam employee/participant name strings to app records
@@ -72,6 +78,13 @@ All data lives in Supabase (project `bhqjsqwbsbhjuhjwxwcp`). The anon key and pr
 
 **Auth:** Supabase Auth email/password (`sb2.auth.signInWithPassword` in `doLogin`) with a client-side lockout mechanism (`getLockoutState` / `setLockoutState` — 3 failed attempts → 15-minute lockout). The app only calls `loadAll()` once a session exists, so all its queries run as `authenticated`. The admin Auth user exists and has signed in (Phase 2 done); the old `APP_PW` constant has been removed. RLS lockdown (Phase 3) is written but not yet run — see Pending work.
 
+**Roles (Phase 1 of role-based access, `migrations/2026-09-11-staff-roles.sql`):** RLS is the enforcement; the client only decides what's shown. `loadStaffRole()` resolves the signed-in user's `staff` row into `S.role` / `S.staff`; `enterApp(session)` is the single way in for both a fresh login and a restored session, and both `doLogin` and `checkAuth` go through it. A login with no `staff` row is signed out; a *missing staff table* falls back to `admin` (the pre-migration state), but every other error fails closed — never widen that fallback. `ROLE_TABS` lists each role's tabs, `canAccess(tab)` gates `nav()`, and `applyRoleNav()` removes disallowed sidebar items from the DOM. `isAdmin()` gates the Wise sync.
+- **admin** — everything.
+- **office_manager** — everything except anything revealing the pay of the two payroll-restricted employees (Mohamed Omer, Mohamed Falah Bashe): their `pay_runs` rows, their `employees` rows, and their payroll rows in `transactions`. Same tabs as admin.
+- **accountant** — read-only `pay_runs`, `transactions` and `invoice_ledger`; no access to `employees` or `participants`, and those two sidebar items are removed. Gets one extra tab nobody else sees: **Accountant**.
+
+**Accountant page (Phase 2, `migrations/2026-09-12-accountant-page.sql`):** `renderAccountant()` draws the whole page into the empty `#page-accountant` div — a period picker plus five read-only sections (Cash Book, Expenses, Invoices, Payroll, Tax & BAS), each with a period-scoped CSV export. **No create/edit/delete controls render here for any role**; keep it that way. Periods are Australian FY quarters (`accPeriodRange`, Q1 Jul-Sep … Q4 Apr-Jun, plus Full year) — unrelated to `buildNDISQuartersForPlan`, which is participant-plan-anchored. `accData()` is the single period filter: transactions by `date`, pay runs by `paid_date || period_end` (the anchor `exportTax` uses), invoices by `invoice_date`. Expenses exclude payroll via `expIsPayroll` so they don't double-count against the Payroll section. The GST figure is an estimate only — 1/11 of money in — because no GST is stored per transaction.
+
 ## Global state object `S`
 
 All in-memory application state is on the global `S` object (~line 1027):
@@ -87,7 +100,7 @@ The `ch` sub-object holds Chart.js instances keyed by canvas ID; use `dkc(id)` t
 
 ## Navigation
 
-`nav(page)` switches views by toggling `.active` on `#page-<name>` divs. Pages: `dashboard`, `cashbook`, `employees`, `payroll`, `tax`, `reports`, `invoices`, `participants`, `expenses`.
+`nav(page)` switches views by toggling `.active` on `#page-<name>` divs, and refuses any page the current role can't reach (`canAccess`). Pages: `dashboard`, `cashbook`, `employees`, `payroll`, `tax`, `reports`, `invoices`, `participants`, `expenses`, `accountant` (accountant role only).
 
 ## Domain constants (~lines 1000–1027)
 
@@ -151,6 +164,8 @@ Entry: "Import timesheets" button on the Participants page → modal (`openTsImp
 
 Client-side functions: `fetchWiseBalance`, `fetchWiseTransfers`, `syncPayRunWiseStatuses`, `reconcilePendingPayroll`, `autoImportWiseExpenses`, `autoImportWiseIncome`, `checkWiseForInvoices`.
 
+**The sync is admin-only** (`initWiseSync`, `refreshWiseTransfers`, `checkWiseForInvoices` all return early unless `isAdmin()`). The importers recognise a Wise payout as payroll by finding its pay run in `S.runs`; an office manager's `S.runs` is missing the payroll-restricted employees' runs, so their pay would be re-imported as visible, double-counted expenses. Keep any new Wise writer behind the same gate.
+
 - `checkWiseForInvoices` matches inbound Wise payments to `invoice_ledger` rows and stores `wise_transfer_id` to prevent double-matching.
 - `autoImportWiseExpenses` / `autoImportWiseIncome` import Wise activity into the cash book with a `skipped` counter breakdown (payroll, already-in-cashbook, fees/conversions, incomplete, opening balances, internal jar moves, etc.).
 
@@ -209,11 +224,14 @@ Data-side (Supabase, not code) — confirm executed before relying on schedule d
 
 ## Pending work
 
-1. **RLS lockdown (Auth Phase 3)** — `migrations/2026-09-11-rls-lockdown.sql`, written but not run. Until it runs, the anon key embedded in the page can read and write transactions, employees, pay_runs, participants, invoice_ledger, dropdown_options and dismissed_recurring_candidates (open "Allow all" policies), and recurring_expenses / recurring_expense_instances (RLS disabled). Before running it, confirm the external onboarding/e-sign pages don't use any of those tables with the anon key. The file has a verification curl and a rollback block.
-2. **Wise auto-import bug** — all transfers currently being skipped by the matching logic in `autoImportWiseExpenses`/`autoImportWiseIncome`; trace the `skipped` counters to find which filter is over-firing, dedupe by Wise transfer ID so re-runs stay idempotent.
-3. **Payroll status lifecycle** — the `status` field on `pay_runs` should follow `wise_status`: advance to `paid` only when `syncPayRunWiseStatuses` confirms the outgoing transfer settled.
-4. **KPI "Money out" excludes pending payroll** — dashboard/cash-book money-out KPIs should only count payroll transactions whose pay run is `paid`.
-5. **Sleepover/duplicate data fixes** — run and verify the two data-fix docs above.
-7. **Expenses tab unverified in a browser** — the expense tracker's logic is covered by Node-level checks but the rendering path and its live Supabase writes have never been exercised against real data. The multi-row instance back-fill (accepting a suggested recurring expense) is the write to watch first; it relies on the `unique (recurring_expense_id, month)` constraint holding when a month already has an instance.
-8. **`fix-receipt-bucketing-by-period.md`** — not applied, and **not confirmed to be a live problem**; see "Status of build docs" for how to check before spending effort on it.
-9. Confirm Lita's plan manager and resolve her address discrepancy (6 Maroon St vs 23 Leeward Dr, Tarneit) before finalising her participant record.
+1. **Staff roles, Phase 1** — `migrations/2026-09-11-staff-roles.sql`, written and tested against the live schema (in a rolled-back transaction) but **not run**. Creates `staff`, seeds the existing admin login, and replaces the "Allow all" policies on `pay_runs`, `employees`, `participants` and `transactions` with role policies. Until it runs, the client treats every login as admin and nothing is restricted. Phase 2 (the dedicated Accountant export page, and scoping `dropdown_options`) is contingent on this working.
+2. **RLS lockdown (Auth Phase 3)** — `migrations/2026-09-11-rls-lockdown.sql`, written but not run. Covers the remaining open tables: invoice_ledger, dropdown_options, dismissed_recurring_candidates ("Allow all" to public) and recurring_expenses / recurring_expense_instances (RLS disabled). It deliberately excludes the four tables the roles migration owns — adding them back would hand the accountant everything. Before running it, confirm the external onboarding/e-sign pages don't use those tables with the anon key. The file has a verification curl and a rollback block.
+3. **Wise proxy follow-ups** — the proxy now requires a verified Supabase token and an `admin` role (fixed 2026-09-12). Two loose ends: (a) set `SUPABASE_SERVICE_ROLE_KEY` in Netlify so the role lookup doesn't depend on the `staff` read-own-row policy; (b) once `migrations/2026-09-11-staff-roles.sql` has run, delete the "staff table missing → treat as admin" fallback in `wise.js` (and the matching one in `loadStaffRole`), since it exists only for the pre-migration state.
+4. **Wise auto-import bug** — all transfers currently being skipped by the matching logic in `autoImportWiseExpenses`/`autoImportWiseIncome`; trace the `skipped` counters to find which filter is over-firing, dedupe by Wise transfer ID so re-runs stay idempotent.
+5. **Payroll status lifecycle** — the `status` field on `pay_runs` should follow `wise_status`: advance to `paid` only when `syncPayRunWiseStatuses` confirms the outgoing transfer settled.
+6. **KPI "Money out" excludes pending payroll** — dashboard/cash-book money-out KPIs should only count payroll transactions whose pay run is `paid`.
+7. **Sleepover/duplicate data fixes** — run and verify the two data-fix docs above.
+8. **Expenses tab unverified in a browser** — the expense tracker's logic is covered by Node-level checks but the rendering path and its live Supabase writes have never been exercised against real data. The multi-row instance back-fill (accepting a suggested recurring expense) is the write to watch first; it relies on the `unique (recurring_expense_id, month)` constraint holding when a month already has an instance.
+9. **`fix-receipt-bucketing-by-period.md`** — not applied, and **not confirmed to be a live problem**; see "Status of build docs" for how to check before spending effort on it.
+10. **Accountant page follow-ups** — (a) `migrations/2026-09-12-accountant-page.sql` is written and tested (rolled-back transaction) but **not run**; it must run *after* the staff-roles migration, and after the RLS lockdown if you run that too, since it replaces the lockdown's blanket `invoice_ledger` policy. (b) PDF export is a deliberate fast-follow — CSV only in this pass. (c) The `invoices` and `tx-attachments` storage buckets grant `authenticated`, so the accountant can read invoice/receipt PDFs and delete from `invoices`; scope those policies by role.
+11. Confirm Lita's plan manager and resolve her address discrepancy (6 Maroon St vs 23 Leeward Dr, Tarneit) before finalising her participant record.
