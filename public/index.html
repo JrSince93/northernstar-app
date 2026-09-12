@@ -1379,10 +1379,24 @@ var WISE_PROFILE_ID = 87229043; // Falaax Group Pty Ltd business profile
 var WISE_AUD_BALANCE_ID = 155725808; // Main AUD operating balance — profile also has group balances (e.g. "Lita's Groceries"), so never match on currency alone
 var WISE_FN_URL = '/.netlify/functions/wise';
 
+// Every call to the Wise proxy carries the caller's Supabase access token: the
+// function verifies it and refuses anyone who isn't an admin (401/403). With no
+// session the request still goes out and comes back 401, which callers already
+// handle as "not ok".
+async function wiseFetch(path) {
+  var opts = {};
+  try {
+    var s = await sb2.auth.getSession();
+    var tok = s && s.data && s.data.session ? s.data.session.access_token : null;
+    if (tok) opts.headers = { Authorization: 'Bearer ' + tok };
+  } catch (e) { console.warn('[Wise] no session for proxy call:', e); }
+  return fetch(WISE_FN_URL + '?path=' + encodeURIComponent(path), opts);
+}
+
 async function fetchWiseBalance() {
   var el = eid('d-wise-bal');
   try {
-    var resp = await fetch(WISE_FN_URL + '?path=v4/profiles/' + WISE_PROFILE_ID + '/balances?types=STANDARD');
+    var resp = await wiseFetch('v4/profiles/' + WISE_PROFILE_ID + '/balances?types=STANDARD');
     if (!resp.ok) throw new Error('HTTP ' + resp.status);
     var bals = await resp.json();
     var main = Array.isArray(bals) ? bals.find(function(b) {
@@ -7538,7 +7552,7 @@ async function fetchWiseTransfers() {
     // Step 1: resolve the AUD balance ID — the statement endpoint is keyed on it.
     var audBalanceId = null;
     try {
-      var balResp = await fetch(WISE_FN_URL + '?path=' + encodeURIComponent('v4/profiles/' + WISE_PROFILE_ID + '/balances?types=STANDARD'));
+      var balResp = await wiseFetch('v4/profiles/' + WISE_PROFILE_ID + '/balances?types=STANDARD');
       if(balResp.ok) {
         var bals = await balResp.json();
         if(Array.isArray(bals)) {
@@ -7555,7 +7569,7 @@ async function fetchWiseTransfers() {
         var stmtQS = 'currency=AUD&intervalStart=' + encodeURIComponent(sinceStr)
                    + '&intervalEnd=' + encodeURIComponent(nowStr) + '&type=COMPACT';
         var stmtPath = 'v1/profiles/' + WISE_PROFILE_ID + '/balance-statements/' + audBalanceId + '/statement.json?' + stmtQS;
-        var stmtResp = await fetch(WISE_FN_URL + '?path=' + encodeURIComponent(stmtPath));
+        var stmtResp = await wiseFetch(stmtPath);
         if(stmtResp.ok) {
           var stmtData = await stmtResp.json();
           var txs = (stmtData && stmtData.transactions) || [];
@@ -7574,7 +7588,7 @@ async function fetchWiseTransfers() {
     // Step 3: fall back to the activities endpoint. primaryAmount is a formatted
     // string with HTML; parse carefully for both amount and sign/direction.
     var actPath = 'v1/profiles/' + WISE_PROFILE_ID + '/activities?since=' + sinceStr + '&size=50';
-    var resp = await fetch(WISE_FN_URL + '?path=' + encodeURIComponent(actPath));
+    var resp = await wiseFetch(actPath);
     if(!resp.ok) throw new Error('HTTP ' + resp.status);
     var data = await resp.json();
     var activities = (data && data.activities) || (Array.isArray(data) ? data : []) || [];
