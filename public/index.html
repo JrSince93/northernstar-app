@@ -1087,7 +1087,7 @@ var SCHADS_SLEEPOVER_ACTIVE_MIN_HRS = 1;
 // bill the participant's plan, a different concept — do not merge them).
 var EMPLOYEE_TRAVEL_KM_RATE = 0.99;
 var pendingExportPlatform = null;
-var S = {tx:[],emps:[],runs:[],participants:[],dd:{description:[],type:[]},curMonth:new Date().getMonth(),editEmpId:null,ddField:null,ddTargetId:null,ch:{},wiseTransfers:[],invoiceLedger:[],_lastGenInvoice:null,shiftTypes:[],scheduleBlocks:[],tsNameMap:[],recurringExpenses:[],recurringInstances:[],dismissedCandidates:[],expMonth:null};
+var S = {tx:[],emps:[],runs:[],participants:[],dd:{description:[],type:[]},curMonth:new Date().getMonth(),editEmpId:null,ddField:null,ddTargetId:null,ch:{},wiseTransfers:[],invoiceLedger:[],_lastGenInvoice:null,shiftTypes:[],scheduleBlocks:[],tsNameMap:[],recurringExpenses:[],recurringInstances:[],dismissedCandidates:[],expMonth:null,role:null,staff:null};
 
 function eid(id){return document.getElementById(id);}
 function fmt(n){var v=parseFloat(n);if(!v&&v!==0)return'--';return'$'+Math.abs(v).toLocaleString('en-AU',{minimumFractionDigits:2,maximumFractionDigits:2});}
@@ -1138,6 +1138,7 @@ function paygCalc(a){
 }
 
 function nav(p){
+  if(!canAccess(p)) p='dashboard';
   var pages=document.querySelectorAll('.page');
   for(var i=0;i<pages.length;i++)pages[i].classList.remove('active');
   var items=document.querySelectorAll('.sb-item');
@@ -5685,16 +5686,83 @@ function renderHoursUtilisation() {
   return html;
 }
 
+// ── Staff roles (migrations/2026-09-11-staff-roles.sql) ──
+// RLS is the real enforcement; this only decides which tabs are shown and
+// which admin-only actions run. Tabs not listed for a role are removed from
+// the sidebar and refused by nav().
+var ROLE_TABS = {
+  admin:          ['dashboard','cashbook','employees','participants','payroll','invoices','tax','reports','expenses'],
+  office_manager: ['dashboard','cashbook','employees','participants','payroll','invoices','tax','reports','expenses'],
+  accountant:     ['dashboard','cashbook','payroll','invoices','tax','reports','expenses']
+};
+function canAccess(tab){ return (ROLE_TABS[S.role]||[]).indexOf(tab) !== -1; }
+function isAdmin(){ return S.role === 'admin'; }
+
+// Resolve the signed-in user's role into S.role. Returns 'ok', 'norole' (no
+// staff row, or an unknown role — must not get in) or 'error' (couldn't ask).
+// Only a missing staff TABLE falls back to admin: that is the state before the
+// migration runs, when nothing server-side restricts anyone either. Any other
+// error fails closed.
+async function loadStaffRole(user){
+  S.role = null; S.staff = null;
+  var res;
+  try { res = await sb2.from('staff').select('id,name,role,employee_id').eq('id', user.id).maybeSingle(); }
+  catch(e){ console.error('[roles] could not load staff role:', e); return 'error'; }
+  if(res.error){
+    if(res.error.code === '42P01' || res.error.code === 'PGRST205'){
+      console.warn('[roles] staff table missing — run migrations/2026-09-11-staff-roles.sql. Treating as admin.');
+      S.role = 'admin';
+      return 'ok';
+    }
+    console.error('[roles] could not load staff role:', res.error);
+    return 'error';
+  }
+  if(!res.data || !ROLE_TABS[res.data.role]) return 'norole';
+  S.staff = res.data;
+  S.role = res.data.role;
+  return 'ok';
+}
+
+// Remove sidebar items the role can't use (from the DOM, not just hidden),
+// plus any section header left with no items under it.
+function applyRoleNav(){
+  document.querySelectorAll('.sb-item[data-nav]').forEach(function(el){
+    if(!canAccess(el.getAttribute('data-nav'))) el.remove();
+  });
+  document.querySelectorAll('.sb-section').forEach(function(sec){
+    var next = sec.nextElementSibling;
+    if(!next || !next.classList.contains('sb-item')) sec.remove();
+  });
+}
+
+// Single entry into the app for both a fresh login and a restored session.
+async function enterApp(session){
+  var status = await loadStaffRole(session.user);
+  if(status !== 'ok'){
+    // No role: sign out. Couldn't reach Supabase: keep the session so a retry
+    // (Sign in, or a reload) doesn't need the password again.
+    if(status === 'norole') await sb2.auth.signOut().catch(function(){});
+    eid('loginScreen').style.display='flex';
+    eid('appShell').style.display='none';
+    var errEl = eid('loginErr');
+    errEl.style.display='block';
+    errEl.textContent = status === 'norole'
+      ? 'This account has no staff role. Ask the administrator to set one up.'
+      : 'Could not load your access level. Check your connection and try again.';
+    return;
+  }
+  applyRoleNav();
+  eid('loginScreen').style.display='none';
+  eid('appShell').style.display='flex';
+  loadAll();
+}
+
 function checkAuth(){
   // Supabase Auth session check — async wrapper so we can await
   (async function(){
     try{
       var s=await sb2.auth.getSession();
-      if(s&&s.data&&s.data.session){
-        eid('loginScreen').style.display='none';
-        eid('appShell').style.display='flex';
-        loadAll();return;
-      }
+      if(s&&s.data&&s.data.session){ enterApp(s.data.session); return; }
     }catch(e){}
     eid('loginScreen').style.display='flex';
     eid('appShell').style.display='none';
@@ -5750,9 +5818,7 @@ function doLogin(){
     if(res&&res.data&&res.data.session){
       setLockoutState({attempts:0,lockedUntil:0});
       errEl.style.display='none';
-      eid('loginScreen').style.display='none';
-      eid('appShell').style.display='flex';
-      loadAll();
+      enterApp(res.data.session);
     } else {
       var newAttempts = st.attempts + 1;
       if(newAttempts >= 3){
@@ -8184,6 +8250,7 @@ async function manualMarkPaid(invId) {
 
 // ── Check Wise for payments (button handler) ──
 async function checkWiseForInvoices() {
+  if(!isAdmin()){ showToast('Wise sync is admin-only','err'); return; }  // see initWiseSync
   showToast('Checking Wise for payments...','');
   setSync('saving');
   await fetchWiseTransfers();
@@ -8196,6 +8263,7 @@ async function checkWiseForInvoices() {
 
 // ── Refresh Wise (for payroll page) ──
 async function refreshWiseTransfers() {
+  if(!isAdmin()){ showToast('Wise sync is admin-only','err'); return; }  // see initWiseSync
   showToast('Syncing Wise transfers...','');
   setSync('saving');
   await fetchWiseTransfers();
@@ -8217,7 +8285,12 @@ function getDashInvoiceOutstanding() {
 }
 
 // ── Auto-sync Wise on load ──
+// Admin only. The payroll matchers recognise a Wise payout as payroll by
+// finding its pay run in S.runs; an office manager's S.runs is missing the
+// payroll-restricted employees' runs (RLS), so their pay would be re-imported
+// as visible, double-counted expenses. The accountant can't write at all.
 async function initWiseSync() {
+  if(!isAdmin()) return;
   await fetchWiseTransfers();
   await syncPayRunWiseStatuses();
   await reconcilePendingPayroll();

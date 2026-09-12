@@ -2,12 +2,15 @@
 -- Run manually in the Supabase SQL editor (project bhqjsqwbsbhjuhjwxwcp).
 --
 -- WHY: the anon key is embedded in public/index.html, so anyone who views the
--- page source holds it. Before this runs, that key alone can read and write
--- payroll, employees, participants (NDIS numbers, plans) and the cash book:
---   * "Allow all" policies to role public on transactions, employees, pay_runs,
---     participants, invoice_ledger, dropdown_options,
+-- page source holds it. Before this runs, that key alone can read and write:
+--   * "Allow all" policies to role public on invoice_ledger, dropdown_options,
 --     dismissed_recurring_candidates
 --   * RLS disabled outright on recurring_expenses, recurring_expense_instances
+--
+-- pay_runs, employees, participants and transactions are NOT in this file:
+-- migrations/2026-09-11-staff-roles.sql gives them role-based policies. A
+-- blanket "authenticated full access" here would be OR'd with those and hand
+-- the accountant role everything back. Never add them here.
 --
 -- SAFE FOR THE DASHBOARD: checkAuth/doLogin only call loadAll() once a Supabase
 -- Auth session exists, so every query the app makes runs as `authenticated`.
@@ -25,7 +28,7 @@
 --
 -- VERIFY AFTER: sign in, load every tab, save one record. Then, signed out,
 -- this should return [] rather than rows:
---   curl "https://bhqjsqwbsbhjuhjwxwcp.supabase.co/rest/v1/employees?select=id&limit=1" \
+--   curl "https://bhqjsqwbsbhjuhjwxwcp.supabase.co/rest/v1/invoice_ledger?select=id&limit=1" \
 --     -H "apikey: <anon key>"
 --
 -- ROLLBACK: the block at the bottom restores the previous open policies.
@@ -33,10 +36,6 @@
 begin;
 
 -- Drop the open policies
-drop policy if exists "Allow all" on public.transactions;
-drop policy if exists "Allow all" on public.employees;
-drop policy if exists "Allow all" on public.pay_runs;
-drop policy if exists "Allow all" on public.participants;
 drop policy if exists "Allow all" on public.invoice_ledger;
 drop policy if exists "Allow all" on public.dropdown_options;
 drop policy if exists "dismissed_recurring_candidates full access" on public.dismissed_recurring_candidates;
@@ -46,11 +45,7 @@ alter table public.recurring_expenses          enable row level security;
 alter table public.recurring_expense_instances enable row level security;
 
 -- Signed-in-only full access, same as schedule_blocks
-create policy "authenticated full access" on public.transactions                   for all to authenticated using (true) with check (true);
-create policy "authenticated full access" on public.employees                      for all to authenticated using (true) with check (true);
-create policy "authenticated full access" on public.pay_runs                       for all to authenticated using (true) with check (true);
-create policy "authenticated full access" on public.participants                   for all to authenticated using (true) with check (true);
-create policy "authenticated full access" on public.invoice_ledger                 for all to authenticated using (true) with check (true);
+create policy "authenticated full access" on public.invoice_ledger                for all to authenticated using (true) with check (true);
 create policy "authenticated full access" on public.dropdown_options               for all to authenticated using (true) with check (true);
 create policy "authenticated full access" on public.dismissed_recurring_candidates for all to authenticated using (true) with check (true);
 create policy "authenticated full access" on public.recurring_expenses             for all to authenticated using (true) with check (true);
@@ -60,20 +55,12 @@ commit;
 
 -- ── ROLLBACK (run only if the dashboard breaks) ──────────────────────────────
 -- begin;
--- drop policy if exists "authenticated full access" on public.transactions;
--- drop policy if exists "authenticated full access" on public.employees;
--- drop policy if exists "authenticated full access" on public.pay_runs;
--- drop policy if exists "authenticated full access" on public.participants;
 -- drop policy if exists "authenticated full access" on public.invoice_ledger;
 -- drop policy if exists "authenticated full access" on public.dropdown_options;
 -- drop policy if exists "authenticated full access" on public.dismissed_recurring_candidates;
 -- drop policy if exists "authenticated full access" on public.recurring_expenses;
 -- drop policy if exists "authenticated full access" on public.recurring_expense_instances;
--- create policy "Allow all" on public.transactions     for all to public using (true) with check (true);
--- create policy "Allow all" on public.employees        for all to public using (true) with check (true);
--- create policy "Allow all" on public.pay_runs         for all to public using (true) with check (true);
--- create policy "Allow all" on public.participants     for all to public using (true) with check (true);
--- create policy "Allow all" on public.invoice_ledger   for all to public using (true) with check (true);
+-- create policy "Allow all" on public.invoice_ledger  for all to public using (true) with check (true);
 -- create policy "Allow all" on public.dropdown_options for all to public using (true) with check (true);
 -- create policy "dismissed_recurring_candidates full access" on public.dismissed_recurring_candidates for all to public using (true) with check (true);
 -- alter table public.recurring_expenses          disable row level security;
