@@ -6028,20 +6028,17 @@ function isAdmin(){ return S.role === 'admin'; }
 
 // Resolve the signed-in user's role into S.role. Returns 'ok', 'norole' (no
 // staff row, or an unknown role — must not get in) or 'error' (couldn't ask).
-// Only a missing staff TABLE falls back to admin: that is the state before the
-// migration runs, when nothing server-side restricts anyone either. Any other
-// error fails closed.
+// Fails closed in every failure case: nothing here ever grants a role that the
+// staff table didn't supply. A missing staff table is just another 'error' —
+// it was briefly treated as admin to bridge the gap before
+// migrations/2026-09-11-staff-roles.sql ran, and that shortcut is gone now the
+// table is live.
 async function loadStaffRole(user){
   S.role = null; S.staff = null;
   var res;
   try { res = await sb2.from('staff').select('id,name,role,employee_id').eq('id', user.id).maybeSingle(); }
   catch(e){ console.error('[roles] could not load staff role:', e); return 'error'; }
   if(res.error){
-    if(res.error.code === '42P01' || res.error.code === 'PGRST205'){
-      console.warn('[roles] staff table missing — run migrations/2026-09-11-staff-roles.sql. Treating as admin.');
-      S.role = 'admin';
-      return 'ok';
-    }
     console.error('[roles] could not load staff role:', res.error);
     return 'error';
   }
