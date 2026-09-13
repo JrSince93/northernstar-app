@@ -558,7 +558,7 @@ input[type=number]{text-align:right;font-variant-numeric:tabular-nums}
     <div class="form-row"><div class="field"><label>Payment type</label><select id="tx-type" onchange="handleDD(this,'type')"></select></div><div class="field"><label>Reference</label><input type="text" id="tx-ref" placeholder="INV-001"></div></div>
     <div class="form-row"><div class="field"><label class="in">Amount in ($)</label><input type="number" id="tx-in" placeholder="0.00" min="0" step="0.01"></div><div class="field"><label class="out">Amount out ($)</label><input type="number" id="tx-out" placeholder="0.00" min="0" step="0.01"></div></div>
   </div>
-  <div style="display:flex;align-items:center;justify-content:space-between;margin-top:14px;padding-top:14px;border-top:1px solid var(--border)"><label style="display:flex;align-items:center;gap:10px;cursor:pointer;user-select:none"><div style="position:relative;width:40px;height:22px"><input type="checkbox" id="tx-recurring" onchange="toggleRecurring()" style="opacity:0;width:0;height:0;position:absolute"><div id="tx-rec-track" style="position:absolute;inset:0;background:var(--bg5);border-radius:11px;transition:.2s;border:1px solid var(--border2)"></div><div id="tx-rec-thumb" style="position:absolute;top:3px;left:3px;width:14px;height:14px;background:var(--text3);border-radius:50%;transition:.2s"></div></div><span style="font-size:12px;color:var(--text2)">Recurring</span></label><div id="tx-rec-opts" style="display:none;align-items:center;gap:8px"><span style="font-size:11px;color:var(--text3)">Repeats</span><select id="tx-rec-freq" style="width:130px;padding:5px 8px;font-size:12px"><option value="monthly">Monthly</option><option value="fortnightly">Fortnightly</option><option value="weekly">Weekly</option></select><span style="font-size:11px;color:var(--text3)">for</span><select id="tx-rec-count" style="width:90px;padding:5px 8px;font-size:12px"><option value="3">3 months</option><option value="6">6 months</option><option value="12" selected>12 months</option></select></div></div><div id="tx-rec-info" style="display:none;background:var(--blue-bg);border:1px solid var(--blue-dim);border-radius:var(--r);padding:8px 12px;margin-top:10px;font-size:11px;color:var(--blue)">Future entries will be created automatically on the 1st of each future month</div>  <div class="modal-footer"><button class="btn btn-outline" onclick="closeM('m-tx')">Cancel</button><button class="btn btn-primary" onclick="saveTx()">Save transaction</button></div>
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-top:14px;padding-top:14px;border-top:1px solid var(--border)"><label style="display:flex;align-items:center;gap:10px;cursor:pointer;user-select:none"><div style="position:relative;width:40px;height:22px"><input type="checkbox" id="tx-recurring" onchange="toggleRecurring()" style="opacity:0;width:0;height:0;position:absolute"><div id="tx-rec-track" style="position:absolute;inset:0;background:var(--bg5);border-radius:11px;transition:.2s;border:1px solid var(--border2)"></div><div id="tx-rec-thumb" style="position:absolute;top:3px;left:3px;width:14px;height:14px;background:var(--text3);border-radius:50%;transition:.2s"></div></div><span style="font-size:12px;color:var(--text2)">Recurring</span></label><div id="tx-rec-opts" style="display:none;align-items:center;gap:8px"><span style="font-size:11px;color:var(--text3)">Repeats</span><select id="tx-rec-freq" style="width:130px;padding:5px 8px;font-size:12px"><option value="monthly">Monthly</option><option value="fortnightly">Fortnightly</option><option value="weekly">Weekly</option></select><span style="font-size:11px;color:var(--text3)">for</span><select id="tx-rec-count" style="width:90px;padding:5px 8px;font-size:12px"><option value="1">1 month</option><option value="2">2 months</option><option value="3">3 months</option><option value="6">6 months</option><option value="12" selected>12 months</option></select></div></div><div id="tx-rec-info" style="display:none;background:var(--blue-bg);border:1px solid var(--blue-dim);border-radius:var(--r);padding:8px 12px;margin-top:10px;font-size:11px;color:var(--blue)">Future entries will be created automatically on the 1st of each future month</div>  <div class="modal-footer"><button class="btn btn-outline" onclick="closeM('m-tx')">Cancel</button><button class="btn btn-primary" onclick="saveTx()">Save transaction</button></div>
 </div></div></div>
 <div id="m-emp" style="display:none"><div class="modal-bg" onclick="if(event.target===this)closeM('m-emp')"><div class="modal">
   <div class="modal-title"><span id="emp-mtitle">Add employee</span><button class="btn-icon" onclick="closeM('m-emp')">&#x2715;</button></div>
@@ -1123,7 +1123,9 @@ function cssRgba(name, alpha, fallback){
 }
 function fmt(n){var v=parseFloat(n);if(!v&&v!==0)return'--';return'$'+Math.abs(v).toLocaleString('en-AU',{minimumFractionDigits:2,maximumFractionDigits:2});}
 function ini(n){return(n||'?').split(' ').map(function(w){return w[0];}).join('').slice(0,2).toUpperCase();}
-function tod(){return new Date().toISOString().slice(0,10);}
+// Local (Melbourne) date. toISOString() is UTC, which before 10:00 (11:00 in
+// daylight saving) is still yesterday — new transactions defaulted to the wrong day.
+function tod(){return fmtDate(new Date());}
 
 // ── Invisible-character sanitizer ──
 // Strips Unicode bidi controls and zero-width characters that ride along
@@ -1713,11 +1715,17 @@ function toggleRecurring(){
   eid('tx-rec-info').style.display=on?'block':'none';
 }
 var MN=['January','February','March','April','May','June','July','August','September','October','November','December'];
+// Recurring series dates are built from local (Melbourne) date parts, never via
+// toISOString(). That converts to UTC, and while daylight saving is on local
+// 00:00–11:00 is still the previous UTC day — so 1 Nov was saved as 31 Oct,
+// 1 Apr as 31 Mar (April got no entry), and weekly dates slipped a day.
+function txLocalDate(dateStr){
+  var p=String(dateStr).split('-');
+  return new Date(+p[0], +p[1]-1, +p[2]);
+}
 function firstOfMonth(dateStr,offset){
-  var d=new Date(dateStr);
-  d.setMonth(d.getMonth()+offset);
-  d.setDate(1);
-  return d.toISOString().slice(0,10);
+  var d=txLocalDate(dateStr);
+  return fmtDate(new Date(d.getFullYear(), d.getMonth()+offset, 1));
 }
 async function saveTx(){
   var date=eid('tx-date').value,month=eid('tx-month').value;
@@ -1737,16 +1745,16 @@ async function saveTx(){
     if(freq==='monthly'){
       for(var i=1;i<=cnt;i++){
         var fd=firstOfMonth(date,i);
-        ins.push({month:MN[new Date(fd).getMonth()],date:fd,description:desc+tag,payment_type:type,reference:ref,amount_in:amtIn,amount_out:amtOut});
+        ins.push({month:MN[txLocalDate(fd).getMonth()],date:fd,description:desc+tag,payment_type:type,reference:ref,amount_in:amtIn,amount_out:amtOut});
       }
     } else {
       var step=freq==='fortnightly'?14:7;
-      var cur=new Date(date);
-      var maxD=new Date(date);maxD.setMonth(maxD.getMonth()+cnt);
+      var cur=txLocalDate(date);
+      var maxD=txLocalDate(date);maxD.setMonth(maxD.getMonth()+cnt);
       while(true){
         cur.setDate(cur.getDate()+step);
         if(cur>maxD)break;
-        var fd=cur.toISOString().slice(0,10);
+        var fd=fmtDate(cur);
         ins.push({month:MN[cur.getMonth()],date:fd,description:desc+tag,payment_type:type,reference:ref,amount_in:amtIn,amount_out:amtOut});
       }
     }
