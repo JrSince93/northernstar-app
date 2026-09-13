@@ -1245,14 +1245,29 @@ function getPrefixForDesc(description) {
   return prefix;
 }
 
+// One past the highest sequence already used for the prefix — deliberately NOT
+// count+1. Counting rows reuses a live reference as soon as one is deleted
+// (delete any of NDIS-001…005 and count+1 hands out NDIS-005 again). A recurring
+// series writes the same reference on every row (saveTx), so a count also
+// over-skips there. Same rule as nextSequence() in nss-finance-v2.
+// Suffixes capped at 6 digits: the cash book also holds date/ID-style refs
+// (INV-20260705, WISE-99632595) that aren't sequences, and a custom category
+// whose prefix happened to be INV or WISE would otherwise jump to INV-20260706.
+function nextRefFor(prefix) {
+  var re = new RegExp('^' + prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '-(\\d{1,6})$');
+  var max = 0;
+  S.tx.forEach(function(r){
+    var m = re.exec((r.reference || '').trim());
+    if(m) max = Math.max(max, parseInt(m[1], 10));
+  });
+  if(prefix === 'PAY') max = Math.max(max, S.runs.length);
+  return prefix + '-' + String(max + 1).padStart(3,'0');
+}
+
 function getNextRef(description) {
   var prefix = getPrefixForDesc(description);
   if(!prefix) return '';
-  var count = S.tx.filter(function(r){
-    return r.reference && r.reference.indexOf(prefix + '-') === 0;
-  }).length;
-  if(prefix === 'PAY') count = Math.max(count, S.runs.length);
-  return prefix + '-' + String(count + 1).padStart(3,'0');
+  return nextRefFor(prefix);
 }
 
 function onDescriptionChange(sel) {
@@ -1284,7 +1299,7 @@ function openRefGuide() {
       +'<span style="background:var(--blue-dim);color:var(--blue);padding:3px 10px;border-radius:20px;font-size:12px;font-weight:700;font-family:monospace">'+REF_PREFIXES[k]+'</span></td>'
       +'<td style="padding:8px 12px;border-bottom:1px solid var(--border);text-align:center;color:var(--text3);font-size:12px">'+count+' used</td>'
       +'<td style="padding:8px 12px;border-bottom:1px solid var(--border);font-size:12px;color:var(--text3);font-family:monospace">'
-      +REF_PREFIXES[k]+'-'+String(count+1).padStart(3,'0')+'</td>'
+      +nextRefFor(REF_PREFIXES[k])+'</td>'
       +'</tr>';
   }).join('');
 
@@ -1735,12 +1750,32 @@ async function saveTx(){
         ins.push({month:MN[cur.getMonth()],date:fd,description:desc+tag,payment_type:type,reference:ref,amount_in:amtIn,amount_out:amtOut});
       }
     }
+    // The rest of the series is one insert statement, so it lands all-or-nothing:
+    // on failure the first entry above is committed and none of the series is.
+    // The modal still closes — leaving it open invites a re-save that duplicates
+    // the first entry. We don't auto-delete that entry (a compensating delete can
+    // fail too); the toast tells the operator to.
+    var saved=0, seriesError=null;
     if(ins.length>0){
       var r2=await sb2.from('transactions').insert(ins).select();
-      if(!r2.error&&r2.data)r2.data.forEach(function(row){S.tx.push(row);});
+      if(r2.error){
+        seriesError=r2.error.message;
+      } else {
+        (r2.data||[]).forEach(function(row){S.tx.push(row);});
+        saved=(r2.data||[]).length;
+      }
     }
-    setSync('ok');closeM('m-tx');renderCB();renderDash();
-    showToast('Saved + '+ins.length+' recurring entries','ok');
+    closeM('m-tx');renderCB();renderDash();
+    if(seriesError){
+      setSync('error');
+      showToast('Saved the first entry, but its '+ins.length+' recurring entries were NOT created ('+seriesError+'). Delete that entry and add the series again.','err');
+    } else if(saved!==ins.length){
+      setSync('error');
+      showToast('Saved the first entry, but only '+saved+' of '+ins.length+' recurring entries came back. Reload to check what was created.','err');
+    } else {
+      setSync('ok');
+      showToast('Saved + '+saved+' recurring entries','ok');
+    }
   } else {
     setSync('ok');closeM('m-tx');renderCB();renderDash();showToast('Saved','ok');
   }
