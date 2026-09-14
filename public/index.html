@@ -352,7 +352,7 @@ input[type=number]{text-align:right;font-variant-numeric:tabular-nums}
     </div>
   </div>
   <div class="page" id="page-cashbook">
-    <div class="section-header"><div class="section-title" id="cb-title">Cash Book</div><div style="display:flex;gap:8px"><button class="btn btn-outline btn-sm" onclick="openRefGuide()" style="border-color:var(--purple-bg);color:var(--purple)" title="View all reference identifiers"># Ref guide</button><button class="btn btn-outline btn-sm" onclick="openNDISInvoiceModal()" style="border-color:#6B2D7B;color:#bc8cff" title="Generate NDIS Tax Invoice">NDIS Invoice</button><button class="btn btn-primary" onclick="openTxModal()">+ Add transaction</button></div></div>
+    <div class="section-header"><div class="section-title" id="cb-title">Cash Book</div><div style="display:flex;gap:8px;align-items:center"><select id="cb-year" onchange="setCbYear(this.value)" title="Cash Book year" aria-label="Cash Book year" style="width:auto;padding:5px 8px;font-size:12px"></select><button class="btn btn-outline btn-sm" onclick="openRefGuide()" style="border-color:var(--purple-bg);color:var(--purple)" title="View all reference identifiers"># Ref guide</button><button class="btn btn-outline btn-sm" onclick="openNDISInvoiceModal()" style="border-color:#6B2D7B;color:#bc8cff" title="Generate NDIS Tax Invoice">NDIS Invoice</button><button class="btn btn-primary" onclick="openTxModal()">+ Add transaction</button></div></div>
     <div class="mtabs" id="mtabs"></div>
     <div class="strip">
       <div class="strip-card in"><div class="strip-label">Money in</div><div class="strip-val" id="cb-in">--</div></div>
@@ -407,7 +407,7 @@ input[type=number]{text-align:right;font-variant-numeric:tabular-nums}
       <div id="ndis-budget-summary" style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px"></div>
     </div>
     <div id="ndis-budget-cards-host"></div>
-    <div class="card"><div class="card-title" id="pl-title">Profit &amp; Loss</div>
+    <div class="card"><div class="card-title"><span id="pl-title">Profit &amp; Loss</span><select id="pl-year" onchange="setPlYear(this.value)" title="Profit and Loss year" aria-label="Profit and Loss year" style="margin-left:auto;width:auto;padding:4px 8px;font-size:12px;text-transform:none;letter-spacing:normal"></select></div>
       <div class="tbl-wrap"><table><thead><tr><th>Month</th><th class="td-right">Income</th><th class="td-right">Expenses</th><th class="td-right">Payroll</th><th class="td-right">Net profit</th></tr></thead><tbody id="pl-body"></tbody></table></div>
     </div>
   </div>
@@ -1106,7 +1106,7 @@ var SCHADS_SLEEPOVER_ACTIVE_MIN_HRS = 1;
 // bill the participant's plan, a different concept — do not merge them).
 var EMPLOYEE_TRAVEL_KM_RATE = 0.99;
 var pendingExportPlatform = null;
-var S = {tx:[],emps:[],runs:[],participants:[],dd:{description:[],type:[]},curMonth:new Date().getMonth(),editEmpId:null,ddField:null,ddTargetId:null,ch:{},wiseTransfers:[],invoiceLedger:[],_lastGenInvoice:null,shiftTypes:[],scheduleBlocks:[],tsNameMap:[],recurringExpenses:[],recurringInstances:[],dismissedCandidates:[],expMonth:null,role:null,staff:null};
+var S = {tx:[],emps:[],runs:[],participants:[],dd:{description:[],type:[]},curMonth:new Date().getMonth(),editEmpId:null,ddField:null,ddTargetId:null,ch:{},wiseTransfers:[],invoiceLedger:[],_lastGenInvoice:null,shiftTypes:[],scheduleBlocks:[],tsNameMap:[],recurringExpenses:[],recurringInstances:[],dismissedCandidates:[],expMonth:null,cbYear:YEAR,plYear:YEAR,role:null,staff:null};
 
 function eid(id){return document.getElementById(id);}
 // Resolve a CSS custom property to an rgba() string, so Chart.js datasets read
@@ -1356,9 +1356,9 @@ async function loadAll(){
     buildMTabs();
     // Set dynamic year labels
     var yr = YEAR;
-    if(eid('cb-title')) eid('cb-title').textContent = 'Cash Book ' + yr;
+    if(eid('cb-title')) eid('cb-title').textContent = 'Cash Book ' + S.cbYear;
     if(eid('tax-title')) eid('tax-title').textContent = 'Tax & BAS ' + yr;
-    if(eid('pl-title')) eid('pl-title').textContent = 'Profit & Loss ' + yr;
+    if(eid('pl-title')) eid('pl-title').textContent = 'Profit & Loss ' + S.plYear;
     // Calculate next BAS due (quarterly: 28 Oct, 28 Feb, 28 Apr, 28 Jul)
     var basEl = eid('next-bas-due');
     if(basEl){
@@ -1588,6 +1588,24 @@ function renderDash(){
   renderDashWiseMatchBanner();
 }
 
+// Year pickers for Cash Book and P&L. `month` stores only a name ("September"),
+// so both views match on the month label AND the date's year, and the picker
+// decides which year. Offered: every year with a dated transaction (and, for
+// P&L, a pay run), plus the current year and the selected one. Newest first.
+function yearsWithData(includeRuns, selected){
+  var seen={}; seen[YEAR]=true; seen[selected]=true;
+  var add=function(v){var y=String(v||'').slice(0,4); if(/^\d{4}$/.test(y)) seen[+y]=true;};
+  S.tx.forEach(function(r){add(r.date);});
+  if(includeRuns) S.runs.forEach(function(r){add(r.paid_date||r.period_end);});
+  return Object.keys(seen).map(Number).sort(function(a,b){return b-a;});
+}
+function fillYearSelect(id, years, selected){
+  var el=eid(id); if(!el) return;
+  el.innerHTML=years.map(function(y){return '<option value="'+y+'"'+(y===selected?' selected':'')+'>'+y+'</option>';}).join('');
+}
+function setCbYear(y){ S.cbYear=+y; renderCB(); }
+function setPlYear(y){ S.plYear=+y; renderPL(); }
+
 function buildMTabs(){
   var html='';
   MONTHS.forEach(function(m,i){html+='<div class="mtab'+(i===S.curMonth?' active':'')+'" onclick="setMonth('+i+')">'+SHORT[i]+'</div>';});
@@ -1603,11 +1621,13 @@ function setMonth(i){
 function renderCB(){
   var m=MONTHS[S.curMonth];
   // Compute opening balance: sum of all transactions dated strictly before the
-  // first day of the selected month, within the current calendar year. Pending
+  // first day of the selected month, within the selected year. Pending
   // payroll rows (amount_out=0) contribute nothing so they don't distort the
   // carryover. Reading from `r.date` (real ISO date) rather than `r.month`
   // (text label) keeps cross-year contamination out.
-  var nowYear = new Date().getFullYear();
+  var nowYear = S.cbYear;
+  fillYearSelect('cb-year', yearsWithData(false, nowYear), nowYear);
+  if(eid('cb-title')) eid('cb-title').textContent = 'Cash Book ' + nowYear;
   var monthStart = new Date(nowYear, S.curMonth, 1);
   var opening = S.tx.reduce(function(s,r){
     if(!r.date) return s;
@@ -1619,7 +1639,10 @@ function renderCB(){
   }, 0);
   opening = +opening.toFixed(2);
 
-  var rows=S.tx.filter(function(r){return r.month===m;}).sort(function(a,b){return new Date(a.date)-new Date(b.date);});
+  // Month label AND the date's year, or a row dated next September lists here
+  // too. The label stays the key because the form lets the month be chosen
+  // apart from the date. Year sliced from the ISO string, not timezone-parsed.
+  var rows=S.tx.filter(function(r){return r.month===m&&String(r.date||'').slice(0,4)===String(nowYear);}).sort(function(a,b){return new Date(a.date)-new Date(b.date);});
   var tIn=rows.reduce(function(s,r){return s+(+r.amount_in||0);},0);
   var tOut=rows.reduce(function(s,r){return s+(+r.amount_out||0);},0);
   var net=tIn-tOut;
@@ -2496,12 +2519,16 @@ function renderPL(){
   // NDIS budget tracker sits above P&L on the Reports page
   renderNDISBudget();
 
+  var plYear = S.plYear;
+  fillYearSelect('pl-year', yearsWithData(true, plYear), plYear);
+  if(eid('pl-title')) eid('pl-title').textContent = 'Profit & Loss ' + plYear;
   var html='';
   MONTHS.forEach(function(m,i){
-    var txR=S.tx.filter(function(r){return r.month===m;});
+    // Same year guard as renderCB: other years' rows must not add into this year.
+    var txR=S.tx.filter(function(r){return r.month===m&&String(r.date||'').slice(0,4)===String(plYear);});
     var inc=txR.reduce(function(s,r){return s+(+r.amount_in||0);},0);
     var exp=txR.filter(function(r){return!(r.description||'').includes('Payroll');}).reduce(function(s,r){return s+(+r.amount_out||0);},0);
-    var pr=S.runs.filter(function(r){return(r.paid_date||r.period_end||'').startsWith(YEAR+'-'+String(i+1).padStart(2,'0'));});
+    var pr=S.runs.filter(function(r){return(r.paid_date||r.period_end||'').startsWith(plYear+'-'+String(i+1).padStart(2,'0'));});
     var pay=pr.reduce(function(s,r){return s+(+r.net_pay||0);},0);
     var net=inc-exp-pay;
     if(!inc&&!exp&&!pay){html+='<tr><td>'+m+'</td><td colspan="4" class="td-muted">No data</td></tr>';return;}
