@@ -4,3 +4,10 @@
 
 # Netlify CLI
 .netlify/
+
+# Connecteam timesheet exports dropped in the repo root while testing the
+# importer. Participant and employee data — never commit these.
+*.xlsx
+
+# Local MCP server config; its endpoint URL carries a credential.
+.mcp.json
