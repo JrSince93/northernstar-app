@@ -5047,10 +5047,16 @@ function openScheduleBlockForm(id){
   var inferredFlatEnd = block && flatHours > 0 ? addTimeMinutes(block.start_time || '00:00', Math.round(flatHours*60)) : '';
   var inferredActiveStart = block && activeHours > 0 ? subtractTimeMinutes(block.end_time || '00:00', Math.round(activeHours*60)) : '';
   var inferredActiveEnd = block ? (block.end_time || '') : '';
-  eid('sb-flat-start').value = inferredFlatStart;
-  eid('sb-flat-end').value = inferredFlatEnd;
-  eid('sb-active-start').value = inferredActiveStart;
-  eid('sb-active-end').value = inferredActiveEnd;
+  // The stored range wins: inference only reconstructs a split anchored to the
+  // shift's outer bounds, which silently discards any other range the operator
+  // entered. Fall back to it only for blocks saved before flat_start/flat_end/
+  // active_start/active_end existed, or saved while the migration was unrun.
+  // sbTimeInput trims a "HH:MM:SS" time column down to what <input type=time> wants.
+  var sbTimeInput = function(v){ return v ? String(v).slice(0,5) : ''; };
+  eid('sb-flat-start').value = sbTimeInput(block && block.flat_start) || inferredFlatStart;
+  eid('sb-flat-end').value = sbTimeInput(block && block.flat_end) || inferredFlatEnd;
+  eid('sb-active-start').value = sbTimeInput(block && block.active_start) || inferredActiveStart;
+  eid('sb-active-end').value = sbTimeInput(block && block.active_end) || inferredActiveEnd;
   var selectedDays = Array.isArray(block&&block.days_of_week) ? block.days_of_week : [];
   var daysWrap = eid('sb-days');
   daysWrap.innerHTML = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'].map(function(day, idx){
@@ -5304,6 +5310,14 @@ async function saveScheduleBlock(){
     manual_flat_rate: parseFloat(eid('sb-manual-flat').value)||null,
     flat_hours: parseFloat(eid('sb-flat-hours').value)||null,
     active_hours: parseFloat(eid('sb-active-hours').value)||null,
+    // The entered clock times, kept alongside the derived hours: reopening the
+    // form restores these verbatim instead of re-inferring a range from
+    // start_time/end_time. flat_hours/active_hours stay authoritative for
+    // resolveBlockRate and the shift-card summary.
+    flat_start: eid('sb-flat-start').value||null,
+    flat_end: eid('sb-flat-end').value||null,
+    active_start: eid('sb-active-start').value||null,
+    active_end: eid('sb-active-end').value||null,
     tolerance_mins: parseInt(eid('sb-tolerance').value)||60,
     assigned_employee_ids: [],
     active: true
@@ -5352,8 +5366,9 @@ async function saveScheduleBlock(){
   setSync('ok');
   closeScheduleBlockForm();
   renderScheduleBlocks(participantId);
-  if(removedCols.indexOf('active_hours')!==-1 || removedCols.indexOf('flat_hours')!==-1){
-    showToast('Shift saved, but DB is missing flat/active hour columns. Run the SQL migration to store split hours.','err');
+  var splitCols = ['flat_hours','active_hours','flat_start','flat_end','active_start','active_end'];
+  if(removedCols.some(function(c){return splitCols.indexOf(c)!==-1;})){
+    showToast('Shift saved, but DB is missing flat/active split columns. Run the SQL migration to store split hours and times.','err');
   } else {
     showToast('Shift saved','ok');
   }
