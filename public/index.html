@@ -5708,6 +5708,17 @@ function ctMatchEmployee(normalizedName){
 async function ctSaveNameMap(connecteamName,employeeId,ignored){
   var normName=ctNormName(connecteamName);
   var existing=(S.tsNameMap||[]).find(function(m){return m.connecteam_name===normName;});
+  // No employee and not ignored means "clear this mapping". Delete the row
+  // rather than storing a null employee_id: ctMatchEmployee reads the presence
+  // of a row as authoritative and would resolve a null-employee row back to
+  // {status:'mapped', employee_id:null} — a confirmed match with nobody behind it.
+  if(!employeeId&&!ignored){
+    if(!existing)return true;
+    var del=await sb2.from('timesheet_name_map').delete().eq('id',existing.id);
+    if(del.error){showToast('Name map clear failed: '+del.error.message,'err');return false;}
+    S.tsNameMap=(S.tsNameMap||[]).filter(function(m){return m.id!==existing.id;});
+    return true;
+  }
   var row={connecteam_name:normName,employee_id:employeeId||null,ignored:!!ignored};
   var res;
   if(existing){
@@ -9282,7 +9293,11 @@ function renderTsEmpCard(er,idx){
     empHeader='<span style="color:var(--out);font-size:11px;font-weight:600">&#9888; Duplicate file — remove one export and re-import</span>';
   }else if(er.empMatch.status==='mapped'){
     var emp=(S.emps||[]).find(function(e){return e.id===er.empMatch.employee_id;});
-    empHeader='<span style="color:#34d399;font-size:11px">&#10003; '+( emp?emp.name:er.employeeName)+'</span>';
+    // Dropdown stays available on a confirmed match too: a wrong mapping is
+    // otherwise unfixable from here, since 'mapped' is exactly the state a
+    // saved timesheet_name_map row produces on every later import.
+    empHeader='<span style="color:#34d399;font-size:11px">&#10003; '+( emp?emp.name:er.employeeName)+'</span>'
+      +tsEmpDropdown(er,idx,er.empMatch.employee_id);
   }else if(er.empMatch.status==='auto'){
     var emp=(S.emps||[]).find(function(e){return e.id===er.empMatch.employee_id;});
     empHeader='<span style="color:#f59e0b;font-size:11px">&#9654; Auto-matched: '+(emp?emp.name:er.employeeName)+'</span>'
@@ -9359,6 +9374,12 @@ function tsSetEmployee(erIdx,empId,normName){
     er.empMatch.employee_id=empId;
     er.empMatch.status='mapped';
     ctSaveNameMap(normName,empId,false);
+  }else if(empId===''){
+    // Blank "-- assign employee --" undoes the assignment. The saved name-map
+    // row has to go too: ctMatchEmployee treats any saved row as authoritative,
+    // so leaving one behind would re-apply this mapping on the next import.
+    er.empMatch={status:'unknown',employee_id:null};
+    ctSaveNameMap(normName,null,false);
   }
   refreshTsCard(erIdx);
 }
