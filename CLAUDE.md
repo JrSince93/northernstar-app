@@ -105,9 +105,9 @@ The `ch` sub-object holds Chart.js instances keyed by canvas ID; use `dkc(id)` t
 ## Domain constants (~lines 1000–1027)
 
 - `getSuperRate(periodEnd)` — Superannuation Guarantee: **11.5% for periods ending before 1 Jul 2026, 12% from 1 Jul 2026**. The legacy `SUPER_RATE = 0.115` constant still exists but must not be used where the period is known.
-- `NDIS_SLEEPOVER_SHIFT_RATE = 297.60` — flat rate per inactive overnight shift (PAPL, MMM 1-5). Named constant — do NOT hardcode.
+- `NDIS_SLEEPOVER_SHIFT_RATE = 311.79` — flat rate per inactive overnight shift (2026-27, MMM 1-5). **Fallback only**: `_buildInvLines` bills a budget line's own `sleepover` rate row first and uses this only for a line without one. Named constant — do NOT hardcode (the invoice modal's "Flat $…/shift" hint reads it, via `#ii-sleep-flat-rate`).
 - `NDIS_SLEEPOVER_ACTIVE_INCLUDED_HRS = 2` — active hours included in the flat rate before overflow billing.
-- `NDIS_SLEEPOVER_CODES` — per-budget-line-type sleepover item codes (`sil: '01_820_0138_1_1'`, core/others `01_020_0107_1_1`). Marked as placeholders — verify against the current NDIS Support Catalogue before submitting claims.
+- `NDIS_SLEEPOVER_CODES` — fallback sleepover item codes, same fallback-only rule. core/community/employment/custom use `01_010_0107_1_1` (the old `01_020_0107_1_1` is not in the 2026-27 schedule). `sil: '01_820_0138_1_1'` is unreachable — every SIL line carries a `01_832_0138_1_1` row — and was deliberately left as-is.
 - `SCHADS_SLEEPOVER_ALLOWANCE = 58.69` — SCHADS flat allowance per overnight shift (payroll side).
 - `SCHADS_SLEEPOVER_ACTIVE_MIN_HRS = 1` — minimum active-work overtime hours per sleepover.
 - `WISE_PROFILE_ID = 87229043`, `WISE_FN_URL = '/.netlify/functions/wise'`.
@@ -115,7 +115,9 @@ The `ch` sub-object holds Chart.js instances keyed by canvas ID; use `dkc(id)` t
 
 ## NDIS pricing model
 
-Per-budget-line rate tables live in the `RATE_CARDS` table (~line 5652). Each participant's `budget_lines` array carries its own type (`core`, `sil`, `community`, `employment`, `custom`), management mode, funding, and optional rate overrides.
+Per-budget-line rate tables live in the `RATE_CARDS` table (~line 6410). Each participant's `budget_lines` array carries its own type (`core`, `core_combined`, `sil`, `community`, `employment`, `custom`), management mode, funding, and optional rate overrides.
+
+**Lines snapshot `RATE_CARDS` when they are created, and invoicing reads the snapshot (`bl.rates`), never `RATE_CARDS`.** Changing a price in `RATE_CARDS` does nothing for an existing line until its stored `rates` are migrated — SIL via `migrateSilRates2026` on load, the other cards via `migrations/2026-09-15-ndis-2026-27-non-sil-rates.sql`.
 
 **SIL uses registration group 0138 (replaced 0115 from 1 Jul 2026), on the NDIS 2026-27 Pricing Schedule** — already updated in code:
 
@@ -130,7 +132,26 @@ Per-budget-line rate tables live in the `RATE_CARDS` table (~line 5652). Each pa
 | sleepover | `01_832_0138_1_1` | $311.79 **per shift (unit "Each"), not per hour** |
 | travel_km | `01_799_0138_1_1` | $1.00/km |
 
-Employment support (Finding & Keeping a Job): `10_016_0102_5_3` @ $80.06/hr; travel `10_799_0102_5_3` @ $0.99/km.
+**Core, community and core_combined, also on the 2026-27 Pricing Schedule** (updated 2026-09-15):
+
+| day_type | `core` (0107) | `community` (0125) | rate |
+|---|---|---|---|
+| weekday | `01_011_0107_1_1` | `04_104_0125_6_1` | $73.58 |
+| evening | `01_015_0107_1_1` | — | $81.07 |
+| night | `01_002_0107_1_1` | — | $82.57 |
+| saturday | `01_013_0107_1_1` | `04_105_0125_6_1` | $103.54 |
+| sunday | `01_014_0107_1_1` | `04_106_0125_6_1` | $133.50 |
+| public_holiday | `01_012_0107_1_1` | `04_102_0125_6_1` | $163.46 |
+| sleepover | `01_010_0107_1_1` | — | $311.79 **per shift (unit "Each")** |
+| travel_km | `01_799_0107_1_1` | `04_799_0125_6_1` | $0.99/km |
+
+`core_combined` carries the core codes as its `daily_life` group and the community codes as its `community` group — weekday, Saturday, Sunday and public holiday only, each group on its own code — plus `01_799_0107_1_1` travel. It has no sleepover row, so its sleepovers use the `NDIS_SLEEPOVER_CODES` fallback.
+
+Community's codes were wrong before 2026-09-15 — Saturday was `04_103` (that's Weekday Evening), Sunday `04_105` (that's Saturday), travel `04_210` (a quote-based activity item with no fixed price). Don't reintroduce them.
+
+Employment support (Finding & Keeping a Job): `10_016_0102_5_3` @ $83.87/hr (2026-27; was $80.06); travel `10_799_0102_5_3` @ $0.99/km.
+
+**Km rate is unresolved.** Every non-SIL card bills $0.99/km, SIL bills $1.00. The 2025-26 Pricing Arrangements give "up to $0.99 a kilometre" as the NDIA's reasonable contribution; the 2026-27 schedule lists the `_799` items at a notional $1.00 "Each". Not yet checked against the 2026-27 Pricing Arrangements — confirm before changing either way.
 
 Never invent rate-suffix item codes like `_S`/`_U` — use real PAPL item codes only. SIL is billed to the NDIA via myplace bulk CSV; plan-managed lines are invoiced to the plan manager as PDFs.
 
@@ -243,6 +264,7 @@ Verified 2026-09-12 by probing the live schema as `anon` (`?select=<column>` ret
 | `2026-09-11-rls-lockdown` | Applied 2026-09-12 (operator-run). Independently confirmed: `transactions`, `employees`, `participants`, `pay_runs` and `invoice_ledger` all returned rows to the bare anon key before, and return `[]` after |
 | `2026-09-12-accountant-page` | Applied 2026-09-12 (operator-run, in order after the two above). **Not independently verified** — its `invoice_ledger` policy replacement is indistinguishable from the lockdown's over an anon probe |
 | `2026-09-13-storage-bucket-roles` | **WRITTEN, NOT RUN.** Scopes the `invoices` and `tx-attachments` buckets by staff role: admin/office_manager read+write, accountant read-only. Until it runs, both buckets grant plain `authenticated`, so an accountant login can read every invoice and receipt PDF and delete from `invoices` — a write it has on no table. Deliberately per-operation rather than `for all`, so it grants no UPDATE/DELETE that the app doesn't already perform |
+| `2026-09-15-ndis-2026-27-non-sil-rates` | **WRITTEN, NOT RUN.** Data-only (no schema change): rewrites the stored `budget_lines[].rates` on `core`, `community`, `core_combined` and `employment` lines to 2026-27 prices, and corrects community's Saturday/Sunday/travel codes. A row changes only while it still holds its exact 2025-26 default (the `migrateSilRates2026` guard), and core lines without a sleepover row get a `01_010_0107_1_1` one. Touches `rates` only, includes archived participants, idempotent. A read-only dry run on 2026-09-15 matched 15 rate rows on 2 lines: Abdi's `bl-legacy` (core) and Lita's `bl-1783273601383` (core_combined). **Until it runs, Lita's CF invoices keep billing 2025-26 rates** — the `RATE_CARDS` update only reaches lines created after deploy. Reload the app after running it: the participant modal writes its on-screen rate table back on save |
 | `2026-09-18-schedule-block-split-times` | **WRITTEN, NOT RUN.** Adds nullable `flat_start`, `flat_end`, `active_start`, `active_end` (type `time`, matching `start_time`/`end_time`) to `schedule_blocks`, so a sleepover block's entered flat/active windows persist instead of being re-inferred from `start_time`/`end_time` + `flat_hours`/`active_hours` every time the form reopens. Deliberately no backfill: the old rows' real windows were never recorded, so they keep null and stay on the inference path. Until it runs, `upsertScheduleBlockWithColumnFallback` strips the four columns and retries, so shifts still save with their hours and the operator gets the "DB is missing flat/active split columns" toast |
 
 The operator also confirmed the production admin login still works after all three auth migrations.

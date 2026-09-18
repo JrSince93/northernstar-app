@@ -910,7 +910,7 @@ input[type=number]{text-align:right;font-variant-numeric:tabular-nums}
           </select>
         </div>
       </div>
-      <div style="font-size:10px;color:var(--text3)">Flat $297.60/shift. Outside-span hrs at active support rate. Overflow (&gt;2 hrs active) at Sat rate (weekday) or applicable day rate (Sat/Sun/PH).</div>
+      <div style="font-size:10px;color:var(--text3)">Flat $<span id="ii-sleep-flat-rate"></span>/shift. Outside-span hrs at active support rate. Overflow (&gt;2 hrs active) at Sat rate (weekday) or applicable day rate (Sat/Sun/PH).</div>
     </div>
     <div class="form-row" id="ndis-inv-travel-row">
       <div class="field"><label>Travel km (round trip)</label><input type="number" id="ndis-inv-km" value="14" min="0" step="1"></div>
@@ -1089,13 +1089,14 @@ function getSuperRate(periodEnd){
 var SUPER_RATE = 0.115; // legacy constant — use getSuperRate(periodEnd) wherever period is known
 // ── NDIS Sleepover (PAPL 2025-26) ───────────────────────────────────────────────────────────────────────
 // Flat rate per inactive overnight shift (MMM 1-5). Named constant — do NOT hardcode.
-var NDIS_SLEEPOVER_SHIFT_RATE = 297.60;
+var NDIS_SLEEPOVER_SHIFT_RATE = 311.79;
 // Active support hours INCLUDED in the flat rate before overflow billing triggers.
 var NDIS_SLEEPOVER_ACTIVE_INCLUDED_HRS = 2;
 // Overflow for weekday shifts billed at the Saturday active-support rate per PAPL.
 // Saturday/Sunday/PH shifts use the applicable day rate (from the budget line).
-// Placeholder NDIS codes — verify against current NDIS Support Catalogue before submitting.
-var NDIS_SLEEPOVER_CODES = {core:'01_020_0107_1_1',sil:'01_820_0138_1_1',community:'01_020_0107_1_1',employment:'01_020_0107_1_1',custom:'01_020_0107_1_1'};
+// FALLBACK ONLY: _buildInvLines bills a budget line's own 'sleepover' rate row
+// first; these apply only to a line with no such row.
+var NDIS_SLEEPOVER_CODES = {core:'01_010_0107_1_1',sil:'01_820_0138_1_1',community:'01_010_0107_1_1',employment:'01_010_0107_1_1',custom:'01_010_0107_1_1'};
 // SCHADS Award: flat allowance per overnight shift (not per hour).
 var SCHADS_SLEEPOVER_ALLOWANCE = 58.69;
 // Minimum overtime hours paid for any active work performed during a sleepover shift.
@@ -6421,12 +6422,14 @@ var NDIS_PLAN = {
 // Rates are editable per budget line in the participant modal.
 var RATE_CARDS = {
   core: [
-    { day_type:'weekday',        code:'01_011_0107_1_1', desc:'Assistance with Self-Care – Standard – Weekday Daytime',  rate:70.23 },
-    { day_type:'evening',        code:'01_015_0107_1_1', desc:'Assistance with Self-Care – Standard – Weekday Evening', rate:77.38 },
-    { day_type:'night',          code:'01_002_0107_1_1', desc:'Assistance with Self-Care – Standard – Weekday Night',   rate:78.81 },
-    { day_type:'saturday',       code:'01_013_0107_1_1', desc:'Assistance with Self-Care – Standard – Saturday',        rate:98.83 },
-    { day_type:'sunday',         code:'01_014_0107_1_1', desc:'Assistance with Self-Care – Standard – Sunday',          rate:127.43 },
-    { day_type:'public_holiday', code:'01_012_0107_1_1', desc:'Assistance with Self-Care – Standard – Public Holiday',  rate:156.03 },
+    { day_type:'weekday',        code:'01_011_0107_1_1', desc:'Assistance with Self-Care – Standard – Weekday Daytime',  rate:73.58 },
+    { day_type:'evening',        code:'01_015_0107_1_1', desc:'Assistance with Self-Care – Standard – Weekday Evening', rate:81.07 },
+    { day_type:'night',          code:'01_002_0107_1_1', desc:'Assistance with Self-Care – Standard – Weekday Night',   rate:82.57 },
+    { day_type:'saturday',       code:'01_013_0107_1_1', desc:'Assistance with Self-Care – Standard – Saturday',        rate:103.54 },
+    { day_type:'sunday',         code:'01_014_0107_1_1', desc:'Assistance with Self-Care – Standard – Sunday',          rate:133.50 },
+    { day_type:'public_holiday', code:'01_012_0107_1_1', desc:'Assistance with Self-Care – Standard – Public Holiday',  rate:163.46 },
+    // Billed per shift (unit "Each"), not per hour — same as the SIL row.
+    { day_type:'sleepover',      code:'01_010_0107_1_1', desc:'Assistance with Self-Care – Night-Time Sleepover',       rate:311.79 },
     { day_type:'travel_km',      code:'01_799_0107_1_1', desc:'Provider Travel – Non-labour ({km}km)',                       rate:0.99 }
   ],
   // SIL rates: NDIS 2026-27 Pricing Schedule (effective 1 Jul 2026), National
@@ -6444,15 +6447,15 @@ var RATE_CARDS = {
     { day_type:'travel_km',      code:'01_799_0138_1_1', desc:'Provider Travel – Non-labour ({km}km)',           rate:1.00 }
   ],
   employment: [
-    { day_type:'any_day',   code:'10_016_0102_5_3', desc:'Finding and Keeping a Job',          rate:80.06 },
+    { day_type:'any_day',   code:'10_016_0102_5_3', desc:'Finding and Keeping a Job',          rate:83.87 },
     { day_type:'travel_km', code:'10_799_0102_5_3', desc:'Provider Travel – Non-labour ({km}km)', rate:0.99 }
   ],
   community: [
-    { day_type:'weekday',        code:'04_104_0125_6_1', desc:'Community Participation – Weekday',        rate:70.23 },
-    { day_type:'saturday',       code:'04_103_0125_6_1', desc:'Community Participation – Saturday',       rate:98.83 },
-    { day_type:'sunday',         code:'04_105_0125_6_1', desc:'Community Participation – Sunday',         rate:127.43 },
-    { day_type:'public_holiday', code:'04_102_0125_6_1', desc:'Community Participation – Public Holiday', rate:156.03 },
-    { day_type:'travel_km',      code:'04_210_0125_6_1', desc:'Provider Travel – Non-labour ({km}km)',    rate:0.99 }
+    { day_type:'weekday',        code:'04_104_0125_6_1', desc:'Community Participation – Weekday',        rate:73.58 },
+    { day_type:'saturday',       code:'04_105_0125_6_1', desc:'Community Participation – Saturday',       rate:103.54 },
+    { day_type:'sunday',         code:'04_106_0125_6_1', desc:'Community Participation – Sunday',         rate:133.50 },
+    { day_type:'public_holiday', code:'04_102_0125_6_1', desc:'Community Participation – Public Holiday', rate:163.46 },
+    { day_type:'travel_km',      code:'04_799_0125_6_1', desc:'Provider Travel – Non-labour ({km}km)',    rate:0.99 }
   ],
   // One plan-managed invoice covering 0107 daily activities + 0125 community
   // participation + transport, all drawn from the same Core Flexible budget.
@@ -6460,14 +6463,14 @@ var RATE_CARDS = {
   // line item carries its own support item number. `group` distinguishes the
   // sections for the entry UI and the invoice builder (PAPL 2025-26 v1.1).
   core_combined: [
-    { group:'daily_life', day_type:'weekday',        code:'01_011_0107_1_1', desc:'Assistance with Daily Life – Weekday',        rate:70.23 },
-    { group:'daily_life', day_type:'saturday',       code:'01_013_0107_1_1', desc:'Assistance with Daily Life – Saturday',       rate:98.83 },
-    { group:'daily_life', day_type:'sunday',         code:'01_014_0107_1_1', desc:'Assistance with Daily Life – Sunday',         rate:127.43 },
-    { group:'daily_life', day_type:'public_holiday', code:'01_012_0107_1_1', desc:'Assistance with Daily Life – Public Holiday', rate:156.03 },
-    { group:'community',  day_type:'weekday',        code:'04_104_0125_6_1', desc:'Community Participation – Weekday',           rate:70.23 },
-    { group:'community',  day_type:'saturday',       code:'04_105_0125_6_1', desc:'Community Participation – Saturday',          rate:98.83 },
-    { group:'community',  day_type:'sunday',         code:'04_106_0125_6_1', desc:'Community Participation – Sunday',            rate:127.43 },
-    { group:'community',  day_type:'public_holiday', code:'04_102_0125_6_1', desc:'Community Participation – Public Holiday',    rate:156.03 },
+    { group:'daily_life', day_type:'weekday',        code:'01_011_0107_1_1', desc:'Assistance with Daily Life – Weekday',        rate:73.58 },
+    { group:'daily_life', day_type:'saturday',       code:'01_013_0107_1_1', desc:'Assistance with Daily Life – Saturday',       rate:103.54 },
+    { group:'daily_life', day_type:'sunday',         code:'01_014_0107_1_1', desc:'Assistance with Daily Life – Sunday',         rate:133.50 },
+    { group:'daily_life', day_type:'public_holiday', code:'01_012_0107_1_1', desc:'Assistance with Daily Life – Public Holiday', rate:163.46 },
+    { group:'community',  day_type:'weekday',        code:'04_104_0125_6_1', desc:'Community Participation – Weekday',           rate:73.58 },
+    { group:'community',  day_type:'saturday',       code:'04_105_0125_6_1', desc:'Community Participation – Saturday',          rate:103.54 },
+    { group:'community',  day_type:'sunday',         code:'04_106_0125_6_1', desc:'Community Participation – Sunday',            rate:133.50 },
+    { group:'community',  day_type:'public_holiday', code:'04_102_0125_6_1', desc:'Community Participation – Public Holiday',    rate:163.46 },
     { group:'travel',     day_type:'travel_km',      code:'01_799_0107_1_1', desc:'Provider Travel – Non-labour ({km}km)',       rate:0.99 }
   ],
   custom: []
@@ -7040,6 +7043,10 @@ function ndisInvApplyBudgetLineDefaults() {
   var active = bls.filter(function(bl){ return bl.active!==false; });
   var blIdx = parseInt(eid('ndis-inv-bl').value);
   var bl = isNaN(blIdx) ? null : active[blIdx];
+  // Sleepover hint shows the per-shift rate _buildInvLines will bill: the
+  // line's own sleepover row, else the NDIS_SLEEPOVER_SHIFT_RATE fallback.
+  var slRow = blRate(bl, 'sleepover');
+  if(eid('ii-sleep-flat-rate')) eid('ii-sleep-flat-rate').textContent = Number(slRow ? slRow.rate : NDIS_SLEEPOVER_SHIFT_RATE).toFixed(2);
   if(!bl){ eid('ndis-inv-hrs-section').innerHTML=''; eid('ndis-inv-info').innerHTML='Select a budget line above.'; return; }
   eid('ndis-inv-km').value = (bl.travel&&bl.travel.km!=null)?bl.travel.km:14;
   eid('ndis-inv-travelmin').value = (bl.travel&&bl.travel.labour_min!=null)?bl.travel.labour_min:10;
