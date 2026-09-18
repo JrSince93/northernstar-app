@@ -4148,9 +4148,23 @@ function exportPaymentFile(platform) {
 }
 
 function doExportPaymentFile(platform, periodStartStr, periodEndStr) {
+  // Match a run by the period it PAYS FOR, never by when it was disbursed.
+  // paid_date is the Friday AFTER the period ends (see nextFriday), so the
+  // previous fortnight's paid_date lands inside this fortnight's window: the
+  // old paid_date filter swept last period's runs into this period's payment
+  // file and dropped every run that actually belonged in it.
+  //
+  // Containment rather than exact equality. Periods come from
+  // getPayPeriodStartEnd (Mon..Mon+13 off a fixed anchor) and runs are created
+  // on that same grid, so the two agree for every normal run — but containment
+  // also picks up a short run created inside one period (a mid-period start or
+  // finish) that exact equality would silently leave off the file, while still
+  // excluding a neighbouring fortnight's run.
   var runs = S.runs.filter(function(r){
-    var d = r.paid_date || r.period_end || '';
-    return d >= periodStartStr && d <= periodEndStr;
+    var ps = r.period_start || r.period_end || '';
+    var pe = r.period_end || r.period_start || '';
+    if(!ps || !pe) return false;
+    return ps >= periodStartStr && pe <= periodEndStr;
   });
 
   if(runs.length === 0) {
