@@ -4819,20 +4819,41 @@ function resolveBlockRate(block, employeeId){
   return {hourly:hourly, flat:flat};
 }
 
-function sleepoverActiveSegmentDay(date, startTime, endTime, activeHrs){
+function sleepoverActiveSegmentDay(date, startTime, endTime, activeHrs, activeStart, activeEnd){
   // Returns the calendar day the active segment of a sleepover-style shift
-  // actually falls on. The segment is anchored to the end of the shift
-  // (handover); when it straddles midnight, the day holding the majority of
-  // it wins (tie goes to the handover day).
+  // actually falls on — which is what decides the day-type rate it prices at.
+  //
+  // When the caller knows where the active window really sits (a block's
+  // active_start/active_end, persisted since 2026-09-18-schedule-block-split-
+  // times), that window is used as configured. Only when those are absent —
+  // legacy blocks saved before that migration, or an imported shift with no
+  // matched block — does this fall back to the old assumption that the active
+  // segment is anchored to the end of the shift (handover).
+  //
+  // Either way, a segment straddling midnight lands on the day holding the
+  // majority of it, and a tie goes to the later (handover) day.
   var activeDay = new Date(date);
   if(!(activeHrs>0)) return activeDay;
   var startAbs = getTimeMinutes(startTime)||0;
   var endAbs = getTimeMinutes(endTime)||0;
   if(endAbs<=startAbs) endAbs += 1440;
-  if(endAbs<=1440) return activeDay; // shift ends on its start day
-  var activeStartAbs = endAbs - activeHrs*60;
-  var minsAfterMidnight = Math.max(0, endAbs - Math.max(activeStartAbs, 1440));
-  var minsBeforeMidnight = Math.max(0, Math.min(endAbs, 1440) - activeStartAbs);
+  var segStartAbs, segEndAbs;
+  var aStart = getTimeMinutes(activeStart);
+  var aEnd = getTimeMinutes(activeEnd);
+  if(aStart!==null && aEnd!==null){
+    // Configured window, placed on the shift's own timeline: an active window
+    // whose clock time falls before the shift starts belongs to the next day.
+    segStartAbs = aStart;
+    if(segStartAbs < startAbs) segStartAbs += 1440;
+    segEndAbs = aEnd;
+    if(segEndAbs <= segStartAbs) segEndAbs += 1440;
+  } else {
+    if(endAbs<=1440) return activeDay; // shift ends on its start day
+    segEndAbs = endAbs;
+    segStartAbs = endAbs - activeHrs*60;
+  }
+  var minsAfterMidnight = Math.max(0, segEndAbs - Math.max(segStartAbs, 1440));
+  var minsBeforeMidnight = Math.max(0, Math.min(segEndAbs, 1440) - segStartAbs);
   if(minsAfterMidnight >= minsBeforeMidnight) activeDay.setDate(activeDay.getDate()+1);
   return activeDay;
 }
@@ -4842,17 +4863,20 @@ function computeSleepoverSplitForDate(block, emp, date){
   //  1. the inactive portion, paid as a flat amount (employee profile rate via
   //     resolveBlockRate → resolveSleepoverFlatRate, or the block's manual flat)
   //  2. the active portion, paid hourly at the employee's ordinary rate for the
-  //     CALENDAR DAY the active segment actually falls on. The active segment is
-  //     anchored to the end of the shift (handover), so a Saturday 21:00–06:00
-  //     sleepover's active hour lands on Sunday and prices at the Sunday rate.
-  //     If the segment straddles midnight, the day holding the majority of it
-  //     wins (tie goes to the handover day).
+  //     CALENDAR DAY the active segment actually falls on. That day comes from
+  //     the block's configured active_start/active_end where it has them, so an
+  //     active hour parked at the START of a Saturday 21:00–06:00 sleepover
+  //     prices at the Saturday rate, while one at the handover end prices at
+  //     Sunday. Blocks predating those columns keep the old end-anchored
+  //     assumption. If the segment straddles midnight, the day holding the
+  //     majority of it wins (tie goes to the handover day).
   var rate = resolveBlockRate(block, emp ? emp.id : null);
   var flatAmt = parseFloat(rate.flat)||0;
   var split = getScheduleBlockHoursForDate(block, date);
   var activeHrs = parseFloat(split.activeHours)||0;
   if(activeHrs<=0 && isOvernightScheduleBlock(block)) activeHrs = parseFloat(block.active_hours)||0;
-  var activeDay = sleepoverActiveSegmentDay(date, block.start_time, block.end_time, activeHrs);
+  var activeDay = sleepoverActiveSegmentDay(date, block.start_time, block.end_time, activeHrs,
+                                            block.active_start, block.active_end);
   var activeType = getDayTypeForDate(activeDay);
   var activeRate = getEmployeeDayRate(emp, activeType);
   var activeAmt = +(activeHrs*activeRate).toFixed(2);
@@ -9683,7 +9707,16 @@ function tsComputeSleepoverPay(shifts, emp){
     var activeHrs=mins>0?Math.max(SCHADS_SLEEPOVER_ACTIVE_MIN_HRS,+(mins/60).toFixed(2)):0;
     var dp=String(s.date||'').split('-');
     var startDay=dp.length===3?new Date(parseInt(dp[0]),parseInt(dp[1])-1,parseInt(dp[2])):null;
-    var activeDay=(startDay&&!isNaN(startDay.getTime()))?sleepoverActiveSegmentDay(startDay,s['in'],s.out,activeHrs):null;
+    // Where the shift matched a schedule block, that block's configured active
+    // window positions the segment — measured against THIS shift's real
+    // clock-in/out, not the block's nominal times. Unmatched shifts (and blocks
+    // predating the split-times columns) keep the end-anchored fallback.
+    // Duration still comes from s.activeMins: it is operator-editable in the
+    // Stage 2 review, so it must not be overwritten from the block here.
+    var activeDay=(startDay&&!isNaN(startDay.getTime()))
+      ?sleepoverActiveSegmentDay(startDay,s['in'],s.out,activeHrs,
+                                 block?block.active_start:null, block?block.active_end:null)
+      :null;
     var activeType=activeDay?getDayTypeForDate(activeDay):'weekday';
     var activeRate=getEmployeeDayRate(emp,activeType);
     var activeAmt=+(activeHrs*activeRate).toFixed(2);
