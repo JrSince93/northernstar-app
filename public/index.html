@@ -1311,12 +1311,25 @@ function openRefGuide() {
 }
 function closeRefGuide(){ eid('ref-guide-modal').style.display='none'; }
 
+// The single ordering rule for pay runs — used by loadAll and again after every
+// insert, so a newly created run sits exactly where a refresh would put it.
+// period_end is the anchor, NOT period_start: a run can span several periods
+// (the 2026-08-03..2026-09-13 director runs), and it belongs with the fortnight
+// it ENDS in. created_at breaks ties, newest first.
+function sortRuns(runs){
+  return (runs||[]).sort(function(a,b){
+    var ae = String((a && a.period_end) || ''), be = String((b && b.period_end) || '');
+    if(ae !== be) return be.localeCompare(ae);
+    return String((b && b.created_at) || '').localeCompare(String((a && a.created_at) || ''));
+  });
+}
+
 async function loadAll(){
   setSync('saving');
   try{
     var r1=await sb2.from('transactions').select('*').order('date',{ascending:true});
     var r2=await sb2.from('employees').select('*').order('name',{ascending:true});
-    var r3=await sb2.from('pay_runs').select('*').order('period_start',{ascending:false});
+    var r3=await sb2.from('pay_runs').select('*').order('period_end',{ascending:false}).order('created_at',{ascending:false});
     var r4=await sb2.from('dropdown_options').select('*').order('created_at',{ascending:true});
     if(r1.error)throw new Error('transactions: '+r1.error.message);
     if(r2.error)throw new Error('employees: '+r2.error.message);
@@ -1324,13 +1337,13 @@ async function loadAll(){
     if(r4.error)throw new Error('dropdown_options: '+r4.error.message);
     S.tx=r1.data||[];
     S.emps=r2.data||[];
-    S.runs=(r3.data||[]).map(function(r){
+    S.runs=sortRuns((r3.data||[]).map(function(r){
       var emp=S.emps.find(function(e){return e.id===r.employee_id;});
       // employee_name is the denormalised fallback: the accountant role can't
       // read `employees`, so S.emps is empty for them (2026-09-12 migration).
       r._empName=emp?emp.name:(r.employee_name||'Unknown');
       return r;
-    });
+    }));
     var ddD=(r4.data||[]).filter(function(d){return d.field==='description';}).map(function(d){return d.value;});
     var ddT=(r4.data||[]).filter(function(d){return d.field==='type';}).map(function(d){return d.value;});
     S.dd.description=ddD.length?ddD:['NDIS Payment','Plan Management Fee','Support Worker Pay','Fuel Reimbursement','Office Supplies','Admin Fee','Shareholder Distribution','Equipment Purchase','Vehicle Expense','Other Income','Other Expense'];
@@ -2431,6 +2444,7 @@ async function savePayRun(){
   var emp=S.emps.find(function(x){return x.id===sel.value;});
   var run=res.data[0];run._empName=emp?emp.name:'Unknown';
   S.runs.unshift(run);
+  sortRuns(S.runs); // land it where a refresh would put it, not just at the top
   var month=MONTHS[new Date(paidDate).getMonth()];
   // Insert cash book row as PENDING — amount_out is 0 until a Wise outbound
   // transfer matches the net pay, at which point reconcilePendingPayroll()
@@ -4148,43 +4162,43 @@ function exportPaymentFile(platform) {
 }
 
 function doExportPaymentFile(platform, periodStartStr, periodEndStr) {
-  // Match a run by the period it PAYS FOR, never by when it was disbursed.
-  // paid_date is the Friday AFTER the period ends (see nextFriday), so the
-  // previous fortnight's paid_date lands inside this fortnight's window: the
-  // old paid_date filter swept last period's runs into this period's payment
-  // file and dropped every run that actually belonged in it.
+  // A run belongs to this window when its period_end falls inside it.
   //
-  // Containment rather than exact equality. Periods come from
-  // getPayPeriodStartEnd (Mon..Mon+13 off a fixed anchor) and runs are created
-  // on that same grid, so the two agree for every normal run — but containment
-  // also picks up a short run created inside one period (a mid-period start or
-  // finish) that exact equality would silently leave off the file, while still
-  // excluding a neighbouring fortnight's run.
+  // NOT paid_date: that is the Friday AFTER the period ends (see nextFriday), so
+  // it lands in the following window — the file paid last fortnight's runs and
+  // dropped the ones it was meant to pay.
+  //
+  // NOT period_start either: a run can span several fortnights (the
+  // 2026-08-03..2026-09-13 director runs), and no single window contains such a
+  // run, so requiring containment left those unexportable in every period.
+  // Anchoring on period_end alone pays every run exactly once, in the fortnight
+  // it ends in — verified across all 11 periods of live data.
   var runs = S.runs.filter(function(r){
-    var ps = r.period_start || r.period_end || '';
-    var pe = r.period_end || r.period_start || '';
-    if(!ps || !pe) return false;
-    return ps >= periodStartStr && pe <= periodEndStr;
+    var pe = r.period_end || '';
+    if(!pe) return false;
+    return pe >= periodStartStr && pe <= periodEndStr;
   });
 
   if(runs.length === 0) {
-    var useAll = confirm(
-      'No pay runs found in this period (' + periodStartStr + ' to ' + periodEndStr + ').\n\n' +
-      'Export all ' + S.runs.length + ' pay run(s) instead?'
-    );
-    if(!useAll) return;
-    runs = S.runs;
+    // Deliberately no "export all runs instead" option. That built a payment
+    // file containing every run ever recorded, including ones already marked
+    // paid — one accidental confirm away from paying a year of wages twice.
+    alert('No pay runs end in this period (' + periodStartStr + ' to ' + periodEndStr + ').\n\n'
+      + 'Nothing has been exported.\n\n'
+      + 'Check the period you selected, or process the pay runs for it first.');
+    return;
   }
 
   var csv = '';
   var count = 0;
-  var missing = [];
+  var missing = [];      // employee exists, but has no BSB / account number
+  var noEmpRecord = [];  // pay run whose employee_id matches no employee row
 
   if(platform === 'revolut') {
     csv = 'Name,Recipient type,Account number,Sort code (BSB),Currency,Amount,Payment reference\n';
     runs.forEach(function(r){
       var emp = S.emps.find(function(e){ return e.id === r.employee_id; });
-      if(!emp) return;
+      if(!emp){ noEmpRecord.push(r._empName || r.employee_name || 'Unknown employee'); return; }
       if(!emp.bank_account || !emp.bank_bsb){ missing.push(emp.name); return; }
       csv += ['"'+(emp.name||'')+'"','INDIVIDUAL',emp.bank_account,emp.bank_bsb.replace(/-/g,''),'AUD',
         parseFloat(r.net_pay||0).toFixed(2),'"Wages '+periodStartStr+' to '+periodEndStr+'"'].join(',') + '\n';
@@ -4200,7 +4214,7 @@ function doExportPaymentFile(platform, periodStartStr, periodEndStr) {
     var wiseLines = ['name,recipientEmail,paymentReference,receiverType,amountCurrency,amount,sourceCurrency,targetCurrency,accountNumber,bsbCode'];
     runs.forEach(function(r){
       var emp = S.emps.find(function(e){ return e.id === r.employee_id; });
-      if(!emp) return;
+      if(!emp){ noEmpRecord.push(r._empName || r.employee_name || 'Unknown employee'); return; }
       if(!emp.bank_account || !emp.bank_bsb){ missing.push(emp.name); return; }
       wiseLines.push([
         wiseCsvCell(emp.name||''),
@@ -4221,7 +4235,7 @@ function doExportPaymentFile(platform, periodStartStr, periodEndStr) {
     csv = 'Employee Name,Bank BSB,Account Number,Amount (AUD),Currency,Payment Reference,Period Start,Period End,Employment Type,Hourly Rate,Hours Worked,Gross Pay,PAYG Withheld,Super,Net Pay\n';
     runs.forEach(function(r){
       var emp = S.emps.find(function(e){ return e.id === r.employee_id; });
-      if(!emp) return;
+      if(!emp){ noEmpRecord.push(r._empName || r.employee_name || 'Unknown employee'); return; }
       if(!emp.bank_account || !emp.bank_bsb){ missing.push(emp.name); return; }
       csv += ['"'+(emp.name||'')+'"','"'+(emp.bank_bsb||'')+'"','"'+(emp.bank_account||'')+'"',
         parseFloat(r.net_pay||0).toFixed(2),'AUD','"Wages '+periodStartStr+' to '+periodEndStr+'"',
@@ -4233,13 +4247,30 @@ function doExportPaymentFile(platform, periodStartStr, periodEndStr) {
     });
   }
 
+  var names = {revolut:'Revolut', wise:'Wise', generic:'Generic'};
+
+  // Anyone dropped from the file gets a blocking alert, not a toast. A toast is
+  // missed, and a missing row here means a real person does not get paid.
+  if(missing.length > 0 || noEmpRecord.length > 0) {
+    var warn = 'NOT INCLUDED in the ' + names[platform] + ' payment file\n';
+    if(missing.length > 0)
+      warn += '\nNo bank details on file (BSB and/or account number missing):\n  - '
+           + missing.join('\n  - ') + '\n';
+    if(noEmpRecord.length > 0)
+      warn += '\nNo matching employee record for the pay run:\n  - '
+           + noEmpRecord.join('\n  - ') + '\n';
+    warn += '\nThese people are NOT in the file and will NOT be paid by it.\n'
+         +  'Add their BSB and account number in their Employee profile, then export again.';
+    alert(warn);
+  }
+
   if(count === 0) {
-    showToast('No employees have bank details - add BSB and account in employee profiles','err');
+    alert('Nothing was exported.\n\nNone of the ' + runs.length + ' pay run(s) ending in this '
+      + 'period could be written to the file — add BSB and account numbers in the Employee '
+      + 'profiles, then export again.');
     return;
   }
-  if(missing.length > 0) showToast('Skipped (no bank details): ' + missing.join(', '),'ok');
 
-  var names = {revolut:'Revolut', wise:'Wise', generic:'Generic'};
   var a = document.createElement('a');
   a.href = URL.createObjectURL(new Blob([csv],{type:'text/csv'}));
   a.download = names[platform] + '_Payroll_' + periodStartStr + '_to_' + periodEndStr + '.csv';
@@ -9985,6 +10016,7 @@ async function tsCreatePayRuns(){
     var run=res.data[0];
     run._empName=emp.name;
     S.runs.unshift(run);
+    sortRuns(S.runs); // land it where a refresh would put it, not just at the top
 
     // Pending cash book entry — amount_out:0 until Wise transfer matches
     var pendingRef='PAYROLL-PENDING-'+run.id.slice(0,8);
