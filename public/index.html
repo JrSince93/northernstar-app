@@ -1123,6 +1123,13 @@ function cssRgba(name, alpha, fallback){
   return 'rgba('+parseInt(h.slice(0,2),16)+','+parseInt(h.slice(2,4),16)+','+parseInt(h.slice(4,6),16)+','+alpha+')';
 }
 function fmt(n){var v=parseFloat(n);if(!v&&v!==0)return'--';return'$'+Math.abs(v).toLocaleString('en-AU',{minimumFractionDigits:2,maximumFractionDigits:2});}
+// Internal transfers (Wise jar moves) shift money between two of our own
+// balances. They belong in the running balance, the opening/closing carry and
+// the Balance chart — the cash really did move — but they are neither income
+// nor expense, so every OPERATING total excludes them: month cards, dashboard
+// KPIs, Income vs Outgoings, Net by Month, P&L, Tax/BAS, Accountant exports and
+// the Expenses tab.
+function isInternalTransfer(t){ return !!t && t.payment_type === 'Internal Transfer'; }
 function ini(n){return(n||'?').split(' ').map(function(w){return w[0];}).join('').slice(0,2).toUpperCase();}
 // Local (Melbourne) date. toISOString() is UTC, which before 10:00 (11:00 in
 // daylight saving) is still yesterday — new transactions defaulted to the wrong day.
@@ -1492,12 +1499,15 @@ function renderDash(){
     // Recurring transactions only show when their date has arrived
     return r.date<=today;
   });
-  var tIn=activeTx.reduce(function(s,r){return s+(+r.amount_in||0);},0);
-  var tOut=activeTx.reduce(function(s,r){return s+(+r.amount_out||0);},0);
+  var opTx=activeTx.filter(function(r){return !isInternalTransfer(r);});
+  var tIn=opTx.reduce(function(s,r){return s+(+r.amount_in||0);},0);
+  var tOut=opTx.reduce(function(s,r){return s+(+r.amount_out||0);},0);
   var net=tIn-tOut;
   eid('d-in').textContent=fmt(tIn);
   eid('d-out').textContent=fmt(tOut);
-  eid('d-net').textContent=(net>=0?'+':'')+fmt(net);
+  // fmt() is Math.abs-based and other callers rely on that, so the sign is
+  // applied here rather than changing fmt.
+  eid('d-net').textContent=(net>=0?'+':'−')+fmt(net);
   eid('d-net').className='kpi-val '+(net>=0?'green':'red');
   eid('d-emp').textContent=S.emps.filter(function(e){return e.active;}).length;
 
@@ -1510,7 +1520,12 @@ function renderDash(){
     invKpi.style.color = outAmt > 0 ? 'var(--out)' : 'var(--in)';
   }
 
-  var mIn=[],mOut=[],mNet=[];
+  // Two series per month. mIn/mOut/mNet are OPERATING (internal transfers
+  // excluded) and drive the Income vs Outgoings and Net by Month charts.
+  // mMove is the INCLUSIVE movement and drives the cumulative Balance curve,
+  // which has to track the real cash position. In a month with a jar move the
+  // two legitimately disagree.
+  var mIn=[],mOut=[],mNet=[],mMove=[];
   MONTHS.forEach(function(m){
     var rows=S.tx.filter(function(r){
       if(r.month!==m) return false;
@@ -1518,9 +1533,13 @@ function renderDash(){
       if(!isRecurring(r)) return true;
       return r.date<=today;
     });
-    var i=rows.reduce(function(s,r){return s+(+r.amount_in||0);},0);
-    var o=rows.reduce(function(s,r){return s+(+r.amount_out||0);},0);
+    var opRows=rows.filter(function(r){return !isInternalTransfer(r);});
+    var i=opRows.reduce(function(s,r){return s+(+r.amount_in||0);},0);
+    var o=opRows.reduce(function(s,r){return s+(+r.amount_out||0);},0);
     mIn.push(+i.toFixed(2));mOut.push(+o.toFixed(2));mNet.push(+(i-o).toFixed(2));
+    var allIn=rows.reduce(function(s,r){return s+(+r.amount_in||0);},0);
+    var allOut=rows.reduce(function(s,r){return s+(+r.amount_out||0);},0);
+    mMove.push(+(allIn-allOut).toFixed(2));
   });
 
   var axO={x:{ticks:{color:'#5b6478',font:{size:11,family:'Inter'}},grid:{display:false},autoSkip:false},y:{ticks:{color:'#5b6478',font:{size:11,family:'Inter'},callback:function(v){return'$'+v.toLocaleString();}},grid:{color:'rgba(255,255,255,.04)'},border:{display:false}}};
@@ -1536,7 +1555,7 @@ function renderDash(){
   S.ch['net']=new Chart(eid('cv-net'),{type:'bar',data:{labels:SHORT,datasets:[{label:'Net',data:mNet,backgroundColor:mNet.map(function(n){return n>=0?'rgba(62,207,122,.72)':'rgba(236,106,94,.65)';}),borderRadius:5,maxBarThickness:26}]},options:base});
 
   var c=0;
-  var cv=mNet.map(function(n){c=+(c+n).toFixed(2);return c;});
+  var cv=mMove.map(function(n){c=+(c+n).toFixed(2);return c;});
   dkc('line');
   S.ch['line']=new Chart(eid('cv-line'),{type:'line',data:{labels:SHORT,datasets:[{label:'Balance',data:cv,borderColor:'#c9a227',backgroundColor:'rgba(201,162,39,.08)',fill:true,tension:.35,pointRadius:0,pointHoverRadius:5,pointHoverBackgroundColor:'#c9a227',pointHoverBorderColor:'rgba(201,162,39,.3)',pointHoverBorderWidth:6,borderWidth:2}]},options:base});
 
@@ -1657,13 +1676,20 @@ function renderCB(){
   // too. The label stays the key because the form lets the month be chosen
   // apart from the date. Year sliced from the ISO string, not timezone-parsed.
   var rows=S.tx.filter(function(r){return r.month===m&&String(r.date||'').slice(0,4)===String(nowYear);}).sort(function(a,b){return new Date(a.date)-new Date(b.date);});
-  var tIn=rows.reduce(function(s,r){return s+(+r.amount_in||0);},0);
-  var tOut=rows.reduce(function(s,r){return s+(+r.amount_out||0);},0);
+  // Money In / Money Out / Net are OPERATING figures: internal transfers are
+  // excluded. The closing balance is NOT — it uses the inclusive movement, so
+  // it still equals opening + everything that actually moved, and continues to
+  // match next month's opening.
+  var opRows=rows.filter(function(r){return !isInternalTransfer(r);});
+  var tIn=opRows.reduce(function(s,r){return s+(+r.amount_in||0);},0);
+  var tOut=opRows.reduce(function(s,r){return s+(+r.amount_out||0);},0);
   var net=tIn-tOut;
-  var closing=+(opening+net).toFixed(2);
+  var movement=rows.reduce(function(s,r){return s+(+r.amount_in||0)-(+r.amount_out||0);},0);
+  var closing=+(opening+movement).toFixed(2);
   eid('cb-in').textContent=fmt(tIn);
   eid('cb-out').textContent=fmt(tOut);
-  eid('cb-net').textContent=(net>=0?'+':'')+fmt(net);
+  // fmt() drops the sign (Math.abs), so a negative net needs an explicit minus.
+  eid('cb-net').textContent=(net>=0?'+':'−')+fmt(net);
   eid('cb-net').style.color=net>=0?'var(--in)':'var(--out)';
   // Build the opening-balance header row so the user always sees what was
   // carried over from prior months. Only suppress for January when there is
@@ -1695,7 +1721,14 @@ function renderCB(){
       }
     }
     var outCell = (+r.amount_out>0) ? fmt(r.amount_out) : pendingOutHint;
-    html+='<tr'+rowStyle+'><td class="td-muted">'+(r.date||'--')+'</td><td>'+displayDesc+pendingBadge+'</td><td class="td-muted">'+(r.payment_type||'--')+'</td><td class="td-muted">'+(r.reference||'--')+'</td><td class="td-right td-green">'+(+r.amount_in>0?fmt(r.amount_in):'')+'</td><td class="td-right td-red">'+outCell+'</td><td class="td-right" style="color:'+bc+';font-weight:700">'+fmt(run)+'</td><td><button class="btn-icon btn-sm" onclick="delTx(this.dataset.id)" data-id="'+r.id+'">x</button></td></tr>';
+    // Internal transfers still show their amount in the In or Out column, but
+    // in a muted neutral colour rather than green/red — they move the balance
+    // without being income or expense — plus an "Internal" tag.
+    var isInternal = isInternalTransfer(r);
+    var inClass  = isInternal ? 'td-right td-muted' : 'td-right td-green';
+    var outClass = isInternal ? 'td-right td-muted' : 'td-right td-red';
+    var internalTag = isInternal ? ' <span style="background:rgba(127,127,127,.16);color:var(--text3);font-size:9px;font-weight:700;padding:1px 6px;border-radius:8px;letter-spacing:.04em;text-transform:uppercase;margin-left:6px;vertical-align:middle">Internal</span>' : '';
+    html+='<tr'+rowStyle+'><td class="td-muted">'+(r.date||'--')+'</td><td>'+displayDesc+pendingBadge+internalTag+'</td><td class="td-muted">'+(r.payment_type||'--')+'</td><td class="td-muted">'+(r.reference||'--')+'</td><td class="'+inClass+'">'+(+r.amount_in>0?fmt(r.amount_in):'')+'</td><td class="'+outClass+'">'+outCell+'</td><td class="td-right" style="color:'+bc+';font-weight:700">'+fmt(run)+'</td><td><button class="btn-icon btn-sm" onclick="delTx(this.dataset.id)" data-id="'+r.id+'">x</button></td></tr>';
   });
   // Drift guard: this month's closing balance must equal next month's opening
   // balance. They diverge only when a transaction's `date` and `month` label
@@ -2509,7 +2542,8 @@ async function delRun(id){
 function renderTax(){
   var ytdTax=S.runs.reduce(function(s,r){return s+(+r.tax_withheld||0);},0);
   var ytdSup=S.runs.reduce(function(s,r){return s+(+r.super_amount||0);},0);
-  var tIn=S.tx.reduce(function(s,r){return s+(+r.amount_in||0);},0);
+  // Internal transfers are not income, so they must not inflate the GST estimate.
+  var tIn=S.tx.reduce(function(s,r){return isInternalTransfer(r)?s:s+(+r.amount_in||0);},0);
   eid('tx-payg').textContent=fmt(ytdTax);eid('tx-super').textContent=fmt(ytdSup);eid('tx-gst').textContent=fmt(+(tIn/11).toFixed(2));
   var md=MONTHS.map(function(m,i){
     var runs=S.runs.filter(function(r){return(r.paid_date||r.period_end||'').startsWith(YEAR+'-'+String(i+1).padStart(2,'0'));});
@@ -2540,7 +2574,7 @@ function renderPL(){
   var html='';
   MONTHS.forEach(function(m,i){
     // Same year guard as renderCB: other years' rows must not add into this year.
-    var txR=S.tx.filter(function(r){return r.month===m&&String(r.date||'').slice(0,4)===String(plYear);});
+    var txR=S.tx.filter(function(r){return r.month===m&&String(r.date||'').slice(0,4)===String(plYear)&&!isInternalTransfer(r);});
     var inc=txR.reduce(function(s,r){return s+(+r.amount_in||0);},0);
     var exp=txR.filter(function(r){return!(r.description||'').includes('Payroll');}).reduce(function(s,r){return s+(+r.amount_out||0);},0);
     var pr=S.runs.filter(function(r){return(r.paid_date||r.period_end||'').startsWith(plYear+'-'+String(i+1).padStart(2,'0'));});
@@ -3515,7 +3549,11 @@ function accData(){
   return {
     range: range,
     tx: tx,
-    expenses: tx.filter(function(t){ return expIsExpense(t) && !expIsPayroll(t); }),
+    // txOp drops internal transfers — every money-in / money-out total on this
+    // page uses it. `tx` stays complete so the cash book export still lists
+    // every row the bank statement shows.
+    txOp: tx.filter(function(t){ return !isInternalTransfer(t); }),
+    expenses: tx.filter(function(t){ return expIsExpense(t) && !expIsPayroll(t) && !isInternalTransfer(t); }),
     payrollTx: tx.filter(function(t){ return expIsExpense(t) && expIsPayroll(t); }),
     runs: (S.runs||[]).filter(function(r){ return inRange(accRunDate(r)); }),
     invoices: ((S.invoiceLedger)||[]).filter(function(i){ return inRange(i.invoice_date); })
@@ -3545,7 +3583,9 @@ function accExportCashBook(){
   var d = accData();
   var c = accRow(['Date','Description','Type','Reference','Amount In','Amount Out']);
   d.tx.forEach(function(t){ c += accRow([t.date,t.description,t.payment_type,t.reference,+t.amount_in||0,+t.amount_out||0]); });
-  c += accRow(['TOTAL','','','',accSum(d.tx,'amount_in').toFixed(2),accSum(d.tx,'amount_out').toFixed(2)]);
+  // Every row is listed, but the total is operating-only, matching the figures
+  // shown on screen and in the other exports.
+  c += accRow(['TOTAL (excl. internal transfers)','','','',accSum(d.txOp,'amount_in').toFixed(2),accSum(d.txOp,'amount_out').toFixed(2)]);
   dl(c, accFile('CashBook'), 'text/csv');
 }
 function accExportExpenses(){
@@ -3579,13 +3619,13 @@ function accExportTax(){
   var c = accRow(['Month','Gross','PAYG','Super','Net','Money In','GST estimate (1/11 of money in)']);
   months.forEach(function(m){
     var runs = d.runs.filter(function(r){ return (accRunDate(r)||'').slice(0,7) === m.key; });
-    var tx   = d.tx.filter(function(t){ return (t.date||'').slice(0,7) === m.key; });
+    var tx   = d.txOp.filter(function(t){ return (t.date||'').slice(0,7) === m.key; });
     var mIn  = accSum(tx,'amount_in');
     c += accRow([m.label,accSum(runs,'gross_pay').toFixed(2),accSum(runs,'tax_withheld').toFixed(2),
                  accSum(runs,'super_amount').toFixed(2),accSum(runs,'net_pay').toFixed(2),
                  mIn.toFixed(2),(mIn/11).toFixed(2)]);
   });
-  var totIn = accSum(d.tx,'amount_in');
+  var totIn = accSum(d.txOp,'amount_in');
   c += accRow(['TOTAL',accSum(d.runs,'gross_pay').toFixed(2),accSum(d.runs,'tax_withheld').toFixed(2),
                accSum(d.runs,'super_amount').toFixed(2),accSum(d.runs,'net_pay').toFixed(2),
                totIn.toFixed(2),(totIn/11).toFixed(2)]);
@@ -3639,7 +3679,7 @@ function renderAccountant(){
     + '</div>';
 
   // 1. Cash book
-  var tIn = accSum(d.tx,'amount_in'), tOut = accSum(d.tx,'amount_out');
+  var tIn = accSum(d.txOp,'amount_in'), tOut = accSum(d.txOp,'amount_out');
   html += section('Cash Book', d.range.label, 'accExportCashBook',
     '<div class="strip">'
       + '<div class="strip-card in"><div class="strip-label">Money in</div><div class="strip-val">'+fmt(tIn)+'</div></div>'
@@ -3716,7 +3756,7 @@ function renderAccountant(){
     '<div class="tbl-wrap"><table><thead><tr><th>Month</th><th class="td-right">Gross</th><th class="td-right">PAYG</th><th class="td-right">Super</th><th class="td-right">Net</th><th class="td-right">Money in</th><th class="td-right">GST est.</th></tr></thead><tbody>'
     + months.map(function(m){
         var runs = d.runs.filter(function(r){ return (accRunDate(r)||'').slice(0,7) === m.key; });
-        var tx   = d.tx.filter(function(t){ return (t.date||'').slice(0,7) === m.key; });
+        var tx   = d.txOp.filter(function(t){ return (t.date||'').slice(0,7) === m.key; });
         var mIn  = accSum(tx,'amount_in');
         return '<tr><td>'+m.label+'</td><td class="td-right">'+fmt(accSum(runs,'gross_pay'))+'</td>'
           + '<td class="td-right">'+fmt(accSum(runs,'tax_withheld'))+'</td><td class="td-right">'+fmt(accSum(runs,'super_amount'))+'</td>'
@@ -7942,6 +7982,99 @@ function parseWiseFormattedAmount(s) {
   return { value: val, sign: sign || 1, currency: currency };
 }
 
+// Wise names the outbound leg of a jar move after the CURRENCY, not the jar:
+// "Moved 125.00 AUD to AUD". The jar's real name simply isn't in that payload,
+// so a bare currency code becomes this placeholder rather than a description
+// that reads like a currency conversion. Real names ("Side Account",
+// "Lita's Groceries") pass through untouched.
+var WISE_DEFAULT_JAR_NAME = '[JAR NAME]';
+
+// Treat a captured name as a currency code only when it is three letters AND
+// matches this transaction's own currency (or no currency is known). That way a
+// jar genuinely called e.g. "ABC" keeps its name.
+function wiseJarDisplayName(name, t) {
+  var n = String(name == null ? '' : name).trim();
+  if(!n) return WISE_DEFAULT_JAR_NAME;
+  if(/^[A-Za-z]{3}$/.test(n)) {
+    var up = n.toUpperCase();
+    var src = String((t && t.sourceCurrency) || '').toUpperCase();
+    var tgt = String((t && t.targetCurrency) || '').toUpperCase();
+    if((!src && !tgt) || up === src || up === tgt) return WISE_DEFAULT_JAR_NAME;
+  }
+  return n;
+}
+
+// Wise ids arrive as CONVERSION_ORDER-5942674, BALANCE-6107067382 or a bare
+// number. Take the digits AFTER the last hyphen, keep the last 8. The old code
+// used id.slice(-8), which on "CONVERSION_ORDER-5942674" returned "-5942674"
+// and produced refs like "WISE--5942674".
+function wiseRefSuffix(id) {
+  var s = String(id == null ? '' : id);
+  var tail = s.indexOf('-') !== -1 ? s.slice(s.lastIndexOf('-') + 1) : s;
+  var digits = tail.replace(/\D/g, '');
+  if(!digits) digits = s.replace(/\D/g, '');
+  return digits.slice(-8);
+}
+// Rows imported before the ref fix carry the double-dash form, so the dedupe
+// check has to recognise both. Without this, changing the format would make
+// every existing jar row look new and re-import it.
+function wiseRefMatches(txRef, suffix) {
+  if(!suffix) return false;
+  var r = String(txRef || '');
+  return r.indexOf('WISE-' + suffix) !== -1 || r.indexOf('WISE--' + suffix) !== -1;
+}
+
+// Balance ids hide in different places depending on the endpoint.
+function wiseBalanceRef(src, key) {
+  if(!src || typeof src !== 'object') return null;
+  if(src[key] != null) return String(src[key]);
+  var nested = src[key.replace(/Id$/, '')];
+  if(nested && typeof nested === 'object' && nested.id != null) return String(nested.id);
+  return null;
+}
+function wiseFirstBalanceRef(key, a, b, c) {
+  return wiseBalanceRef(a, key) || wiseBalanceRef(b, key) || wiseBalanceRef(c, key) || null;
+}
+function wiseCurrencyOf(v, fallback) {
+  if(v && typeof v === 'object' && v.currency) return String(v.currency).toUpperCase();
+  if(typeof v === 'string') { var m = v.match(/[A-Z]{3}/); if(m) return m[0]; }
+  return String(fallback || '').toUpperCase();
+}
+
+// Is this Wise movement a jar move — money between two of our own AUD balances?
+// Returns null when it is not. Rule order:
+//   a. balance-ids — both source and target balance ids present, no currency
+//      conflict. Structural, so it survives Wise rewording anything.
+//   b. type+currency+description — CONVERSION or BALANCE_TO_BALANCE, both sides
+//      AUD (or undeterminable), AND the "Moved <amt> AUD to|from <jar>" shape.
+// A genuine FX conversion — both currencies known and different — is never a
+// jar move under either rule, so real conversions stay skipped.
+function detectWiseJarMove(t) {
+  if(!t) return null;
+  var src = String(t.sourceCurrency || '').toUpperCase();
+  var tgt = String(t.targetCurrency || '').toUpperCase();
+  if(src && tgt && src !== tgt) return null;
+  if((src && src !== 'AUD') || (tgt && tgt !== 'AUD')) return null;
+  var m = String(t.description || '').match(/^moved\s+[\d,.]+\s+aud\s+(to|from)\s+(.+)$/i);
+  if(t.sourceBalanceId && t.targetBalanceId) {
+    return {
+      rule: 'balance-ids',
+      direction: t.direction === 'in' ? 'in' : 'out',
+      jarName: wiseJarDisplayName(
+        m ? m[2] : (t.direction === 'in' ? t.senderName : t.recipientName), t)
+    };
+  }
+  var type = String(t.type || '').toUpperCase();
+  if((type === 'CONVERSION' || type === 'BALANCE_TO_BALANCE') && m) {
+    return {
+      rule: 'type+currency+description',
+      direction: m[1].toLowerCase() === 'from' ? 'in' : 'out',
+      jarName: wiseJarDisplayName(m[2], t)
+    };
+  }
+  return null;
+}
+
 // Map a transaction from the balance-statement endpoint (clean numeric amount +
 // explicit CREDIT/DEBIT type).
 function mapWiseStatementTx(t) {
@@ -7969,7 +8102,12 @@ function mapWiseStatementTx(t) {
     direction: dir,
     status: 'COMPLETED',
     type: detailType || typeStr,
-    _raw: t   // TEMPORARY diagnostic passenger — see the jar-move console.log below
+    // Structured fields detectWiseJarMove needs, carried instead of the whole
+    // raw payload.
+    sourceBalanceId: wiseFirstBalanceRef('sourceBalanceId', t, details, null),
+    targetBalanceId: wiseFirstBalanceRef('targetBalanceId', t, details, null),
+    sourceCurrency: wiseCurrencyOf(details.sourceAmount, amtObj.currency),
+    targetCurrency: wiseCurrencyOf(details.targetAmount, amtObj.currency)
   };
 }
 
@@ -8022,7 +8160,12 @@ function mapWiseActivity(a) {
     direction: dir,
     status: String(a.status || 'COMPLETED').toUpperCase(),
     type: String(a.type || resource.type || '').toUpperCase(),
-    _raw: a   // TEMPORARY diagnostic passenger — see the jar-move console.log below
+    // Structured fields detectWiseJarMove needs, carried instead of the whole
+    // raw payload.
+    sourceBalanceId: wiseFirstBalanceRef('sourceBalanceId', a, resource, resource.details),
+    targetBalanceId: wiseFirstBalanceRef('targetBalanceId', a, resource, resource.details),
+    sourceCurrency: wiseCurrencyOf(resource.sourceCurrency || resource.sourceAmount, parsed.currency),
+    targetCurrency: wiseCurrencyOf(resource.targetCurrency || resource.targetAmount, parsed.currency)
   };
 }
 
@@ -8890,33 +9033,24 @@ async function autoImportWiseExpenses() {
     var recipient = (t.recipientName||'').toLowerCase();
     var internalTypesOut = ['MONEY_ADDED','TOPPED_UP','CASHBACK','CONVERSION','INTEREST_PAYMENT','BALANCE_TO_BALANCE'];
 
-    // Exemption: jar moves (main AUD balance → a Wise jar). Wise types these as
-    // CONVERSION, so the internal/conversion skips below would drop them — but
-    // the money really has left the operating balance, and the cash book closing
-    // balance is meant to track the Wise main AUD balance. Let them through to
-    // be imported as ordinary expenses. Genuine FX conversions and Wise fees
-    // stay skipped: only this exact "Moved <amount> <CCY> to <jar>" shape is
-    // exempt. (The `desc.indexOf('jar')` skip further down is bypassed too, so
-    // a jar whose name contains the word "jar" still imports.)
-    var jarMove = (t.description||'').match(/^moved\s+[\d,.]+\s+[a-z]{3}\s+to\s+(.+)$/i);
-    var jarName = jarMove ? jarMove[1].trim() : '';
-    // TEMPORARY diagnostic: dump the untouched Wise payload for jar moves so we
-    // can see whether a scheduled jar transfer carries a targetBalanceId /
-    // sourceBalanceId or a resource pointer, rather than only description text.
-    // Remove this (and the _raw fields above) once the shape is known.
-    if(jarMove) {
-      try { console.log('[Wise jar debug]', tDate, tAmt, 'raw=', JSON.stringify(t._raw)); } catch(_){}
+    // Jar moves (main AUD balance → a Wise jar) are INTERNAL TRANSFERS, not
+    // expenses: the money is still ours, so it belongs in the running balance
+    // but not in Money Out. detectWiseJarMove decides structurally first and
+    // falls back to type + currency + description; a genuine FX conversion
+    // never qualifies and stays skipped by the rules below.
+    var jar = detectWiseJarMove(t);
+    var jarName = jar ? jar.jarName : '';
+    if(jar) {
+      console.log('[Wise jar] rule=' + jar.rule, 'dir=' + jar.direction,
+                  tDate, tAmt, 'jar="' + jarName + '"', 'id=' + (t.id||'?'));
     }
 
-    if(!jarMove) {
+    if(!jar) {
       if(internalTypesOut.indexOf(tTypeUpper)!==-1) { skipped.feeOrConv++; continue; }
       if(tType==='conversion'||tType==='fee'||tType==='balance-cashback') { skipped.feeOrConv++; continue; }
       if(desc.indexOf('balance cashback')!==-1||desc.indexOf('cashback')!==-1) { skipped.feeOrConv++; continue; }
       if(desc.indexOf('topped up account')!==-1||desc.indexOf('transferred between')!==-1) { skipped.feeOrConv++; continue; }
       if(recipient==='wise'||desc.indexOf('jar')!==-1) { skipped.feeOrConv++; continue; }
-    } else {
-      console.log('[Wise auto-import] jar move exempt from conversion skip —', tDate, tAmt,
-                  'type='+(t.type||'?'), 'jar="'+jarName+'"');
     }
 
     // Skip: matches an existing pay run. Anchor and window are deliberately
@@ -8975,7 +9109,7 @@ async function autoImportWiseExpenses() {
 
     // Skip: already in cash book. Use specific identity, not the catch-all-on-match
     // that previously caused every transfer to be flagged as duplicate.
-    var wiseRefSuffix = (t.id||'').toString().slice(-8);
+    var refSuffix = wiseRefSuffix(t.id);
     // Distinctive token from the counterparty name. The old code split the raw
     // description and took the first 5+ char word, which for "sent money to
     // yupa diepold" was "money" — so this guard never fired for statement rows.
@@ -8983,7 +9117,7 @@ async function autoImportWiseExpenses() {
     var alreadyInCB = S.tx.some(function(tx) {
       // Previously auto-imported by us — identified by reference
       var txRef = (tx.reference||'').toString();
-      if(wiseRefSuffix && txRef.indexOf('WISE-'+wiseRefSuffix)!==-1) return true;
+      if(wiseRefMatches(txRef, refSuffix)) return true;
       // Not this transfer? Skip the check.
       var txOut = +tx.amount_out||0;
       if(Math.abs(txOut - tAmt) > 0.02) return false;
@@ -9008,17 +9142,18 @@ async function autoImportWiseExpenses() {
          feeBlob.indexOf('monthly fee')!==-1)) {
       txDesc2 = ('Wise Fee - '+txDesc2).slice(0,80);
     }
-    // Jar moves get the jar name, not the raw "Moved 125.00 AUD to X" string.
-    if(jarName) txDesc2 = ('Jar - '+jarName).slice(0,80);
+    // Jar moves get a plain-language description, not the raw "Moved 125.00 AUD
+    // to X" string, and are typed as internal transfers.
+    if(jar) txDesc2 = ('Transfer to '+jarName+' (Jar)').slice(0,80);
     var month = MONTHS[new Date(tDate).getMonth()];
-    var ref = 'WISE-'+(wiseRefSuffix||Date.now().toString().slice(-8));
+    var ref = 'WISE-'+(refSuffix||Date.now().toString().slice(-8));
 
     try {
       var res = await sb2.from('transactions').insert({
         month: month,
         date: tDate,
         description: txDesc2,
-        payment_type: 'Wise Transfer',
+        payment_type: jar ? 'Internal Transfer' : 'Wise Transfer',
         reference: ref,
         amount_in: 0,
         amount_out: tAmt
@@ -9075,42 +9210,41 @@ async function autoImportWiseIncome() {
     if(!tAmt||tAmt<0.01||!tDate) { skipped.noData++; continue; }
     if(tStatus && tStatus!=='COMPLETED' && tStatus!=='FUNDS_CONVERTED') { skipped.notCompleted++; continue; }
 
-    // A jar → main move (money pulled back out of a jar, e.g. to correct a
-    // mistake) would land here, most likely typed CONVERSION like its outbound
-    // counterpart — but we have no sample of its actual shape, so it stays
-    // skipped for now. Dump the whole object the first time one appears so the
-    // real format is on record and can be handled properly. Logging only: the
-    // internal-type skip below still fires exactly as before.
-    if(tType === 'CONVERSION') {
-      console.warn('[Wise income-import] inbound CONVERSION skipped — possible jar→main move, shape not yet handled:', {
-        id: t.id, type: t.type, direction: t.direction,
-        amount: t.amount, targetAmount: t.targetAmount, date: t.date,
-        description: t.description, senderName: t.senderName, status: t.status
-      });
+    // A jar → main move (money pulled back OUT of a jar) is an internal
+    // transfer that DOES belong in the cash book — without it the balance keeps
+    // every jar sweep as a loss and never records the money coming back. These
+    // arrive typed BALANCE_TO_BALANCE (or CONVERSION), both of which sit in
+    // internalTypesIn, so the detector must run before that skip.
+    var jar = detectWiseJarMove(t);
+    if(jar) {
+      console.log('[Wise jar] rule=' + jar.rule, 'dir=' + jar.direction,
+                  tDate, tAmt, 'jar="' + jar.jarName + '"', 'id=' + (t.id||'?'));
     }
 
-    if(internalTypesIn.indexOf(tType)!==-1) { skipped.internal++; continue; }
+    if(!jar && internalTypesIn.indexOf(tType)!==-1) { skipped.internal++; continue; }
     if(descLower.indexOf('topped up account')!==-1||descLower.indexOf('transferred between')!==-1||
        senderLower.indexOf('topped up account')!==-1||senderLower.indexOf('transferred between')!==-1) {
       skipped.internal++; continue;
     }
 
-    var matchedToInvoice = (S.invoiceLedger||[]).some(function(inv){
+    // A jar withdrawal is never an invoice payment, so it must not be swallowed
+    // by the amount-based invoice match below.
+    var matchedToInvoice = !jar && (S.invoiceLedger||[]).some(function(inv){
       if(inv.wise_transfer_id && inv.wise_transfer_id === t.id) return true;
       if(inv.status === 'awaiting_payment' && Math.abs((+inv.amount||0) - tAmt) <= 1.00) return true;
       return false;
     });
     if(matchedToInvoice) { skipped.invoiceMatch++; continue; }
 
-    var wiseRefSuffix = (t.id||'').toString().slice(-8);
-    var ref = 'WISE-'+(wiseRefSuffix||Date.now().toString().slice(-8));
+    var refSuffix = wiseRefSuffix(t.id);
+    var ref = 'WISE-'+(refSuffix||Date.now().toString().slice(-8));
     var alreadyInCB = S.tx.some(function(tx){
-      var txRef = (tx.reference||'').toString();
-      return wiseRefSuffix && txRef.indexOf('WISE-'+wiseRefSuffix)!==-1;
+      return wiseRefMatches(tx.reference, refSuffix);
     });
     if(alreadyInCB) { skipped.alreadyCB++; continue; }
 
-    var txDesc2 = 'Deposit - '+(t.senderName||t.description||'Unknown');
+    var txDesc2 = jar ? ('Transfer from '+jar.jarName+' (Jar)').slice(0,80)
+                      : 'Deposit - '+(t.senderName||t.description||'Unknown');
     var month = MONTHS[new Date(tDate).getMonth()];
 
     try {
@@ -9118,7 +9252,7 @@ async function autoImportWiseIncome() {
         month: month,
         date: tDate,
         description: txDesc2,
-        payment_type: 'Wise Transfer',
+        payment_type: jar ? 'Internal Transfer' : 'Wise Transfer',
         reference: ref,
         amount_in: tAmt,
         amount_out: 0
@@ -10129,7 +10263,7 @@ function expIsPayroll(tx){
 }
 
 // The one gate every Expenses-tab transaction list goes through.
-function expIsTrackable(tx){ return expIsExpense(tx) && !expIsPayroll(tx); }
+function expIsTrackable(tx){ return expIsExpense(tx) && !expIsPayroll(tx) && !isInternalTransfer(tx); }
 
 // Loose label match: substring either way, else 60%+ of the label's
 // significant tokens appearing in the description.
