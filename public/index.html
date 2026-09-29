@@ -7983,11 +7983,16 @@ function parseWiseFormattedAmount(s) {
 }
 
 // Wise names the outbound leg of a jar move after the CURRENCY, not the jar:
-// "Moved 125.00 AUD to AUD". The jar's real name simply isn't in that payload,
-// so a bare currency code becomes this placeholder rather than a description
-// that reads like a currency conversion. Real names ("Side Account",
-// "Lita's Groceries") pass through untouched.
-var WISE_DEFAULT_JAR_NAME = '[JAR NAME]';
+// "Moved 125.00 AUD to AUD". The jar's real name simply isn't in that payload.
+// The only recurring sweep of that shape is the weekly $125 into the Lita's
+// Groceries jar, so a bare currency code resolves to that name. Real names
+// ("Side Account", "Lita's Groceries") pass through untouched.
+//
+// CAUTION: this asserts a specific jar for ANY bare-currency jar move. If a
+// second automated sweep is ever set up into a different jar, Wise will
+// describe it the same way and it will be mislabelled here until this constant
+// is replaced by a real source for the jar name.
+var WISE_DEFAULT_JAR_NAME = "Lita's Groceries";
 
 // Treat a captured name as a currency code only when it is three letters AND
 // matches this transaction's own currency (or no currency is known). That way a

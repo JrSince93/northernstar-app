@@ -49,11 +49,11 @@ order by date, reference;
 --
 -- NOTE ON THE FIVE 'AUD' ROWS: the Wise description is literally
 -- "Moved 125.00 AUD to AUD" — the jar's real name is not in the payload at all.
--- Rather than write a description that reads like a currency conversion, these
--- become 'Transfer to [JAR NAME] (Jar)', matching WISE_DEFAULT_JAR_NAME in
--- index.html so future imports produce the identical wording. Substitute the
--- real jar name here and in that constant once it is known; nothing else
--- depends on the wording.
+-- All five are the weekly $125 automated sweep into the Lita's Groceries jar,
+-- so they take that name, matching WISE_DEFAULT_JAR_NAME in index.html so
+-- future imports produce identical wording. If a second automated sweep into a
+-- different jar is ever created, Wise will describe it the same way and both
+-- this SQL and that constant will need a real source for the jar name.
 -- ─────────────────────────────────────────────────────────────────────────────
 begin;
 
@@ -74,7 +74,7 @@ update transactions set payment_type='Internal Transfer',
  where id='4d8e3c0d-fd48-4500-9b79-8866e6bfa6c5';
 
 update transactions set payment_type='Internal Transfer',
-       description='Transfer to [JAR NAME] (Jar)',
+       description='Transfer to Lita''s Groceries (Jar)',
        reference='WISE-5919661'
  where id='4b53898c-f1ad-4dab-bbfd-cc0a9769009b';
 
@@ -83,22 +83,22 @@ update transactions set payment_type='Internal Transfer',
  where id='a5b9b0d1-04f8-406f-b20d-2a408124beaf';
 
 update transactions set payment_type='Internal Transfer',
-       description='Transfer to [JAR NAME] (Jar)',
+       description='Transfer to Lita''s Groceries (Jar)',
        reference='WISE-5942674'
  where id='59adebc2-2afd-4acb-bde5-3ad431adea2b';
 
 update transactions set payment_type='Internal Transfer',
-       description='Transfer to [JAR NAME] (Jar)',
+       description='Transfer to Lita''s Groceries (Jar)',
        reference='WISE-5979959'
  where id='2cddcf8e-411f-4039-8ef3-a9fd97c8f034';
 
 update transactions set payment_type='Internal Transfer',
-       description='Transfer to [JAR NAME] (Jar)',
+       description='Transfer to Lita''s Groceries (Jar)',
        reference='WISE-6012992'
  where id='fbbc6107-e85d-420c-84d1-697536a89f92';
 
 update transactions set payment_type='Internal Transfer',
-       description='Transfer to [JAR NAME] (Jar)',
+       description='Transfer to Lita''s Groceries (Jar)',
        reference='WISE-6047008'
  where id='2ea80349-303e-4150-92c5-a56770b50db7';
 
