@@ -129,6 +129,7 @@ commit;
 -- That is every file in migrations/ as at 2026-09-18, with none left out.
 -- After adding any new migration, compare `ls migrations/` against this query;
 -- a file with no row is unknown, not unapplied.
+-- Later migrations are recorded as their own rows; check the table, not this count.
 
 -- ── ROLLBACK ────────────────────────────────────────────────────────────────
 -- drop table if exists public._migrations_applied;

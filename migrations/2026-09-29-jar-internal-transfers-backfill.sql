@@ -106,6 +106,18 @@ commit;
 -- Expect: 10 rows updated (1 per statement).
 
 -- ─────────────────────────────────────────────────────────────────────────────
+-- STEP C — NOT RUN. NO-OP WHEN THIS FILE WAS APPLIED ON 2026-09-29.
+-- By the time the backfill ran, the row already existed: reference
+-- WISE-07067382, dated 2026-09-19, created 2026-09-29 04:03 UTC by the live
+-- inbound importer once 1b29453 was deployed and the app was next opened. It
+-- matched on every field (Internal Transfer, amount_in 2390.00, month
+-- 'September', description 'Transfer from Side Account (Jar)'), so the guard
+-- below correctly returned a row and the INSERT was skipped. Note the date is
+-- 2026-09-19, not the 2026-09-20 assumed when this file was written — the
+-- importer took the UTC date from the payload, confirming the Wise transaction
+-- fell before 10:00 AEST. September figures are unaffected either way.
+-- Keep the guard: it is what makes re-running this file safe.
+--
 -- STEP C — the missing inbound. Guarded INSERT: the SELECT must return 0 rows
 -- first. This is the $2,390 that came back OUT of the Side Account jar and was
 -- never recorded — the other half of the 2026-08-30 outbound.
