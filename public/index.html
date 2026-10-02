@@ -2085,11 +2085,12 @@ function checkPeriodHolidays(){
     // Set holiday hours and auto-subtract from total
     if(autoHolHrs>0){
       eid('pr-hol-hrs').value=autoHolHrs;
-      // Auto-fill holiday rate from employee ph_rate if set
-      if(emp && emp.ph_rate && !eid('pr-hol-rate').value){
-        eid('pr-hol-rate').value=parseFloat(emp.ph_rate).toFixed(2);
-      } else if(emp && emp.pay_rate && !eid('pr-hol-rate').value){
-        eid('pr-hol-rate').value=(parseFloat(emp.pay_rate)*2.25).toFixed(2);
+      // Auto-fill the holiday rate from the single day-rate resolver, which
+      // honours emp.ph_rate and only falls back to the 2.25x default when the
+      // profile has no override. No inline multiplier here.
+      if(emp && !eid('pr-hol-rate').value){
+        var autoHolRate=getEmployeeDayRate(emp,'holiday');
+        if(autoHolRate>0) eid('pr-hol-rate').value=autoHolRate.toFixed(2);
       }
       // Show auto-fill notice
       var notice=eid('pr-hol-notice');
@@ -3868,10 +3869,15 @@ function genPayslip(id) {
           else { rate=br; rType='Weekday'; }
           var rowType = shiftLabel + ' — ' + rType;
           var hrs=parseFloat(d.hrs)||0;
-          // Prefer the exact amount captured at processing time (covers manual
-          // per-block rates); fall back to profile rate × hours for older rows.
+          // Prefer the rate and amount captured at processing time — import
+          // runs and manual per-block rates both store them, and rendering the
+          // stored pair is the only way the payslip lines are guaranteed to sum
+          // to gross_pay. Only rows predating those fields (legacy) fall back
+          // to the profile rate resolved above.
+          var storedRate=(d.rate!=null&&!isNaN(parseFloat(d.rate)))?+parseFloat(d.rate):null;
+          if(storedRate!=null) rate=storedRate;
           var amt=(d.pay_amt!=null&&!isNaN(parseFloat(d.pay_amt)))?+parseFloat(d.pay_amt).toFixed(2):+(hrs*rate).toFixed(2);
-          if(hrs>0&&d.pay_amt!=null)rate=+(amt/hrs).toFixed(2);
+          if(hrs>0&&d.pay_amt!=null&&storedRate==null)rate=+(amt/hrs).toFixed(2);
           dayLines.push({date:fmtDmy(ds),day:dn,hrs:hrs,rate:rate,type:rowType,amt:amt,hol:isH?VIC_HOLIDAYS[ds]:null});
         });
       } else {
@@ -4912,8 +4918,11 @@ function sleepoverActiveSegmentDay(date, startTime, endTime, activeHrs, activeSt
   // active_start/active_end, persisted since 2026-09-18-schedule-block-split-
   // times), that window is used as configured. Only when those are absent —
   // legacy blocks saved before that migration, or an imported shift with no
-  // matched block — does this fall back to the old assumption that the active
-  // segment is anchored to the end of the shift (handover).
+  // matched block — does this fall back to assuming the active segment sits at
+  // the START of the shift. That matches how the operator actually rosters
+  // these (every live sleepover block has active_start = start_time), so an
+  // unconfigured 21:00–06:00 Saturday sleepover prices its active hour at the
+  // Saturday rate rather than Sunday's.
   //
   // Either way, a segment straddling midnight lands on the day holding the
   // majority of it, and a tie goes to the later (handover) day.
@@ -4933,9 +4942,8 @@ function sleepoverActiveSegmentDay(date, startTime, endTime, activeHrs, activeSt
     segEndAbs = aEnd;
     if(segEndAbs <= segStartAbs) segEndAbs += 1440;
   } else {
-    if(endAbs<=1440) return activeDay; // shift ends on its start day
-    segEndAbs = endAbs;
-    segStartAbs = endAbs - activeHrs*60;
+    segStartAbs = startAbs;
+    segEndAbs = startAbs + activeHrs*60;
   }
   var minsAfterMidnight = Math.max(0, segEndAbs - Math.max(segStartAbs, 1440));
   var minsBeforeMidnight = Math.max(0, Math.min(segEndAbs, 1440) - segStartAbs);
@@ -9913,11 +9921,87 @@ function tsComputeSleepoverPay(shifts, emp){
     total:+(flatSum+activeSum).toFixed(2),perShift:perShift};
 }
 
+// Map a tsDayType() chip label onto the day-type keys getEmployeeDayRate takes.
+var TS_DAY_TYPE_BY_LABEL={'PH':'holiday','Sat':'saturday','Sun':'sunday','Wkday':'weekday'};
+function tsDayTypeName(dayType){
+  if(dayType==='holiday') return 'Public Holiday';
+  if(dayType==='saturday') return 'Saturday';
+  if(dayType==='sunday') return 'Sunday';
+  return 'Weekday';
+}
+
+// THE single pricing authority for timesheet-import pay runs. Stage 3's figure
+// and the gross_pay tsCreatePayRuns inserts both come from here, so what the
+// operator approves is what lands in the database — and the returned lines are
+// what the payslip renders, so the lines always sum to the gross.
+//
+// Every ordinary hour prices at getEmployeeDayRate(emp, dayType), the same
+// resolver the manual day grid and genPayslip use. That is what fixes PH hours
+// silently billing at pay_rate*2.25 while the employee profile carried a
+// ph_rate override. No inline multipliers live in this file any more.
+//
+// Sleepovers go through tsComputeSleepoverPay unchanged (block-resolved flat
+// allowance + active hours at the ordinary rate of the day the active segment
+// actually falls on). Travel is km * EMPLOYEE_TRAVEL_KM_RATE, folded into gross.
+function tsPriceRun(emp, includedShifts){
+  var shifts=(includedShifts||[]).filter(function(s){ return s && s.included!==false; });
+  var lines=[];
+  var hourlyGross=0;
+
+  shifts.forEach(function(s){
+    if(s.shiftKind==='sleepover') return; // priced below, as flat + active
+    var hrs=parseFloat(s.duration)||0;
+    if(!(hrs>0)) return;
+    var dayType=TS_DAY_TYPE_BY_LABEL[tsDayType(s.date).label]||'weekday';
+    var rate=getEmployeeDayRate(emp,dayType);
+    var amt=+(hrs*rate).toFixed(2);
+    lines.push({date:s.date,dayType:dayType,kind:'ordinary',hrs:+hrs,rate:rate,amt:amt,
+      label:tsDayTypeName(dayType),shift:s});
+    hourlyGross+=amt;
+  });
+
+  var sleepPay=tsComputeSleepoverPay(shifts, emp);
+  sleepPay.perShift.forEach(function(ps){
+    var totHrs=parseFloat(ps.shift.duration)||0;
+    lines.push({date:ps.shift.date,dayType:'flat',kind:'sleepover_flat',
+      hrs:+Math.max(0,totHrs-ps.activeHrs).toFixed(2),rate:null,amt:ps.flatAmt,
+      label:'Sleepover (inactive)',shift:ps.shift,perShift:ps});
+    if(ps.activeHrs>0){
+      lines.push({date:ps.activeDate,dayType:ps.activeType,kind:'sleepover_active',
+        hrs:ps.activeHrs,rate:ps.activeRate,amt:ps.activeAmt,
+        label:'Sleepover active — '+tsDayTypeName(ps.activeType),shift:ps.shift,perShift:ps});
+    }
+  });
+
+  var travelKm=shifts.reduce(function(a,s){ return a+(parseFloat(s.travelKm)||0); },0);
+  var travelAmt=+(travelKm*EMPLOYEE_TRAVEL_KM_RATE).toFixed(2);
+  if(travelAmt>0){
+    lines.push({date:null,dayType:null,kind:'travel',hrs:null,rate:EMPLOYEE_TRAVEL_KM_RATE,
+      amt:travelAmt,label:'Travel — '+(+travelKm.toFixed(1))+'km'});
+  }
+
+  hourlyGross=+hourlyGross.toFixed(2);
+  return {lines:lines,hourlyGross:hourlyGross,sleepPay:sleepPay,
+    travelKm:+travelKm.toFixed(2),travelAmt:travelAmt,
+    gross:+(hourlyGross+sleepPay.total+travelAmt).toFixed(2)};
+}
+
+// Stage 3 per-employee breakdown: every priced line, expandable.
+function tsToggleBreakdown(empId){
+  var row=eid('ts-bd-'+empId);
+  var caret=eid('ts-caret-'+empId);
+  if(!row) return;
+  var open=row.style.display==='none';
+  row.style.display=open?'':'none';
+  if(caret) caret.textContent=open?'▾':'▸';
+}
+
 function renderTsStage3(){
   eid('ts-modal-title').textContent='Confirm pay runs';
   var rows=[];
   var dupWarnings=[];
   var totalGross=0;
+  var priceable=0;
 
   _tsEnriched.forEach(function(er){
     if(er.empMatch.status==='ignored')return;
@@ -9927,21 +10011,23 @@ function renderTsStage3(){
     var emp=(S.emps||[]).find(function(e){return e.id===er.empMatch.employee_id;});
     if(!emp)return;
 
-    var tot=tsTotals(er.shifts||[]);
+    // An employee whose every shift was unticked in Stage 2 produces no pay
+    // run (tsCreatePayRuns skips on !included.length), so they must not appear
+    // in this table or in the "Create N draft pay runs" count either.
+    var includedShifts=(er.shifts||[]).filter(function(s){return s.included!==false;});
+    if(!includedShifts.length)return;
+    priceable++;
+
+    var tot=tsTotals(includedShifts);
     var totalHrs=tot.wd+tot.sat+tot.sun+tot.ph;
 
-    // Estimate gross (approximate — full calc happens in tsCreatePayRuns)
-    var br=parseFloat(emp.pay_rate)||0;
-    var sr=parseFloat(emp.sat_rate)||(br*1.5);
-    var ur=parseFloat(emp.sun_rate)||(br*2);
-    var pr=br*2.25;
-    var sleepPay=tsComputeSleepoverPay(er.shifts, emp);
-    // Employee travel reimbursement: sum logged km across included shifts.
-    var totalKm=(er.shifts||[]).filter(function(s){return s.included!==false;})
-      .reduce(function(a,s){return a+(parseFloat(s.travelKm)||0);},0);
-    var travelAmt=+(totalKm*EMPLOYEE_TRAVEL_KM_RATE).toFixed(2);
-    var gross=+(tot.wd*br+tot.sat*sr+tot.sun*ur+tot.ph*pr
-      +sleepPay.total+travelAmt).toFixed(2);
+    // Same pricing call tsCreatePayRuns makes, so this figure IS the gross_pay
+    // that gets inserted — not an estimate.
+    var priced=tsPriceRun(emp, includedShifts);
+    var sleepPay=priced.sleepPay;
+    var totalKm=priced.travelKm;
+    var travelAmt=priced.travelAmt;
+    var gross=priced.gross;
     totalGross+=gross;
 
     // PAYG/super default: OFF for contractors (responsible for their own tax),
@@ -9964,7 +10050,11 @@ function renderTsStage3(){
     }
 
     rows.push('<tr>'
-      +'<td style="padding:7px 10px;font-size:13px;font-weight:600">'+(emp?emp.name:er.employeeName)+(isContractor?'<div style="font-size:10px;color:var(--text3);font-weight:400">Contractor</div>':'')+'</td>'
+      +'<td style="padding:7px 10px;font-size:13px;font-weight:600">'
+        +'<span onclick="tsToggleBreakdown(\''+eid_+'\')" style="cursor:pointer;user-select:none">'
+        +'<span id="ts-caret-'+eid_+'" style="color:var(--text3);font-size:10px;margin-right:4px">&#9656;</span>'
+        +(emp?emp.name:er.employeeName)+'</span>'
+        +(isContractor?'<div style="font-size:10px;color:var(--text3);font-weight:400">Contractor</div>':'')+'</td>'
       +'<td style="padding:7px 10px;font-size:12px;color:var(--text2)">'+totalHrs.toFixed(1)+'h total</td>'
       +'<td style="padding:7px 10px;font-size:12px;color:var(--text2)">'+tot.wd.toFixed(1)+'h wd / '+tot.sat.toFixed(1)+'h sat / '+tot.sun.toFixed(1)+'h sun / '+tot.ph.toFixed(1)+'h PH</td>'
       +'<td style="padding:7px 10px;font-size:12px;color:#bc8cff">'+tot.sleep+' sleepovers'+(tot.sleep>0?' ('+tot.activeMins+' active min)':'')+'</td>'
@@ -9973,14 +10063,42 @@ function renderTsStage3(){
         +'<label style="cursor:pointer;margin-right:8px"><input type="checkbox" id="ts-payg-'+eid_+'"'+paygDefault+'> PAYG</label>'
         +'<label style="cursor:pointer"><input type="checkbox" id="ts-super-'+eid_+'"'+paygDefault+'> Super</label>'
       +'</td>'
-      +'<td style="padding:7px 10px;font-size:13px;font-weight:700;text-align:right;color:var(--green)">~'+fmt(gross)+'</td>'
+      +'<td style="padding:7px 10px;font-size:13px;font-weight:700;text-align:right;color:var(--green)">'+fmt(gross)+'</td>'
       +'</tr>');
+
+    // Collapsed per-employee breakdown — every priced line, so the operator can
+    // see which rate each hour went out at before the run is created. The lines
+    // are the same objects tsCreatePayRuns writes into day_breakdown.
+    var bdRows=priced.lines.map(function(l){
+      var dateCell=l.date?tsDowLabel(l.date)+' '+l.date:'&mdash;';
+      var hrsCell=(l.hrs!=null)?l.hrs.toFixed(2)+'h':'&mdash;';
+      var rateCell=(l.rate!=null)?'$'+l.rate.toFixed(2)+(l.kind==='travel'?'/km':'/hr'):'flat';
+      var col=l.kind==='travel'?'var(--gold)':(l.kind==='sleepover_flat'||l.kind==='sleepover_active')?'#bc8cff':'var(--text2)';
+      return '<tr><td style="padding:3px 8px;font-size:11px;color:var(--text3);white-space:nowrap">'+dateCell+'</td>'
+        +'<td style="padding:3px 8px;font-size:11px;color:'+col+'">'+l.label+'</td>'
+        +'<td style="padding:3px 8px;font-size:11px;text-align:right;color:var(--text2)">'+hrsCell+'</td>'
+        +'<td style="padding:3px 8px;font-size:11px;text-align:right;color:var(--text2)">'+rateCell+'</td>'
+        +'<td style="padding:3px 8px;font-size:11px;text-align:right;font-weight:600">'+fmt(l.amt)+'</td></tr>';
+    }).join('');
+    rows.push('<tr id="ts-bd-'+eid_+'" style="display:none"><td colspan="7" style="padding:0 10px 10px;background:var(--bg3)">'
+      +'<table style="width:100%;border-collapse:collapse">'
+      +'<thead><tr><th style="padding:4px 8px;text-align:left;font-size:9px;color:var(--text3);text-transform:uppercase">Date</th>'
+      +'<th style="padding:4px 8px;text-align:left;font-size:9px;color:var(--text3);text-transform:uppercase">Line</th>'
+      +'<th style="padding:4px 8px;text-align:right;font-size:9px;color:var(--text3);text-transform:uppercase">Hours</th>'
+      +'<th style="padding:4px 8px;text-align:right;font-size:9px;color:var(--text3);text-transform:uppercase">Rate</th>'
+      +'<th style="padding:4px 8px;text-align:right;font-size:9px;color:var(--text3);text-transform:uppercase">Amount</th></tr></thead>'
+      +'<tbody>'+bdRows+'</tbody>'
+      +'<tfoot><tr style="border-top:1px solid var(--border)"><td colspan="4" style="padding:5px 8px;font-size:11px;font-weight:700;text-align:right;color:var(--text2)">Gross</td>'
+      +'<td style="padding:5px 8px;font-size:12px;font-weight:800;text-align:right;color:var(--green)">'+fmt(gross)+'</td></tr></tfoot>'
+      +'</table></td></tr>');
   });
 
   var warnHtml=dupWarnings.length?'<div style="background:rgba(251,191,36,.08);border:1px solid rgba(251,191,36,.3);border-radius:var(--r);padding:10px 12px;margin-bottom:14px">'+dupWarnings.join('')+'</div>':'';
 
-  var included=_tsEnriched.filter(function(er){return er.empMatch.employee_id&&er.empMatch.status!=='ignored'&&(!er.error||er.shifts.length);});
-  eid('ts-btn-create').textContent='Create '+included.length+' draft pay run'+(included.length!==1?'s':'');
+  // priceable counts only the employees actually priced above — i.e. those with
+  // at least one included shift — so the button never promises a run that
+  // tsCreatePayRuns will skip.
+  eid('ts-btn-create').textContent='Create '+priceable+' draft pay run'+(priceable!==1?'s':'');
   eid('ts-btn-create').style.display='';
 
   eid('ts-confirm-body').innerHTML=warnHtml
@@ -9992,11 +10110,11 @@ function renderTsStage3(){
     +'<th style="padding:7px 10px;text-align:left;font-size:10px;color:var(--text3);text-transform:uppercase;border-bottom:1px solid var(--border)">Sleepovers</th>'
     +'<th style="padding:7px 10px;text-align:left;font-size:10px;color:var(--text3);text-transform:uppercase;border-bottom:1px solid var(--border)">Travel</th>'
     +'<th style="padding:7px 10px;text-align:left;font-size:10px;color:var(--text3);text-transform:uppercase;border-bottom:1px solid var(--border)">Withhold</th>'
-    +'<th style="padding:7px 10px;text-align:right;font-size:10px;color:var(--text3);text-transform:uppercase;border-bottom:1px solid var(--border)">Est. gross</th>'
+    +'<th style="padding:7px 10px;text-align:right;font-size:10px;color:var(--text3);text-transform:uppercase;border-bottom:1px solid var(--border)">Gross</th>'
     +'</tr></thead>'
     +'<tbody>'+rows.join('')+'</tbody>'
     +'<tfoot><tr style="border-top:2px solid var(--border);background:var(--bg4)">'
-    +'<td colspan="6" style="padding:9px 10px;font-size:12px;font-weight:700;text-align:right;color:var(--text2)">Total ('+included.length+' employee'+(included.length!==1?'s':'')+')</td>'
+    +'<td colspan="6" style="padding:9px 10px;font-size:12px;font-weight:700;text-align:right;color:var(--text2)">Total ('+priceable+' employee'+(priceable!==1?'s':'')+')</td>'
     +'<td style="padding:9px 10px;font-size:14px;font-weight:800;text-align:right;color:var(--green)">'+fmt(totalGross)+'</td>'
     +'</tr></tfoot></table>';
 }
@@ -10042,24 +10160,19 @@ async function tsCreatePayRuns(){
     if(!included.length)continue;
 
     var tot=tsTotals(included);
-    var br=parseFloat(emp.pay_rate)||0;
-    var sr=emp.sat_rate?parseFloat(emp.sat_rate):(br*1.5);
-    var ur=emp.sun_rate?parseFloat(emp.sun_rate):(br*2);
 
-    // Sleepovers use the same model as manual pay runs: per shift, block-resolved
-    // flat + active hours at the ordinary rate of the day the active segment
-    // falls on — not computePay's 1.5x overtime model.
-    var sleepPay=tsComputeSleepoverPay(included, emp);
+    // Pricing lives entirely in tsPriceRun — the same call Stage 3 made, so the
+    // figure the operator approved is the gross_pay inserted below. Ordinary
+    // hours come off getEmployeeDayRate (honours sat_rate/sun_rate/ph_rate);
+    // sleepovers keep the manual-pay-run flat + active model; travel is km ×
+    // $0.99, folded into gross and taxed like the rest (no carve-out —
+    // contractors handle their own tax via the PAYG toggle below).
+    var priced=tsPriceRun(emp, included);
+    var sleepPay=priced.sleepPay;
     var perShiftMins=sleepPay.perShift.map(function(ps){return Math.round(ps.activeHrs*60);});
-
-    // Employee travel reimbursement: sum logged km × $0.99, folded into gross
-    // and taxed like the rest of the run (no carve-out — contractors handle
-    // their own tax via the PAYG toggle below).
-    var totalKm=included.reduce(function(a,s){return a+(parseFloat(s.travelKm)||0);},0);
-    var travelAmt=+(totalKm*EMPLOYEE_TRAVEL_KM_RATE).toFixed(2);
-
-    var hourlyGross=+(tot.wd*br+tot.sat*sr+tot.sun*ur+tot.ph*(br*2.25)).toFixed(2);
-    var gross=+(hourlyGross+sleepPay.total+travelAmt).toFixed(2);
+    var totalKm=priced.travelKm;
+    var travelAmt=priced.travelAmt;
+    var gross=priced.gross;
     // Per-employee PAYG/super toggle from Stage 3 (defaults off for contractors).
     var paygOn=(eid('ts-payg-'+emp.id)||{checked:true}).checked;
     var superOn=(eid('ts-super-'+emp.id)||{checked:true}).checked;
@@ -10069,7 +10182,6 @@ async function tsCreatePayRuns(){
     var p={gross:gross,tax:tax,sup:sup,net:+(gross-tax).toFixed(2)};
 
     // Build day_breakdown — one entry per included shift + sleepover_meta + travel_meta + import_meta
-    var dtLabelMap={'PH':'holiday','Sat':'saturday','Sun':'sunday','Wkday':'weekday'};
     var dayBreakdown=included.map(function(s){
       var dtObj=tsDayType(s.date);
       var isSleep=s.shiftKind==='sleepover';
@@ -10077,7 +10189,7 @@ async function tsCreatePayRuns(){
       var row={
         date:s.date,
         dow:tsDowLabel(s.date),
-        type:dtLabelMap[dtObj.label]||'weekday',
+        type:TS_DAY_TYPE_BY_LABEL[dtObj.label]||'weekday',
         worked:true,
         hrs:+(s.duration||0),
         startTime:s['in']||'',
@@ -10089,6 +10201,14 @@ async function tsCreatePayRuns(){
         shift_kind:s.shiftKind||null,
         isSleep:isSleep
       };
+      if(!isSleep){
+        // Record the rate and amount this hour was actually priced at, so the
+        // payslip renders what was paid instead of re-deriving it from the
+        // employee profile (which drifts the moment a rate is edited, and was
+        // how PH hours came out at a different figure from gross_pay).
+        var ol=priced.lines.find(function(l){ return l.kind==='ordinary'&&l.shift===s; });
+        if(ol){ row.rate=ol.rate; row.pay_amt=ol.amt; }
+      }
       if(isSleep){
         // Attach the flat/active split so genPayslip renders the two lines
         // (inactive flat + active @ ordinary day rate) exactly like manual runs.
