@@ -3016,6 +3016,17 @@ function trackedLinesForParticipant(pt){
   });
 }
 
+// The invoice-ref prefixes a budget line owns. A merged core_combined line owns
+// BOTH prefix families: new invoices are INV-CF-, but historical community
+// (0125) invoices were INV-COM- and must attribute to the merged line rather
+// than landing in Unattributed. Shared with saveInvoiceLedgerEntry's
+// ref-vs-line check, so attribution and that guard can't disagree.
+function blRefPrefixes(bl){
+  return bl.rate_card==='core_combined'
+    ? ['INV-CF-','INV-COM-']
+    : [BL_INV_PREFIXES[bl.rate_card||'core'] || 'INV-'];
+}
+
 // Attribute each receipt to a budget line by invoice-ref prefix (INV-SIL- \u2192
 // sil line, INV-CF- \u2192 core/core_combined, INV-EMP- \u2192 employment, INV-COM- \u2192
 // community). Longest prefix wins so the custom 'INV-' catch-all can't swallow
@@ -3032,13 +3043,7 @@ function attributeReceiptsToLines(pt, lines){
   }
   var matchers = [];
   lines.forEach(function(bl){
-    // A merged core_combined line owns BOTH prefix families: new invoices are
-    // INV-CF-, but historical community (0125) invoices were INV-COM- and must
-    // attribute to the merged line rather than landing in Unattributed.
-    var prefixes = bl.rate_card==='core_combined'
-      ? ['INV-CF-','INV-COM-']
-      : [BL_INV_PREFIXES[bl.rate_card||'core'] || 'INV-'];
-    prefixes.forEach(function(p){ matchers.push({ id: bl.id, prefix: p }); });
+    blRefPrefixes(bl).forEach(function(p){ matchers.push({ id: bl.id, prefix: p }); });
   });
   matchers.sort(function(a,b){ return b.prefix.length - a.prefix.length; });
   var unattributed = [];
@@ -3212,8 +3217,15 @@ function renderNDISBudgetLineSection(pt, bl, plan, computed, keyPrefix) {
       + '</div>';
 
       if(row.isCurrent) {
-        var daysIn = Math.max(0, Math.round((now - q.start)/86400000));
-        var daysTotal = Math.round((q.end - q.start)/86400000) + 1;
+        // Quarterly periods carry start/end Dates; funding-schedule periods
+        // (computeFundingScheduleRowsForParticipant) carry only the ISO strings,
+        // so build local-midnight Dates from those — undefined here was the
+        // "Day NaN of NaN" pace line.
+        var isoToDate = function(iso){ var p = String(iso||'').split('-'); return new Date(+p[0], +p[1]-1, +p[2]); };
+        var qStart = q.start || isoToDate(q.start_iso);
+        var qEnd   = q.end   || isoToDate(q.end_iso);
+        var daysIn = Math.max(0, Math.round((now - qStart)/86400000));
+        var daysTotal = Math.round((qEnd - qStart)/86400000) + 1;
         var daysLeft = Math.max(0, daysTotal - daysIn);
         var expectedRunRate = q.fresh * (daysIn / daysTotal);
         var variance = row.received - expectedRunRate;
@@ -8724,6 +8736,28 @@ async function saveInvoiceLedgerEntry() {
   var blId = (eid('il-budget-line-id')||{value:''}).value || null;
   var rateCard = (eid('il-rate-card')||{value:''}).value || null;
 
+  // The reference and the hidden budget-line link are filled from the same
+  // candidate, but the reference can be unlocked and retyped (and the picker
+  // changed) independently of the link. A direct link outranks the reference
+  // in attributeReceiptsToLines, so a mismatch files the payment on the wrong
+  // line with nothing on screen to say so — INV-CF-20260927 was saved carrying
+  // Lita's SIL line id and pushed her SIL period to 122%. Refuse it here.
+  if(blId) {
+    var linkedBl = (pt && pt.budget_lines || []).find(function(b){ return b.id===blId; });
+    if(!linkedBl) {
+      showToast('This invoice is linked to a budget line the participant no longer has — reopen the invoice and pick it again','err');
+      return;
+    }
+    var refUp = invRef.toUpperCase();
+    var owned = blRefPrefixes(linkedBl);
+    if(!owned.some(function(pfx){ return refUp.indexOf(pfx)===0; })) {
+      showToast(invRef+' does not match the linked line ('
+        + (BL_CARD_LABELS[linkedBl.rate_card||'core']||linkedBl.rate_card||'budget line')
+        + ', expects '+owned.join(' or ')+') — pick the matching generated invoice above','err');
+      return;
+    }
+  }
+
   // Backstop for hand-typed refs on a multi-line participant: with no budget
   // line carried through, the reference IS the only attribution key, so a
   // malformed one silently lands in Unattributed after payment. Block it here
@@ -8775,7 +8809,11 @@ async function saveInvoiceLedgerEntry() {
   var pt2 = (S.participants||[]).find(function(p){ return p.id===_ilParticipantId; });
   if(pt2 && pt2.pending_invoice) {
     pt2.pending_invoice = null;
-    sb2.from('participants').update({ pending_invoice: null }).eq('id', _ilParticipantId);
+    // supabase-js builders are lazy: without .then/await the request is never
+    // sent, which is why a confirmed invoice stayed in pending_invoice and was
+    // offered again after a reload.
+    sb2.from('participants').update({ pending_invoice: null }).eq('id', _ilParticipantId)
+      .then(function(r){ if(r.error) console.warn('[invoice ledger] could not clear pending_invoice:', r.error.message); });
   }
   renderInvoices();renderDash();
   showToast('Invoice '+invRef+' added to ledger — awaiting payment','ok');
