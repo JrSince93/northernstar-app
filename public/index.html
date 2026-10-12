@@ -6274,26 +6274,47 @@ function applyRoleNav(){
   });
 }
 
-// Single entry into the app for both a fresh login and a restored session.
+// Single entry into the app for both a fresh login and a restored session —
+// and only once per page load. checkAuth() fires at load and doLogin()
+// fires on submit; if getSession() is still in flight when the form is
+// submitted, both reach here and each starts its own loadAll(), hence its own
+// initWiseSync() — one of the two ways the Wise importers end up running
+// concurrently and double-inserting a transfer (see _wiseImportInFlight).
+var _enteringApp = false;
+
 async function enterApp(session){
-  var status = await loadStaffRole(session.user);
-  if(status !== 'ok'){
-    // No role: sign out. Couldn't reach Supabase: keep the session so a retry
-    // (Sign in, or a reload) doesn't need the password again.
-    if(status === 'norole') await sb2.auth.signOut().catch(function(){});
-    eid('loginScreen').style.display='flex';
-    eid('appShell').style.display='none';
-    var errEl = eid('loginErr');
-    errEl.style.display='block';
-    errEl.textContent = status === 'norole'
-      ? 'This account has no staff role. Ask the administrator to set one up.'
-      : 'Could not load your access level. Check your connection and try again.';
+  if(_enteringApp){
+    console.warn('[auth] enterApp already in progress — skipped');
     return;
   }
-  applyRoleNav();
-  eid('loginScreen').style.display='none';
-  eid('appShell').style.display='flex';
-  loadAll();
+  _enteringApp = true;
+  var entered = false;
+  try {
+    var status = await loadStaffRole(session.user);
+    if(status !== 'ok'){
+      // No role: sign out. Couldn't reach Supabase: keep the session so a retry
+      // (Sign in, or a reload) doesn't need the password again.
+      if(status === 'norole') await sb2.auth.signOut().catch(function(){});
+      eid('loginScreen').style.display='flex';
+      eid('appShell').style.display='none';
+      var errEl = eid('loginErr');
+      errEl.style.display='block';
+      errEl.textContent = status === 'norole'
+        ? 'This account has no staff role. Ask the administrator to set one up.'
+        : 'Could not load your access level. Check your connection and try again.';
+      return;
+    }
+    applyRoleNav();
+    eid('loginScreen').style.display='none';
+    eid('appShell').style.display='flex';
+    entered = true;
+    loadAll();
+  } finally {
+    // Latched on success — the app is entered, and a second call would only
+    // duplicate loadAll(). Released on every failure path, including a thrown
+    // loadStaffRole, so a retry after a no-role or offline error still works.
+    if(!entered) _enteringApp = false;
+  }
 }
 
 function checkAuth(){
@@ -8988,8 +9009,48 @@ function wiseNameKeyword(name) {
   return toks.reduce(function(a,b){ return b.length > a.length ? b : a; });
 }
 
+// ── Wise importer concurrency guard ──
+// Both importers decide what is already in the cash book by reading S.tx, then
+// insert. S.tx is per-page in-memory state and the check happens before the
+// insert's await resolves, so two overlapping runs both pass the check and both
+// insert — which is how WISE-07713285 landed twice, 1 ms apart. This flag stops
+// one page racing itself (a second enterApp, a reload mid-sync). It cannot stop
+// a second tab, which has its own S.tx: the partial unique index from
+// migrations/2026-10-13-wise-reference-unique-index.sql is the real backstop,
+// and a 23505 from it is handled below as "already imported", not as an error.
+var _wiseImportInFlight = { out:false, in:false };
+
+// After a 23505 the row exists in the database but not in this tab's S.tx, so
+// every S.tx-derived figure here — the Cash Book running balance, the Dashboard
+// money-out KPI, P&L — is understated by that row until the next page load.
+// Nothing double-counts (the run that won the race holds the only copy), but the
+// toast is suppressed, so the operator would be looking at a balance that
+// silently disagrees with the bank. Pulling the winning row into S.tx costs one
+// indexed lookup and keeps this tab honest. Fails quietly: a tab that is merely
+// understated is still better than a broken import loop.
+async function wiseAdoptExistingTx(ref){
+  try {
+    var got = await sb2.from('transactions').select('*').eq('reference', ref).limit(1);
+    if(got.error || !got.data || !got.data[0]) return;
+    var row = got.data[0];
+    if(!(S.tx||[]).some(function(t){ return t.id === row.id; })) S.tx.push(row);
+  } catch(e) {
+    console.warn('[Wise import] could not adopt existing row for', ref, e);
+  }
+}
+
 // ── Auto-import Wise outbound transfers as cash book expenses ──
 async function autoImportWiseExpenses() {
+  if(_wiseImportInFlight.out) {
+    console.warn('[Wise auto-import] outbound import already running — skipped');
+    return;
+  }
+  _wiseImportInFlight.out = true;
+  try { return await _autoImportWiseExpensesInner(); }
+  finally { _wiseImportInFlight.out = false; }
+}
+
+async function _autoImportWiseExpensesInner() {
   if(!S.wiseTransfers||S.wiseTransfers.length===0) return;
 
   // Diagnostic: dump all transfers to console once per sync so we can see shape
@@ -9007,7 +9068,13 @@ async function autoImportWiseExpenses() {
 
   var imported = 0;
   var jarImported = 0;
-  var skipped = { payroll:0, alreadyCB:0, feeOrConv:0, noData:0, notCompleted:0, inactive:0, ignoredOpening:0 };
+  var skipped = { payroll:0, alreadyCB:0, feeOrConv:0, noData:0, notCompleted:0, inactive:0, ignoredOpening:0, dupInBatch:0 };
+
+  // Within-batch dedupe. The S.tx.push after a successful insert already covers
+  // the same transfer appearing twice in one payload, but only while that push
+  // happens — an insert that returns no row would slip through. Keyed on the
+  // computed reference, so two Wise ids whose last 8 digits collide count as one.
+  var seenRefs = {};
 
   // Hardcoded ignore list — Wise transfers we never want imported.
   // Currently: the original $65 bank-details acquisition fee from when the
@@ -9160,8 +9227,13 @@ async function autoImportWiseExpenses() {
     if(jar) txDesc2 = ('Transfer to '+jarName+' (Jar)').slice(0,80);
     var month = MONTHS[new Date(tDate).getMonth()];
     var ref = 'WISE-'+(refSuffix||Date.now().toString().slice(-8));
+    if(seenRefs[ref]) { skipped.dupInBatch++; continue; }
+    seenRefs[ref] = 1;
 
     try {
+      // expense_month is deliberately absent from this field list — see the note
+      // on expTxMonthKey. The importer records when the money moved; moving a
+      // row to another Expenses month is an operator decision it must not undo.
       var res = await sb2.from('transactions').insert({
         month: month,
         date: tDate,
@@ -9173,6 +9245,14 @@ async function autoImportWiseExpenses() {
       }).select();
 
       if(res.error) {
+        // 23505 = the partial unique index on WISE- references rejected this row,
+        // so another run (or another tab) already imported the transfer. That is
+        // the expected outcome of a race, not a failure: no toast, carry on.
+        if(res.error.code === '23505') {
+          skipped.alreadyCB++;
+          await wiseAdoptExistingTx(ref);
+          continue;
+        }
         console.warn('[Wise auto-import] insert error:', res.error.message, 'for', txDesc2);
         continue;
       }
@@ -9198,6 +9278,18 @@ async function autoImportWiseExpenses() {
 
 // ── Auto-import Wise inbound deposits (non-invoice) as cash book income ──
 async function autoImportWiseIncome() {
+  if(_wiseImportInFlight['in']) {
+    console.warn('[Wise income-import] inbound import already running — skipped');
+    return;
+  }
+  _wiseImportInFlight['in'] = true;
+  try { return await _autoImportWiseIncomeInner(); }
+  finally { _wiseImportInFlight['in'] = false; }
+}
+
+// Same flaw as the outbound importer: the alreadyInCB check below reads S.tx and
+// resolves before the insert lands, so two overlapping runs both insert.
+async function _autoImportWiseIncomeInner() {
   if(!S.wiseTransfers||S.wiseTransfers.length===0) return;
 
   var inbound = S.wiseTransfers.filter(function(t){ return t.direction==='in'; });
@@ -9206,7 +9298,8 @@ async function autoImportWiseIncome() {
 
   var internalTypesIn = ['MONEY_ADDED','TOPPED_UP','CASHBACK','CONVERSION','INTEREST_PAYMENT','BALANCE_TO_BALANCE'];
   var imported = 0;
-  var skipped = { invoiceMatch:0, alreadyCB:0, internal:0, noData:0, notCompleted:0 };
+  var skipped = { invoiceMatch:0, alreadyCB:0, internal:0, noData:0, notCompleted:0, dupInBatch:0 };
+  var seenRefs = {};   // within-batch dedupe; see the outbound importer
 
   for(var i=0; i<inbound.length; i++) {
     var t = inbound[i];
@@ -9255,12 +9348,15 @@ async function autoImportWiseIncome() {
       return wiseRefMatches(tx.reference, refSuffix);
     });
     if(alreadyInCB) { skipped.alreadyCB++; continue; }
+    if(seenRefs[ref]) { skipped.dupInBatch++; continue; }
+    seenRefs[ref] = 1;
 
     var txDesc2 = jar ? ('Transfer from '+jar.jarName+' (Jar)').slice(0,80)
                       : 'Deposit - '+(t.senderName||t.description||'Unknown');
     var month = MONTHS[new Date(tDate).getMonth()];
 
     try {
+      // expense_month deliberately absent — see the outbound importer's note.
       var res = await sb2.from('transactions').insert({
         month: month,
         date: tDate,
@@ -9272,6 +9368,12 @@ async function autoImportWiseIncome() {
       }).select();
 
       if(res.error) {
+        // 23505 → the unique index caught a race; already imported, not a failure.
+        if(res.error.code === '23505') {
+          skipped.alreadyCB++;
+          await wiseAdoptExistingTx(ref);
+          continue;
+        }
         console.warn('[Wise income-import] insert error:', res.error.message, 'for', txDesc2);
         continue;
       }
@@ -10368,11 +10470,43 @@ function expMonthKeyLabel(key){
 }
 
 function expIsExpense(tx){ return (+tx.amount_out||0) > 0; }
-function expTxInMonth(tx, key){ return String(tx.date||'').indexOf(key||expMonthKey())===0; }
-// 'YYYY-MM' of a transaction's own date, or null if the date is unusable.
+
+// The date the EXPENSES TAB files a transaction under: expense_month when the
+// operator has moved it to another month, otherwise its own paid date.
+//
+// This override is read here and nowhere else. The Cash Book, Dashboard KPIs and
+// charts, Reports P&L, Tax & BAS, the NDIS budget tracker, the Accountant page,
+// downloadTaxPackage, Wise invoice matching and the Wise import dedupe all stay
+// on the real transactions.date — and expense_month is kept out of every INSERT
+// field list in this file, so no importer can set or clear it. Only
+// public.move_expense_month() writes it.
+function expTxMonthSource(tx){
+  var em = String(tx && tx.expense_month || '').slice(0,10);
+  return /^\d{4}-\d{2}-\d{2}$/.test(em) ? em : String(tx && tx.date || '');
+}
+function expTxInMonth(tx, key){ return expTxMonthSource(tx).indexOf(key||expMonthKey())===0; }
+// 'YYYY-MM' this transaction is filed under, or null if the date is unusable.
 function expTxMonthKey(tx){
-  var k = String(tx && tx.date || '').slice(0,7);
+  var k = expTxMonthSource(tx).slice(0,7);
   return /^\d{4}-\d{2}$/.test(k) ? k : null;
+}
+// True only when the override actually moves the row to a different month, so a
+// redundant expense_month equal to the paid month doesn't badge the row.
+function expTxIsMoved(tx){
+  if(!(tx && tx.expense_month)) return false;
+  var filed = expTxMonthKey(tx), paid = String(tx.date||'').slice(0,7);
+  return !!filed && /^\d{4}-\d{2}$/.test(paid) && filed !== paid;
+}
+// "Paid 2 Oct" marker for a moved row. The date column keeps showing the real
+// date; this only explains why the row is filed under another month.
+function expPaidBadgeHtml(tx){
+  if(!expTxIsMoved(tx)) return '';
+  var p = String(tx.date||'').split('-');
+  var d = parseInt(p[2],10), mi = parseInt(p[1],10)-1;
+  if(!d || !SHORT[mi]) return '';
+  return ' <span class="td-muted" style="font-size:9px;padding:1px 5px;border:1px solid var(--border2);'
+    +'border-radius:20px;white-space:nowrap" title="Paid '+(tx.date||'')+', filed under '
+    +expMonthKeyLabel(expTxMonthKey(tx))+'">Paid '+d+' '+SHORT[mi]+'</span>';
 }
 
 // Payroll never appears anywhere on the Expenses tab — it stays exclusively on
@@ -10826,8 +10960,10 @@ function detectRecurringCandidates(){
     // Distinct months, keeping one representative transaction per month.
     var byMonth = {};
     g.txs.forEach(function(t){
-      var key = String(t.date||'').slice(0,7);
-      if(/^\d{4}-\d{2}$/.test(key) && !byMonth[key]) byMonth[key] = t;
+      // Filed month, not the paid date, so a moved row back-fills the month the
+      // operator assigned it to.
+      var key = expTxMonthKey(t);
+      if(key && !byMonth[key]) byMonth[key] = t;
     });
     var months = Object.keys(byMonth).sort();
     if(months.length < EXP_CANDIDATE_MIN_MONTHS) return;
@@ -11081,12 +11217,16 @@ function expOneOffListHtml(txs){
     + txs.map(function(t){
         return '<div><div class="exp-row" oncontextmenu="expTxMenu(event,\''+t.id+'\');return false;">'
           +'<div class="exp-row-main">'
-            +'<div class="lbl">'+(t.description||'&mdash;')+'</div>'
+            +'<div class="lbl">'+(t.description||'&mdash;')+expPaidBadgeHtml(t)+'</div>'
             +'<div class="td-muted" style="font-size:10px">'+(t.date||'')
               +((t.payment_type||t.reference) ? ' &middot; '+[t.payment_type,t.reference].filter(Boolean).join(' &middot; ') : '')+'</div>'
           +'</div>'
           +'<div class="exp-row-amt" style="color:var(--out)">'+fmt(t.amount_out)+'</div>'
           +'<div class="exp-row-act">'
+            // Allocated rows get the same menu as unallocated ones, so a month
+            // can still be corrected after the row has been allocated.
+            +'<button class="btn btn-outline btn-sm" title="Allocate, recurring, move month" '
+              +'onclick="expTxMenu(event,\''+t.id+'\')">&hellip;</button>'
             +'<button class="btn btn-outline btn-sm" onclick="expUnlinkOneOff(\''+t.id+'\')">Unlink</button>'
           +'</div>'
         +'</div></div>';
@@ -11122,6 +11262,7 @@ function expRecurringCardHtml(re, key){
 
   var matched = lastTx
     ? '<span class="td-muted">'+lastTx.date+' &middot; '+fmt(lastTx.amount_out)+'</span>'
+      +expPaidBadgeHtml(lastTx)
     : '<span class="td-muted">&mdash;</span>';
 
   // Single occurrence keeps its explicit Match/Unlink. Multi-occurrence offers
@@ -11315,7 +11456,7 @@ function renderUnallocatedTx(){
           + g.rows.map(function(t){
               return '<tr oncontextmenu="expTxMenu(event,\''+t.id+'\');return false;" style="cursor:context-menu">'
                 +'<td>'+(t.date||'')+'</td>'
-                +'<td>'+(t.description||'')+'</td>'
+                +'<td>'+(t.description||'')+expPaidBadgeHtml(t)+'</td>'
                 +'<td><span class="td-muted">'+(t.payment_type||'')+'</span></td>'
                 +'<td><span class="td-muted">'+(t.reference||'')+'</span></td>'
                 +'<td class="td-right" style="color:var(--out);font-weight:600">'+fmt(t.amount_out)+'</td>'
@@ -11356,12 +11497,133 @@ function expMenuItem(label, onclick, color){
 
 function expTxMenu(ev, txId){
   _expCtxTx = txId;
+  var tx = expTxById(txId);
+  var sep = '<div style="height:1px;background:var(--border);margin:4px 0"></div>';
   expShowMenu(ev,
     expMenuItem('Allocate to Participant', 'openExpAllocateModal(\''+txId+'\')')
     + expMenuItem('Allocate to Company',   'expAllocateCompany(\''+txId+'\')')
-    + '<div style="height:1px;background:var(--border);margin:4px 0"></div>'
+    + sep
     + expMenuItem('Mark as Recurring',     'openExpRecurringModal(\''+txId+'\')', 'var(--gold)')
+    + sep
+    + expMenuItem('Move to month&hellip;',  'expOpenMoveMonth(\''+txId+'\')')
+    + ((tx && tx.expense_month)
+        ? expMenuItem('Reset to paid date', 'expMoveMonth(\''+txId+'\',null)', 'var(--blue)')
+        : '')
   );
+}
+
+// ── Move to month ───────────────────────────────────────────────────────────
+// Files an expense under a month other than the one it was paid in, for a bill
+// that belongs to the previous period (rent paid 2 Oct for September). The
+// transaction's real date never changes — only which month the Expenses tab
+// files it under, and which month's recurring instance it settles.
+
+// Second stage of the context menu: the candidate months. Rewrites the open
+// menu in place rather than opening a modal, so the flow stays one gesture.
+function expOpenMoveMonth(txId){
+  var tx = expTxById(txId);
+  var menu = eid('exp-ctxmenu');
+  if(!tx || !menu) return;
+  var paid = String(tx.date||'');
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(paid)){
+    expCloseMenu();
+    showToast('This transaction has no date to move from','err');
+    return;
+  }
+
+  // 3 months back to 1 month forward of the paid month — the same window
+  // move_expense_month() enforces server-side. Newest first.
+  var py = +paid.slice(0,4), pm = +paid.slice(5,7) - 1;
+  var filed = expTxMonthKey(tx);
+  var items = '';
+  for(var off = 1; off >= -3; off--){
+    var d = new Date(py, pm + off, 1);
+    var key = d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0');
+    var first = key+'-01';
+    var isCur = (key === filed);
+    var note = (off === 0) ? ' <span style="color:var(--text3);font-size:10px">(paid)</span>' : '';
+    items += isCur
+      ? '<div class="exp-ctx-item" style="opacity:.55;cursor:default">&#10003; '
+          +expMonthKeyLabel(key)+note+'</div>'
+      : expMenuItem(expMonthKeyLabel(key)+note, 'expMoveMonth(\''+txId+'\',\''+first+'\')');
+  }
+
+  menu.innerHTML =
+    '<div style="padding:5px 10px 4px;font-size:10px;color:var(--text3);text-transform:uppercase;'
+      +'letter-spacing:.07em;font-weight:600">File under</div>'
+    + items
+    + '<div style="height:1px;background:var(--border);margin:4px 0"></div>'
+    + (tx.expense_month
+        ? expMenuItem('Reset to paid date', 'expMoveMonth(\''+txId+'\',null)', 'var(--blue)')
+        : expMenuItem('Cancel', 'expCloseMenu()'));
+
+  // The month list is taller than the menu it replaced, so re-clamp or it can
+  // run off the bottom of the viewport.
+  var h = menu.offsetHeight || 0;
+  var top = parseInt(menu.style.top, 10) || 8;
+  menu.style.top = Math.max(8, Math.min(top, window.innerHeight - h - 8))+'px';
+}
+
+// One move at a time. A double-click must not fire two RPCs: the second would
+// find the source instance already released and could claim a second slot.
+var _expMoveInFlight = false;
+
+async function expMoveMonth(txId, targetFirstOfMonth){
+  if(_expMoveInFlight) return;
+  _expMoveInFlight = true;
+  expCloseMenu();
+  setSync('saving');
+  try {
+    // One round trip, one transaction, row-locked server-side: the column and
+    // the recurring instance transfer either both land or neither does.
+    var res = await sb2.rpc('move_expense_month', {
+      p_tx_id: txId,
+      p_target_month: targetFirstOfMonth || null
+    });
+    if(res.error){
+      setSync('error');
+      // The function's RAISE messages are written for the operator — show them
+      // as they are (target month all paid, outside the window, no date).
+      showToast(res.error.message || 'Could not move this transaction','err');
+      return;
+    }
+
+    var out = Array.isArray(res.data) ? res.data[0] : res.data;
+    var tx  = expTxById(txId);
+    if(tx) tx.expense_month = (out && out.expense_month) || null;
+
+    if(out && out.source_instance_id){
+      var si = (S.recurringInstances||[]).find(function(i){ return i.id===out.source_instance_id; });
+      if(si){ si.transaction_id = null; si.status = 'pending'; }
+    }
+    if(out && out.target_instance_id){
+      var ti = (S.recurringInstances||[]).find(function(i){ return i.id===out.target_instance_id; });
+      if(ti){ ti.transaction_id = txId; ti.status = 'paid'; }
+      else if(out.target_month){
+        // Created by the function for a month that had no row yet, so this tab
+        // has never seen it. Add it rather than waiting for a reload.
+        S.recurringInstances.push({
+          id: out.target_instance_id,
+          recurring_expense_id: out.target_recurring_expense_id,
+          month: out.target_month,
+          occurrence_number: out.target_occurrence_number || 1,
+          status: 'paid',
+          transaction_id: txId
+        });
+      }
+    }
+
+    setSync('ok');
+    renderExpenses();
+    showToast(targetFirstOfMonth
+      ? 'Filed under '+expMonthKeyLabel(String(targetFirstOfMonth).slice(0,7))
+      : 'Back to its paid date','ok');
+  } catch(e) {
+    setSync('error');
+    showToast('Could not move this transaction: '+(e && e.message || e),'err');
+  } finally {
+    _expMoveInFlight = false;
+  }
 }
 
 function expInstanceMenu(ev, instId){
