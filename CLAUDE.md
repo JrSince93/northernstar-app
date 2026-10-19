@@ -57,7 +57,7 @@ All data lives in Supabase (project `bhqjsqwbsbhjuhjwxwcp`). The anon key and pr
 **Tables:**
 - `transactions` — cash book. Also carries `allocated_to` (`participant` | `company` | null) and `participant_id`, both **read only by the Expenses tab**.
 - `employees`
-- `pay_runs` — has `status` and `wise_status` fields; new runs insert with `status:'processed'`, `wise_status:'pending'`. Also carries `employee_name`, denormalised at insert (both `savePayRun` and the timesheet importer write it) because the accountant role can't read `employees`; `loadAll` falls back to it when `S.emps` is empty. Keep writing it on every new pay run.
+- `pay_runs` — has `status` and `wise_status` fields; new runs insert with `status:'processed'`, `wise_status:'pending'`. Also carries `employee_name`, denormalised at insert (both `savePayRun` and the timesheet importer write it) because the accountant role can't read `employees`; `loadAll` falls back to it when `S.emps` is empty. Keep writing it on every new pay run. Also carries `payslip_path` (text), `payslip_saved_at` (timestamptz) and `payslip_regenerated` (boolean, default false) — see "Payslip PDFs".
 - `participants` — includes `ndis_plan` (JSONB, legacy single-plan overrides) and `budget_lines` (JSONB array, current multi-line model). Save code degrades gracefully if those columns are missing.
 - `dropdown_options`
 - `staff` — one row per app login: `id` (FK to `auth.users`), `name`, `role` (`admin` | `office_manager` | `accountant`), optional `employee_id`. Read-own-row only; there are no insert/update policies, so a role can only be changed from the SQL editor. **Not yet created** — see Pending work.
@@ -73,6 +73,7 @@ All data lives in Supabase (project `bhqjsqwbsbhjuhjwxwcp`). The anon key and pr
 
 **Storage:** both buckets are **private**; only the object path is persisted, and the app mints short-lived signed URLs on demand (`createSignedUrl`). Never store a URL or call `getPublicUrl`.
 - `tx-attachments` — receipt images on transactions (`transactions.attachment_path`). Policies: authenticated insert + select (no update/delete — add them before building replace/remove).
+- `payslips` — saved payslip PDFs, referenced from `pay_runs.payslip_path`. Private, `application/pdf` only, 2 MB per file. Policies: select for admin/office_manager/accountant, insert for admin/office_manager, both also gated on `payslip_object_visible(name)`. **No update and no delete policy, deliberately** — see "Payslip PDFs". Created 2026-10-19.
 - `invoices` — uploaded invoice PDFs, referenced from `participants.invoice_files[].path`. Policies: authenticated insert + select + delete. Created 2026-09-11; before that every upload fell back to base64 inline in `invoice_files` (`storage:'inline'`), and 14 such files (~6.6 MB) still sit in the two participant rows. They open fine; moving them into the bucket is optional follow-up.
 - Other buckets in the project (`onboarding-docs`, `executed-contracts`, `sign-documents`, `participant-documents`) and tables (`onboarding_submissions`, `doc_signatures`, `agreement_drafts`) belong to anon-facing onboarding/e-sign pages outside this repo. Don't touch their policies.
 
@@ -179,7 +180,61 @@ Entry: "Import timesheets" button on the Participants page → modal (`openTsImp
 - `paygCalc(annualisedGross)` — ATO tax tables for PAYG withholding.
 - Pay calculation (`calcPay`-style logic ~line 1900+) handles weekday/Sat/Sun/PH hours, sleepover shifts (flat allowance × shifts + active OT), and super via `getSuperRate(periodEnd)`.
 - Pay run lifecycle: insert with `status:'processed'`, `wise_status:'pending'`; `syncPayRunWiseStatuses` advances `wise_status` when the matching Wise transfer settles; `reconcilePendingPayroll` writes settled runs into the cash book (pending runs land with `amount_out=0`), skipping Wise transfers already used in a prior reconciliation.
-- Payslips: `genPayslip(id)`.
+- Payslips: `genPayslip(id)` prints; `buildPayslipHtml(run)` builds the HTML. See "Payslip PDFs".
+
+## Payslip PDFs
+
+Every pay run that becomes paid gets a PDF of its payslip saved to the private `payslips` bucket. That file is **the permanent record of what the worker was paid**. The Hermes agent (Ryan) will later upload these files to each worker's Connecteam profile once the operator approves. The app itself never talks to Connecteam. Schema: `migrations/2026-10-19-pay-runs-payslip-columns.sql` and `migrations/2026-10-19-payslips-bucket.sql`.
+
+**One template.** `buildPayslipHtml(run)` (~line 3805) is the only source of payslip content. It returns `{html}` or `{error}`. `genPayslip(id)` (~line 3998) is a thin wrapper that writes that HTML to a print window, exactly as before. The PDF is rendered from the same string. Never add a second payslip template, and never let the PDF path change words or figures.
+
+**What a payslip shows.** It prints the full BSB and the account number masked to its last 4 digits (`xxxx 1234`), in the "Deposited to your account" box. The operator approved that on 2026-10-19. It never shows the TFN: `employees.tax_file_number` exists but is not read. Keep it that way, because the stored file goes to Connecteam. The sleepover active-hours continuation row is prefixed `+ ` (it was `&#8618;` until 2026-10-19). The arrow was swapped because the standard PDF fonts can't draw it, and the change applies to print and PDF alike.
+
+**PDF rendering** (`payslipHtmlToPdfBlob`, ~line 4041):
+- Uses jsPDF 2.5.1 `.html()` plus html2canvas 1.4.1, loaded from cdnjs **inside a hidden iframe** that holds the payslip document. jsPDF otherwise copies the element into the main page, so app CSS and payslip CSS would leak into each other.
+- Output has real, selectable text in the standard Helvetica font, with nothing embedded. Files are about 11–25 KB.
+- `payslipPdfAdjust` applies four PDF-only presentation fixes:
+  1. It measures layout in unkerned sans-serif. Without this, words drift and spaces vanish ("PAYGtax").
+  2. It promotes weight 600 to bold. jsPDF only bolds weight 700 and up.
+  3. It pre-blends the `rgba` row tints over white. jsPDF ignores alpha, so they would otherwise print as solid colour.
+  4. It wraps loose text in spans, so labels come out before their values in the extracted text. Ryan reads "Period: …" and "Name: …" from that text.
+- Fit: the payslip shrinks to fit one A4 page, down to `PAYSLIP_MIN_SCALE` (75%). Below that it paginates (`autoPaging:'slice'`), and `payslipPdfKeepTogether` inserts spacers so no block or table row is split across a page. A sleepover's two rows count as one unit.
+- Gotchas, each found the hard way:
+  - Build the jsPDF options in the iframe's realm, or its `instanceof Array` check rejects them.
+  - Never pass a non-zero `x`: jsPDF applies it twice to text. The fit works by widening `windowWidth` instead.
+  - Size the iframe to the content height first, or jsPDF adds a blank page.
+  - `autoPaging:'text'` drifts text off its boxes at reduced scale.
+
+**Storage rules** (`savePayslipPdf`, ~line 4196):
+- **Path:** `{employee_id}/{period_end}_{pay_run_id}.pdf`. It is deterministic, has no worker names, and uses only `[a-zA-Z0-9._-]` plus the folder `/`. Backfilled files use `{employee_id}/{period_end}_{pay_run_id}_regen.pdf` (not built yet).
+- **Never overwrite.** Uploads use `upsert:false`, a 409 / "already exists" counts as success, and the bucket has no update or delete policy. A wrong payslip is fixed by a new versioned file (not built yet), never by replacing the old one.
+- **Idempotent.** Before generating anything, it checks Storage. If the file already exists but `payslip_path` is unset, it only records the path, using the file's own `created_at` as `payslip_saved_at`. `recordPayslipPath` only fills an *empty* `payslip_path`, and checks the row count. Over the API, an RLS-blocked update returns no error and zero rows. That is how it behaves for the accountant, who can read `pay_runs` but not update it.
+- **Double-fire guard.** `_payslipInFlight` makes concurrent calls for the same run share one promise.
+- **Who can save:** `canSavePayslip()` allows admin and office_manager.
+
+**When it saves.** Saving is automatic only, and covers only runs that become paid **in the current session**:
+- `syncPayRunWiseStatuses` (~line 8635) checks the result of its paid write. If the update returns a row, it calls `queuePayslipSave(run)`. This is the only code path that sets `pay_runs.status='paid'`. It runs in the background from `initWiseSync` on every admin page load, and from the Payroll tab's "Refresh Wise" button. Both are admin-only.
+- The queue (`drainPayslipQueue`) starts about 1.5 s after it is first filled and saves one run at a time.
+- A failed save never blocks payment. The run stays paid, a toast says "Payslip not saved - retry", and a persistent bar (`renderPayslipRetryBar`) offers **Retry**. That bar is the only manual way to save.
+- Already-paid runs are never saved implicitly. That is the backfill, a separate approved step.
+
+**Download button.** Each paid Payroll row has a "↓" button for every role (`downloadPayslipPdf`, ~line 4287). It is **download-only: it never generates, saves or writes anything.** It opens the file through a 5-minute signed URL, using the recorded `payslip_path` or else the deterministic path. With no file it shows the toast "No saved payslip for this run." and does nothing else.
+
+**Access enforcement.** `public.payslip_object_visible(name, require_paid)` is `SECURITY INVOKER` with `search_path=''`, and EXECUTE is revoked from `anon` and `public`. It parses the object path and returns true only if the **caller** can see a `pay_runs` row with exactly that id, employee_id and `to_char(period_end,'YYYY-MM-DD')`. Uploads also require `status='paid'`.
+- Because it runs as the caller, the existing `pay_runs` RLS does the work. The restricted-payroll rule (`is_payroll_restricted_employee`) is enforced without being copied, so the bucket can't drift from the table.
+- Resulting access: admin reads and saves everything. office_manager does the same except for the restricted employees. The accountant reads everything and saves nothing, mirroring its `pay_runs` read policy, including the restricted employees' runs; the operator approved that on 2026-10-19.
+- Compare with `to_char`, not `period_end::text`, because `::text` output depends on `DateStyle`.
+
+**Next.js rebuild carry-over** (`JrSince93/nss-finance-v2`):
+- The bucket, `payslip_object_visible`, its two policies, and the three `pay_runs` columns live in the database, so the rebuild inherits them unchanged. Don't recreate them.
+- The rebuild must:
+  - keep the exact path format and the `_regen` suffix convention
+  - upload with `upsert:false` and treat "already exists" as success
+  - only fill an empty `payslip_path`
+  - save only on the transition to paid, never by sweeping
+  - render the PDF from the **same** template its print view uses
+  - keep TFN off the payslip
+- If it renders server-side, for example with headless Chromium, fidelity improves and the four presentation fixes above become unnecessary. Keep real, selectable text either way: Ryan reads it to confirm worker and period before uploading.
 
 ## Wise integration
 
@@ -290,6 +345,8 @@ Verified 2026-09-12 by probing the live schema as `anon` (`?select=<column>` ret
 | `2026-10-13-wise-reference-unique-index` | **RUN 2026-10-13** by the operator in the SQL editor (`applied_at` 2026-10-12 20:48:37 UTC), as one transaction together with `2026-10-13-expense-month`, with both `begin`/`commit` pairs replaced by a single outer one and the rollback sections omitted. Pairs with the `index.html` in-flight guard on the Wise importers, which stops one page racing itself but not two tabs. The same transaction first deleted the duplicate `d3bf2665-f49d-4f35-9e5e-9eb08b7aa3e9` (`WISE-07713285`, $2,600 out, the later-created copy, which no `recurring_expense_instances` row referenced), then ran the precheck as a `DO` block that raises, because a bare SELECT returning rows would not abort the transaction. Creates the partial unique index `transactions_wise_reference_uniq` on `reference` `where reference ~ '^WISE-[0-9]{6,8}$'`. Verified afterwards via MCP reads: the index exists with exactly that predicate; the duplicate is gone and the kept row `6ebc4352-…` is intact, still linked from instance `e6932733-…` (2026-10, `paid`); **106** importer rows and **106** distinct references. The file predicted 94, but 12 more were imported after it was written (10-04 to 10-12), so the check that matters is that the two counts are equal. `'WISE-001'` is outside the predicate and `'WISE-07713285'` inside, so `nextRefFor()` sequences and recurring series stay unconstrained |
 | `2026-10-13-expense-month` | **RUN 2026-10-13**, in the same operator transaction as the index above. Adds `transactions.expense_month` (nullable `date`, no default, no backfill) and `public.move_expense_month(uuid, date)`. **The file now also revokes EXECUTE from `anon`.** That line was added to the run, then to the file, after the default ACL in `public` was found to grant EXECUTE on new functions straight to `anon`, which `revoke ... from public` doesn't touch. Verified afterwards via MCP reads: the column is `date` / nullable / no default, with 0 rows set; the function has `prosecdef` false (security invoker) and identity args `p_tx_id uuid, p_target_month date` (the file's VERIFY comment says `uuid, date`, which omits the parameter names); `proacl` is `{postgres, authenticated, service_role}`, `has_function_privilege('anon', …)` is false and `authenticated` is true, with no PUBLIC entry. The window guard, run by the operator, raised `P0001: Target month Jan 2026 is outside the allowed window (Jul 2026 to Nov 2026)`. Ledger: both rows present, `applied_by 'Moby (SQL editor)'`, ledger total 21. Read only by the Expenses tab |
 | *(data fix, no file)* INV-CF-20260927 budget-line correction | **RUN 2026-10-13 by Claude Code via Supabase MCP**, operator-authorised. It ran as one `DO` block with a row-count guard per update, and all three updates hit exactly 1 row. `invoice_ledger` `743c2c86-a251-4558-8722-8bf587eba566` and `transactions` `63cd0633-42ec-4274-be91-45dfa37ac79f` moved from Lita's SIL line `bl-1783271548173` to her CORE-CP/ASC line `bl-1783273601383`; the ledger's `rate_card` changed from `sil` to `core_combined`. Her stale `participants.pending_invoice` (still INV-CF-20260927) was cleared. The ledger row had been saved with the SIL link at the ledger-confirm step, and the payment copied it onto the cash-book row, which pushed her Sep 2026 SIL period to 122%. Verified with a before/after SELECT. The code guard against a recurrence is in `722c0a3`. No `_migrations_applied` row, because the ledger is keyed by migration filename |
+| `2026-10-19-pay-runs-payslip-columns` | **RUN 2026-10-19 by Claude Code via Supabase MCP**, operator-authorised (ledger `applied_at` 05:37:57 UTC). Sent with the file's `begin`/`commit` stripped, because the MCP call is already one transaction. Adds `pay_runs.payslip_path text`, `payslip_saved_at timestamptz` (both nullable, no default) and `payslip_regenerated boolean not null default false`. No backfill, and the `pay_runs` RLS is unchanged. Verified afterwards: the three columns have exactly those types and nullability; 0 of 48 rows have a path and 0 are flagged regenerated; the ledger row is present. The same check confirmed `period_end` is `date`, which the path format depends on |
+| `2026-10-19-payslips-bucket` | **RUN 2026-10-19 by the operator in the SQL editor** (ledger `applied_by 'Moby (SQL editor)'`, `applied_at` 07:30:42 UTC). The MCP **declined it twice**, returning exactly `{"status":"declined"}` with no message. Per the MCP rule the third attempt was a paste. Both attempts were likely auto-declined at the MCP's confirmation step for destructive statements: the file has `drop policy if exists` and `revoke`, while Migration 1 (which went through) had neither. Creates the private `payslips` bucket (2 MB, `application/pdf`), `public.payslip_object_visible(text, boolean)` (`SECURITY INVOKER`, `search_path=''`, EXECUTE revoked from `anon` and `public`, granted to `authenticated`), and two policies on `storage.objects`: `payslips select visible pay run` and `payslips insert admin or office_manager`. No update or delete policy. Between the first decline and the paste, `period_end::text` was changed to `to_char(period_end,'YYYY-MM-DD')`. The file's own VERIFY query returned 9/9 `ok` in the SQL editor: bucket settings; policy commands exactly `INSERT,SELECT`; invoker plus fixed search path; EXECUTE `anon` false / `authenticated` true; a real paid run's path parses, as does its `_regen` form; a wrong `period_end`, `../etc/passwd` and `null` are all rejected; ledger row present. Role checks then ran via MCP as `authenticated` with simulated JWT claims, in a rolled-back transaction, 9/9 passing. The admin resolves to `admin`, sees all 48 runs, and passes the select and insert predicates (including for a restricted employee). A path whose run doesn't exist is rejected. A user with no `staff` row gets a null role, sees 0 runs and fails closed. **Not tested live:** office_manager and accountant. `staff` and `auth.users` each hold only the admin, as in the 2026-09-13 storage migration |
 
 The operator also confirmed the production admin login still works after all three auth migrations.
 
@@ -325,3 +382,10 @@ Two things follow from it:
     **Two ways to close it**: add the column (`alter table public.participants add column if not exists pending_invoice jsonb;`) in a migration, which is what the code assumes; or drop the two writes and accept session-only pending state, in which case delete the readers too. Prefer the migration — the readers exist because the persistence was intended. **Done 2026-09-18:** `migrations/2026-09-18-participants-pending-invoice-column.sql` added the column, schema only, with the call sites deliberately untouched, and it has been run against production — so pending state now persists across a reload. The remaining follow-up is the last line below.
 
     Worth checking whether any *other* column the app writes is in the same state: this one survived because every write to it is fire-and-forget.
+13. **Payslip PDFs: follow-ups** to the 2026-10-19 build (see "Payslip PDFs"). None of these is built.
+    - (a) **Backfill the 48 runs** that were already paid on 2026-10-19 (32 non-restricted across 8 employees, 16 restricted across 2). This needs separate approval. Regenerate them with today's code, save them as `…_regen.pdf`, and set `payslip_regenerated = true`. **Exclude the one non-restricted hourly run that has no `day_breakdown`.** `buildPayslipHtml` would rebuild its days from the *current* roster, which may not match what was paid. The 16 restricted runs are salaried and don't need a breakdown.
+    - (b) **A narrow read-only role for Ryan,** so the Hermes agent can list and download payslips and nothing else. Mirror the restricted-payroll decision explicitly, rather than inheriting a broad role.
+    - (c) **"✔ Mark paid" (`manualMarkPayrollPaid`) never sets `pay_runs.status='paid'`;** see item 5. Until it does, a run paid outside Wise matching gets no auto-save. Its "↓" button just reports "No saved payslip for this run."
+    - (d) **Versioned paths for corrected pay runs.** Files are never overwritten, so a corrected payslip needs a new path, and Ryan needs a rule for which version is current.
+    - (e) **Live role check.** Sign in as an office_manager and confirm it can't list or download a restricted employee's payslip. Then sign in as the accountant and confirm it can download but the save path refuses it.
+14. **Invoice double-fire.** `confirmWisePayment()` and `manualMarkPaid()` (invoice ledger, not payroll) are known to run twice on a double-click. Not yet investigated.
