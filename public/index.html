@@ -8794,9 +8794,25 @@ async function manualMarkPayrollPaid(runId) {
   }).eq('id', pendingRow.id);
   if(upd.error) { setSync('error'); showToast(upd.error.message, 'err'); return; }
   Object.assign(pendingRow, { amount_out: netPay, reference: cleanRef, description: cleanDesc });
-  setSync('ok');
+  // Advance the pay run itself, and save its payslip only once the paid write
+  // has really landed (an RLS-filtered update returns no error and no rows).
+  // eq('status','processed') keeps a second click from re-firing the save.
+  var paidSaved = true;
+  if(run.status === 'processed'){
+    var paidRes = await sb2.from('pay_runs').update({status:'paid'})
+      .eq('id', run.id).eq('status', 'processed').select('id');
+    if(paidRes.error || !paidRes.data || !paidRes.data.length){
+      paidSaved = false;
+      console.warn('[manualMarkPayrollPaid] paid status not saved for run', run.id, paidRes.error && paidRes.error.message);
+    } else {
+      run.status = 'paid';
+      queuePayslipSave(run);
+    }
+  }
+  setSync(paidSaved ? 'ok' : 'error');
   renderCB(); renderPR(); renderDash();
-  showToast('Pay run marked as paid', 'ok');
+  if(paidSaved) showToast('Pay run marked as paid', 'ok');
+  else showToast('Cash book updated, but pay run status not saved', 'err');
 }
 
 // ── Invoice Ledger ──
