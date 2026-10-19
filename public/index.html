@@ -2517,7 +2517,12 @@ function renderPR(){
     var delBtn = isLocked
       ? '<span class="btn-icon btn-sm" title="Locked — paid &amp; delivered" style="opacity:.3;cursor:not-allowed">&#128274;</span>'
       : '<button class="btn-icon btn-sm" onclick="delRun(this.dataset.id)" data-id="'+r.id+'">x</button>';
-    html+='<tr><td><b>'+(r._empName||'--')+'</b></td><td class="td-muted">'+(r.period_start||'--')+' to '+(r.period_end||'--')+'</td><td class="td-muted">'+(r.hours_worked||'--')+'</td><td class="td-right td-green">'+fmt(r.gross_pay)+'</td><td class="td-right td-red">'+fmt(r.tax_withheld)+'</td><td class="td-right td-gold">'+fmt(r.super_amount)+'</td><td class="td-right" style="font-weight:700">'+fmt(r.net_pay)+'</td><td>'+runBadge+'</td><td>'+wiseBadge+'</td><td style="display:flex;gap:4px"><button class="btn-icon btn-sm" title="Payslip" onclick="genPayslip(this.dataset.id)" data-id="'+r.id+'">P</button>'+markPaidBtn+delBtn+'</td></tr>';
+    // Stored payslip PDF (paid runs, every role): download only. This button
+    // never generates or saves — saving is auto (on becoming paid) + retry bar.
+    var pdfBtn = runStatus==='paid'
+      ? '<button class="btn-icon btn-sm" title="Download saved payslip PDF" onclick="downloadPayslipPdf(this.dataset.id)" data-id="'+r.id+'" style="color:var(--in)">&#8595;</button>'
+      : '';
+    html+='<tr><td><b>'+(r._empName||'--')+'</b></td><td class="td-muted">'+(r.period_start||'--')+' to '+(r.period_end||'--')+'</td><td class="td-muted">'+(r.hours_worked||'--')+'</td><td class="td-right td-green">'+fmt(r.gross_pay)+'</td><td class="td-right td-red">'+fmt(r.tax_withheld)+'</td><td class="td-right td-gold">'+fmt(r.super_amount)+'</td><td class="td-right" style="font-weight:700">'+fmt(r.net_pay)+'</td><td>'+runBadge+'</td><td>'+wiseBadge+'</td><td style="display:flex;gap:4px"><button class="btn-icon btn-sm" title="Payslip" onclick="genPayslip(this.dataset.id)" data-id="'+r.id+'">P</button>'+pdfBtn+markPaidBtn+delBtn+'</td></tr>';
   });
   eid('pr-body').innerHTML=html;
 }
@@ -3794,13 +3799,15 @@ function toggleSidebar(){
   sb.classList.toggle('open');
   ov.classList.toggle('show');
 }
-function genPayslip(id) {
-  var run = S.runs.find(function(r){ return r.id === id; });
-  if(!run){ showToast('Pay run not found','err'); return; }
+// The ONE source of payslip content. Both the print view (genPayslip) and the
+// stored PDF (savePayslipPdf) render this exact HTML string; there is no second
+// payslip template. Returns {html} or {error}.
+function buildPayslipHtml(run) {
+  if(!run) return {error:'Pay run not found'};
   var emp = S.emps.find(function(e){ return e.id === run.employee_id; });
-  if(!emp){ showToast('Employee not found','err'); return; }
+  if(!emp) return {error:'Employee not found'};
   var periodStart=run.period_start||'',periodEnd=run.period_end||'';
-  var refNo='PS-'+id.slice(0,8).toUpperCase();
+  var refNo='PS-'+run.id.slice(0,8).toUpperCase();
   var paidDate=run.paid_date||periodEnd;
   var bsb=emp.bank_bsb||'',acct=emp.bank_account||'';
   var acctMask=acct.length>4?'xxxx '+acct.slice(-4):acct;
@@ -3927,7 +3934,7 @@ function genPayslip(id) {
     }
   }
   // Travel reimbursement row from the day_breakdown travel_meta entry.
-  // (run is already resolved at the top of genPayslip.)
+  // (run is already resolved at the top of buildPayslipHtml.)
   var travelRows='';
   var travelMeta=(run&&Array.isArray(run.day_breakdown))?run.day_breakdown.find(function(d){return d&&d.type==='travel_meta';}):null;
   if(travelMeta&&travelMeta.amount>0){
@@ -3968,7 +3975,7 @@ function genPayslip(id) {
       +'<td style="padding:6px 10px;font-size:12px;text-align:right;font-weight:600">$'+start.amt.toFixed(2)+'</td>'
       +'</tr>'
       +'<tr style="background:rgba(188,140,255,0.07)">'
-      +'<td style="padding:2px 10px 6px;border-bottom:1px solid #e5ddf7;font-size:11px;color:#8a7ba8;padding-left:20px">&#8618; '+cont.type+'</td>'
+      +'<td style="padding:2px 10px 6px;border-bottom:1px solid #e5ddf7;font-size:11px;color:#8a7ba8;padding-left:20px">+ '+cont.type+'</td>'
       +'<td style="padding:2px 10px 6px;border-bottom:1px solid #e5ddf7;font-size:11px;text-align:right;color:#8a7ba8">'+cont.hrs.toFixed(1)+'h</td>'
       +'<td style="padding:2px 10px 6px;border-bottom:1px solid #e5ddf7;font-size:11px;text-align:right;color:#8a7ba8">$'+cont.rate.toFixed(2)+'</td>'
       +'<td style="padding:2px 10px 6px;border-bottom:1px solid #e5ddf7;font-size:11px;text-align:right;font-weight:600;color:#6b21a8">$'+cont.amt.toFixed(2)+'</td>'
@@ -3986,7 +3993,321 @@ function genPayslip(id) {
     }
   }
   var h='<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Payslip - '+emp.name+'</title><style>body{font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;margin:0;padding:0;background:#fff;color:#1a1a1a}.page{max-width:720px;margin:0 auto;padding:40px}@media print{.page{padding:20px}}</style></head><body><div class="page"><div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:28px;padding-bottom:20px;border-bottom:2px solid #1a1a1a"><div><div style="font-size:18px;font-weight:700;margin-bottom:4px">Northern Star Support Services</div><div style="font-size:12px;color:#555;line-height:1.6">Falaax Group Pty Ltd<br>ABN: 22 671 393 070<br>12 Dimboola Rd, Broadmeadows VIC 3064<br>Phone: 03 7057 1645</div></div><div style="text-align:right"><div style="font-size:11px;color:#888;text-transform:uppercase;letter-spacing:.05em">Payslip</div><div style="font-size:18px;font-weight:700">'+refNo+'</div><div style="font-size:12px;color:#888;margin-top:6px">Paid: '+paidDate+'</div></div></div><div style="background:#f8f9fa;border:1px solid #e5e5e5;border-radius:8px;padding:16px;margin-bottom:20px"><div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:13px"><div><span style="color:#888">Name:</span> <b>'+emp.name+'</b></div><div><span style="color:#888">Role:</span> '+(emp.role||'--')+'</div><div><span style="color:#888">Employment:</span> '+(emp.employment_type||'--')+'</div><div><span style="color:#888">Period:</span> '+periodStart+' to '+periodEnd+'</div></div></div><div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:#888;margin-bottom:8px">Days Worked</div><table style="width:100%;border-collapse:collapse;margin-bottom:20px"><thead><tr style="background:#f0f0f0"><th style="padding:8px 10px;text-align:left;font-size:10px;font-weight:700;text-transform:uppercase;color:#666">Date</th><th style="padding:8px 10px;text-align:left;font-size:10px;font-weight:700;text-transform:uppercase;color:#666">Day</th><th style="padding:8px 10px;text-align:left;font-size:10px;font-weight:700;text-transform:uppercase;color:#666">Type</th><th style="padding:8px 10px;text-align:right;font-size:10px;font-weight:700;text-transform:uppercase;color:#666">Hours</th><th style="padding:8px 10px;text-align:right;font-size:10px;font-weight:700;text-transform:uppercase;color:#666">Rate</th><th style="padding:8px 10px;text-align:right;font-size:10px;font-weight:700;text-transform:uppercase;color:#666">Amount</th></tr></thead><tbody>'+dr+sleepRows+travelRows+'</tbody></table><div style="display:flex;justify-content:flex-end;margin-bottom:20px"><div style="width:280px"><div style="display:flex;justify-content:space-between;padding:6px 0;font-size:13px"><span>Gross pay</span><span style="font-weight:600">$'+gross.toFixed(2)+'</span></div>'+(tax>0?'<div style="display:flex;justify-content:space-between;padding:6px 0;font-size:13px;color:#dc2626"><span>PAYG tax withheld</span><span>-$'+tax.toFixed(2)+'</span></div>':'<div style="display:flex;justify-content:space-between;padding:6px 0;font-size:13px;color:#888"><span>PAYG tax</span><span>Not withheld</span></div>')+'<div style="display:flex;justify-content:space-between;padding:6px 0;font-size:13px;color:#d97706"><span>'+superLabel+'</span><span>$'+sup.toFixed(2)+'</span></div><div style="display:flex;justify-content:space-between;padding:10px 0;font-size:16px;font-weight:700;border-top:2px solid #1a1a1a;margin-top:4px;color:#15803d"><span>Net pay to bank</span><span>$'+net.toFixed(2)+'</span></div></div></div>'+(bsb?'<div style="background:#f0f9f4;border:2px solid #22c55e;border-radius:10px;padding:16px;text-align:center;margin-bottom:20px"><div style="font-size:11px;font-weight:700;text-transform:uppercase;color:#16a34a;margin-bottom:6px">Deposited to your account</div><div style="font-size:13px;color:#15803d">BSB: '+bsb+' | Account: '+acctMask+'</div><div style="font-size:24px;font-weight:700;color:#15803d;margin-top:8px">$'+net.toFixed(2)+'</div></div>':'')+'<div style="margin-top:30px;padding-top:16px;border-top:1px solid #e5e5e5;font-size:11px;color:#aaa;text-align:center;line-height:1.6">Northern Star Support Services - Falaax Group Pty Ltd - ABN 22 671 393 070</div></div></body></html>';
+  return {html:h};
+}
+function genPayslip(id) {
+  var run = S.runs.find(function(r){ return r.id === id; });
+  var built = buildPayslipHtml(run);
+  if(built.error){ showToast(built.error,'err'); return; }
+  var h = built.html;
   var w=window.open('','_blank');if(!w){showToast('Popup blocked — allow popups for this site','err');return;}w.document.write(h);w.document.close();w.focus();setTimeout(function(){w.print();},500);
+}
+
+// ── Stored payslip PDFs ──────────────────────────────────────────────────────
+// When a pay run becomes paid, its payslip is saved as a PDF to the PRIVATE
+// `payslips` bucket (migrations/2026-10-19-payslips-bucket.sql) — the permanent
+// record of what the worker was paid. Rules:
+//  - Content comes only from buildPayslipHtml(); the PDF step below changes
+//    presentation (font measurement, weights, tint blending, text order, fit),
+//    never words or figures.
+//  - Path is deterministic, {employee_id}/{period_end}_{pay_run_id}.pdf, and
+//    the upload uses upsert:false. An existing file is success and is NEVER
+//    replaced; the bucket has no update/delete policy either.
+//  - Storage access mirrors pay_runs RLS via payslip_object_visible(), so a
+//    role can only read or save a payslip whose pay run it can see.
+//  - Saving never blocks payment: failures surface as a retry bar.
+var PAYSLIP_BUCKET = 'payslips';
+var PAYSLIP_PDF_LIBS = [
+  'https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js',
+  'https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js'
+];
+var PAYSLIP_MIN_SCALE = 0.75;  // shrink to fit one A4 page, but no further; below this, a second page
+var _payslipInFlight = {};     // run id -> promise (double-fire guard)
+var _payslipFailed = {};       // run id -> true, shown in the retry bar
+
+function canSavePayslip(){ return S.role === 'admin' || S.role === 'office_manager'; }
+
+function payslipPath(run){
+  var p = run && run.employee_id && run.period_end && run.id
+    ? run.employee_id + '/' + String(run.period_end).slice(0,10) + '_' + run.id + '.pdf' : '';
+  // Same shape payslip_object_visible() accepts; only [a-zA-Z0-9._-] and '/'.
+  return /^[0-9a-f-]{36}\/\d{4}-\d{2}-\d{2}_[0-9a-f-]{36}\.pdf$/.test(p) ? p : '';
+}
+
+// Payslip HTML -> PDF Blob with real, selectable text (jsPDF .html()).
+// The HTML is loaded into a hidden iframe exactly as the print window gets it,
+// and the libraries run INSIDE that iframe, so the payslip's own <style> applies
+// and none of the app's CSS can leak in (or the payslip's out).
+function payslipHtmlToPdfBlob(h){
+  return new Promise(function(resolve, reject){
+    var fr = document.createElement('iframe');
+    fr.setAttribute('aria-hidden','true');
+    fr.style.cssText = 'position:fixed;left:-10000px;top:0;width:800px;height:1200px;border:0;visibility:hidden';
+    document.body.appendChild(fr);
+    var cleanup = function(){ if(fr.parentNode) fr.parentNode.removeChild(fr); };
+    var fd = fr.contentDocument, fw = fr.contentWindow;
+    fd.open(); fd.write(h); fd.close();
+    var loadLib = function(i){
+      if(i >= PAYSLIP_PDF_LIBS.length) return render();
+      var s = fd.createElement('script');
+      s.src = PAYSLIP_PDF_LIBS[i];
+      s.onload = function(){ loadLib(i+1); };
+      s.onerror = function(){ cleanup(); reject(new Error('PDF library failed to load')); };
+      fd.head.appendChild(s);
+    };
+    var render = function(){
+      try {
+        payslipPdfAdjust(fd, fw);
+        var doc = new fw.jspdf.jsPDF({ unit:'pt', format:'a4', compress:true });
+        // Fit to one A4 page. The payslip is a fixed-width centred column, so a
+        // wider virtual window shrinks it uniformly and keeps it centred. (No x
+        // offset: jsPDF applies it twice to text.) Below PAYSLIP_MIN_SCALE the
+        // scale stops shrinking and the rest flows onto further pages.
+        var PW = 595.28, PH = 841.89, WW = 800;
+        // Content height, not scrollHeight (that is at least the iframe's own height).
+        var cssH = Math.ceil(fd.body.getBoundingClientRect().bottom);
+        var scale = Math.min(1, (PH - 2) / (cssH * PW / WW));
+        var paged = scale < PAYSLIP_MIN_SCALE;
+        if(paged) scale = PAYSLIP_MIN_SCALE;
+        var ww = Math.ceil(WW / scale);
+        fr.style.width = ww + 'px';
+        // Paged: push any block or table row that would straddle a page break
+        // onto the next page, then cut pages exactly ('slice'). jsPDF's own
+        // 'text' mode drifts text off its boxes, so it is not used.
+        if(paged) payslipPdfKeepTogether(fd, PH * ww / PW);
+        // jsPDF sizes the output from the iframe's viewport, so it must be
+        // exactly the content height (a taller viewport adds a blank page).
+        fr.style.height = Math.ceil(fd.body.getBoundingClientRect().bottom) + 'px';
+        // Options are built in the iframe's realm: jsPDF's instanceof Array
+        // checks reject arrays created in this window.
+        var opts = fw.JSON.parse(JSON.stringify({ x:0, y:0, width:PW, windowWidth:ww, autoPaging: paged ? 'slice' : false, margin:[0,0,0,0] }));
+        doc.html(fd.body, opts).then(function(){
+          var blob = doc.output('blob'); cleanup(); resolve(blob);
+        }, function(e){ cleanup(); reject(e); });
+      } catch(e){ cleanup(); reject(e); }
+    };
+    loadLib(0);
+  });
+}
+
+// PDF-only presentation adjustments for jsPDF's vector output. None changes
+// any text or figure, and the print view never runs this.
+//  1. jsPDF draws every sans-serif font as unkerned Helvetica: measure layout
+//     the same way, or words drift and spaces vanish ("PAYGtax").
+//  2. jsPDF only bolds weight >= 700: promote 600 so semi-bold stays bold.
+//  3. jsPDF ignores fill alpha: pre-blend translucent tints over the white page
+//     (the resulting colour is what the print view shows).
+//  4. html2canvas paints a parent's bare text before its child elements, which
+//     puts labels after their values in the PDF text ("Period:" after the
+//     dates). Wrapping that text in spans restores reading order.
+function payslipPdfAdjust(fd, fw){
+  var st = fd.createElement('style');
+  st.textContent = 'body,body *{font-family:sans-serif;font-kerning:none;font-feature-settings:"kern" 0}';
+  fd.head.appendChild(st);
+  var walker = fd.createTreeWalker(fd.body, 4 /* SHOW_TEXT */), loose = [], n;
+  while((n = walker.nextNode())){
+    if(n.nodeValue.trim() && n.parentNode.children.length && n.parentNode.nodeName !== 'STYLE' && n.parentNode.nodeName !== 'SCRIPT') loose.push(n);
+  }
+  loose.forEach(function(t){ var sp = fd.createElement('span'); t.parentNode.insertBefore(sp, t); sp.appendChild(t); });
+  var els = fd.body.querySelectorAll('*');
+  for(var i=0; i<els.length; i++){
+    var el = els[i], cs = fw.getComputedStyle(el);
+    if(parseInt(cs.fontWeight, 10) === 600) el.style.fontWeight = '700';
+    var bg = cs.backgroundColor;
+    if(bg.indexOf('rgba(') === 0){
+      var p = bg.slice(5, -1).split(',').map(function(x){ return parseFloat(x); });
+      var a = p[3];
+      if(a > 0 && a < 1){
+        var f = function(c){ return Math.round(255 - a * (255 - c)); };
+        el.style.backgroundColor = 'rgb('+f(p[0])+','+f(p[1])+','+f(p[2])+')';
+      }
+    }
+  }
+}
+
+// Multi-page PDFs only: insert spacers so no unit straddles a page break. Units
+// are the payslip column's blocks (header, details, totals, "Deposited" box,
+// footer…) and each table row — a sleepover's two rows (rowspan) count as one.
+// pageH is the page height in CSS px at the render width.
+function payslipPdfKeepTogether(fd, pageH){
+  var page = fd.querySelector('.page');
+  if(!page) return;
+  var TOP_PAD = 24;  // breathing room at the top of a continuation page
+  var units = [];
+  Array.prototype.forEach.call(page.children, function(ch){
+    if(ch.tagName !== 'TABLE'){ units.push([ch]); return; }
+    var rows = ch.rows;
+    for(var i=0; i<rows.length; i++){
+      var span = 1;
+      Array.prototype.forEach.call(rows[i].cells, function(c){ span = Math.max(span, c.rowSpan || 1); });
+      units.push(Array.prototype.slice.call(rows, i, i + span));
+      i += span - 1;
+    }
+  });
+  units.forEach(function(u){
+    var top = u[0].getBoundingClientRect().top, bottom = u[u.length-1].getBoundingClientRect().bottom;
+    var pageIdx = Math.floor(top / pageH);
+    if(bottom - top >= pageH - TOP_PAD || bottom <= (pageIdx + 1) * pageH) return;
+    var gap = (pageIdx + 1) * pageH - top + TOP_PAD;
+    if(u[0].tagName === 'TR'){
+      var tr = fd.createElement('tr'), td = fd.createElement('td');
+      td.colSpan = 6; td.style.cssText = 'height:' + gap + 'px;padding:0;border:0;background:transparent';
+      tr.appendChild(td); u[0].parentNode.insertBefore(tr, u[0]);
+    } else {
+      var sp = fd.createElement('div');
+      sp.style.cssText = 'height:' + gap + 'px';
+      u[0].parentNode.insertBefore(sp, u[0]);
+    }
+  });
+}
+
+function payslipErrIsExists(err){
+  if(!err) return false;
+  return String(err.statusCode||err.status||'') === '409' || /already exists|duplicate/i.test(err.message||'');
+}
+
+// Look the file up in Storage. Returns {exists, createdAt} or {error}.
+async function payslipStat(path){
+  var slash = path.indexOf('/');
+  var res = await sb2.storage.from(PAYSLIP_BUCKET).list(path.slice(0, slash), { search: path.slice(slash+1), limit: 10 });
+  if(res.error) return { error: res.error };
+  var hit = (res.data||[]).find(function(o){ return o.name === path.slice(slash+1); });
+  return { exists: !!hit, createdAt: hit ? (hit.created_at || null) : null };
+}
+
+// Record the path on the pay run. Only fills an EMPTY payslip_path, so a
+// recorded path is never changed. RLS: admin any run, office_manager any run it
+// can see, accountant none (0 rows, no error) — callers gate on canSavePayslip.
+async function recordPayslipPath(run, path, savedAt){
+  var upd = await sb2.from('pay_runs')
+    .update({ payslip_path: path, payslip_saved_at: savedAt || new Date().toISOString() })
+    .eq('id', run.id).is('payslip_path', null)
+    .select('payslip_path,payslip_saved_at');
+  if(upd.error) return { error: upd.error };
+  if(upd.data && upd.data[0]){ run.payslip_path = upd.data[0].payslip_path; run.payslip_saved_at = upd.data[0].payslip_saved_at; return { ok:true }; }
+  // 0 rows: already recorded (e.g. another tab) — read back what is there.
+  var cur = await sb2.from('pay_runs').select('payslip_path,payslip_saved_at').eq('id', run.id).maybeSingle();
+  if(cur.data && cur.data.payslip_path){ run.payslip_path = cur.data.payslip_path; run.payslip_saved_at = cur.data.payslip_saved_at; return { ok:true }; }
+  return { error: { message: 'pay run not updated (no permission?)' } };
+}
+
+// Save one paid run's payslip. Idempotent; never overwrites. Concurrent calls
+// for the same run share one promise. Resolves {ok, existed} or {ok:false, error}.
+function savePayslipPdf(run){
+  if(!run) return Promise.resolve({ ok:false, error:'Pay run not found' });
+  if(_payslipInFlight[run.id]) return _payslipInFlight[run.id];
+  var p = (async function(){
+    if(run.status !== 'paid') return { ok:false, error:'Pay run is not paid' };
+    if(!canSavePayslip()) return { ok:false, error:'Not allowed to save payslips' };
+    var path = payslipPath(run);
+    if(!path) return { ok:false, error:'Pay run is missing employee or period' };
+    if(run.payslip_path) return { ok:true, existed:true };
+    // A file may already exist with the path unrecorded (an earlier save whose
+    // column write failed). Record it without regenerating anything.
+    var st = await payslipStat(path);
+    if(st.exists){
+      var rec0 = await recordPayslipPath(run, path, st.createdAt);
+      return rec0.error ? { ok:false, error:'Saved file found but not recorded: '+rec0.error.message } : { ok:true, existed:true };
+    }
+    var built = buildPayslipHtml(run);
+    if(built.error) return { ok:false, error: built.error };
+    var blob = await payslipHtmlToPdfBlob(built.html);
+    var up = await sb2.storage.from(PAYSLIP_BUCKET).upload(path, blob, { contentType:'application/pdf', upsert:false, cacheControl:'3600' });
+    var existed = false;
+    if(up.error){
+      if(!payslipErrIsExists(up.error)) return { ok:false, error: up.error.message || 'Upload failed' };
+      existed = true;  // someone saved it first: theirs stands
+    }
+    var rec = await recordPayslipPath(run, path, null);
+    if(rec.error) return { ok:false, error:'PDF saved but not recorded on the pay run: '+rec.error.message };
+    return { ok:true, existed: existed };
+  })().catch(function(e){ return { ok:false, error: (e && e.message) || String(e) }; });
+  _payslipInFlight[run.id] = p;
+  p.then(function(){ delete _payslipInFlight[run.id]; });
+  return p;
+}
+
+// Background queue: runs that became paid in THIS session, saved one at a time
+// after the page has rendered.
+var _payslipQueue = [], _payslipQueueRunning = false;
+function queuePayslipSave(run){
+  if(!run || _payslipQueue.indexOf(run) !== -1) return;
+  _payslipQueue.push(run);
+  if(!_payslipQueueRunning) setTimeout(drainPayslipQueue, 1500);
+}
+async function drainPayslipQueue(){
+  if(_payslipQueueRunning) return;
+  _payslipQueueRunning = true;
+  var failed = 0;
+  while(_payslipQueue.length){
+    var run = _payslipQueue.shift();
+    var r = await savePayslipPdf(run);
+    if(r.ok) delete _payslipFailed[run.id];
+    else { _payslipFailed[run.id] = true; failed++; console.warn('[payslip] save failed for run', run.id, r.error); }
+    await new Promise(function(res){ setTimeout(res, 250); });  // let the UI breathe between files
+  }
+  _payslipQueueRunning = false;
+  if(eid('page-payroll') && eid('page-payroll').classList.contains('active')) renderPR();
+  if(failed) showToast('Payslip not saved - retry','err');
+  renderPayslipRetryBar();
+}
+
+// Persistent retry affordance (the app toast auto-hides and can't hold a button).
+function renderPayslipRetryBar(){
+  var ids = Object.keys(_payslipFailed);
+  var bar = eid('payslip-retry-bar');
+  if(!ids.length){ if(bar) bar.parentNode.removeChild(bar); return; }
+  if(!bar){
+    bar = document.createElement('div');
+    bar.id = 'payslip-retry-bar';
+    bar.setAttribute('role','alert');
+    bar.style.cssText = 'position:fixed;bottom:20px;left:50%;transform:translateX(-50%);z-index:998;display:flex;gap:10px;align-items:center;background:var(--bg4);border:1px solid rgba(255,255,255,.1);border-left:3px solid var(--out);border-radius:10px;padding:9px 12px;font-size:12px;color:var(--text2);box-shadow:0 14px 34px -14px rgba(0,0,0,.85)';
+    document.body.appendChild(bar);
+  }
+  bar.innerHTML = '<span>Payslip not saved - retry'+(ids.length>1?' ('+ids.length+' pay runs)':'')+'</span>'
+    + '<button class="btn btn-sm btn-outline" onclick="retryFailedPayslips()">Retry</button>'
+    + '<button class="btn-icon btn-sm" title="Dismiss" onclick="dismissPayslipRetryBar()">x</button>';
+}
+function retryFailedPayslips(){
+  Object.keys(_payslipFailed).forEach(function(id){
+    var run = (S.runs||[]).find(function(r){ return r.id === id; });
+    if(run) queuePayslipSave(run);
+  });
+  _payslipFailed = {};
+  renderPayslipRetryBar();
+  if(!_payslipQueueRunning) drainPayslipQueue();
+}
+function dismissPayslipRetryBar(){ _payslipFailed = {}; renderPayslipRetryBar(); }
+
+// Payroll row button (all roles): DOWNLOAD ONLY — never generates, saves or
+// writes anything. Opens the saved file via a 5-minute signed URL: the recorded
+// payslip_path, else the deterministic path (a file saved but not recorded, or
+// a role that can't write pay_runs). No file -> a toast, nothing else.
+var PAYSLIP_NONE_MSG = 'No saved payslip for this run.';
+async function downloadPayslipPdf(id){
+  var run = (S.runs||[]).find(function(r){ return r.id === id; });
+  if(!run){ showToast(PAYSLIP_NONE_MSG,'err'); return; }
+  if(run.payslip_path){
+    // Known to exist: open the tab before the await so the popup blocker
+    // still sees the click.
+    var win = window.open('', '_blank');
+    var res = await sb2.storage.from(PAYSLIP_BUCKET).createSignedUrl(run.payslip_path, 300);
+    if(res.data && res.data.signedUrl){
+      if(win) win.location = res.data.signedUrl; else window.open(res.data.signedUrl, '_blank');
+    } else {
+      if(win) win.close();
+      showToast(PAYSLIP_NONE_MSG,'err');
+    }
+    return;
+  }
+  // Not recorded: check the deterministic path first, so a missing file opens
+  // no tab at all.
+  var path = payslipPath(run);
+  var st = path ? await payslipStat(path) : { exists:false };
+  if(!st.exists){ showToast(PAYSLIP_NONE_MSG,'err'); return; }
+  var res2 = await sb2.storage.from(PAYSLIP_BUCKET).createSignedUrl(path, 300);
+  if(!(res2.data && res2.data.signedUrl)){ showToast(PAYSLIP_NONE_MSG,'err'); return; }
+  if(!window.open(res2.data.signedUrl, '_blank')) showToast('Popup blocked — allow popups for this site','err');
 }
 
 function openPayPeriodPicker(platform) {
@@ -8325,7 +8646,11 @@ async function syncPayRunWiseStatuses() {
       // If delivered, also update main status
       if(newStatus === 'delivered' && run.status === 'processed') {
         run.status = 'paid';
-        await sb2.from('pay_runs').update({status:'paid'}).eq('id',run.id);
+        var paidRes = await sb2.from('pay_runs').update({status:'paid'}).eq('id',run.id).select('id');
+        // Save the payslip PDF only once the paid write has really landed
+        // (an RLS-filtered update returns no error and no rows).
+        if(paidRes.error || !paidRes.data || !paidRes.data.length) console.warn('[syncPayRunWiseStatuses] paid status not saved for run', run.id, paidRes.error && paidRes.error.message);
+        else queuePayslipSave(run);
       }
       updated++;
     }
