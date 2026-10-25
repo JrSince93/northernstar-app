@@ -8460,6 +8460,7 @@ function mapWiseStatementTx(t) {
   return {
     id: t.referenceNumber || details.paymentReference || (when + '_' + absAmt),
     date: when.slice(0,10),
+    when: when,
     amount: absAmt,
     currency: amtObj.currency || 'AUD',
     description: stripWiseHtml(details.description || merchant.name || ''),
@@ -8518,6 +8519,7 @@ function mapWiseActivity(a) {
   return {
     id: id,
     date: String(a.createdOn || a.updatedOn || '').slice(0,10),
+    when: String(a.createdOn || a.updatedOn || ''),
     amount: parsed.value,
     currency: parsed.currency || 'AUD',
     description: plainDesc || plainTitle || plainSubtitle || '',
@@ -8866,26 +8868,68 @@ function renderInvoices() {
   renderWiseMatchBanner();
 }
 
-// Awaiting invoices matched against inbound Wise transfers within $1 tolerance,
-// excluding transfers already confirmed against a paid invoice.
+// Melbourne calendar day of a Wise transfer, as YYYY-MM-DD. t.date is the UTC
+// day and stays that way (cash-book rows are dated by it); invoice dates are
+// Melbourne days, so a payment made before 10am (11am in daylight saving) on the
+// invoice date would otherwise compare as the day before. Wise timestamps are
+// UTC; one without a zone suffix is read as UTC. Falls back to t.date when
+// there is no usable timestamp.
+var _melbDayFmt = null;
+function wiseMelbDate(t) {
+  var ts = String((t && t.when) || '').trim().replace(' ', 'T');
+  if(ts.indexOf('T') !== -1) {
+    if(!/(Z|[+-]\d{2}:?\d{2})$/i.test(ts)) ts += 'Z';
+    var d = new Date(ts);
+    if(!isNaN(d.getTime())) {
+      try {
+        if(!_melbDayFmt) _melbDayFmt = new Intl.DateTimeFormat('en-AU',
+          { timeZone:'Australia/Melbourne', year:'numeric', month:'2-digit', day:'2-digit' });
+        var p = {};
+        _melbDayFmt.formatToParts(d).forEach(function(x){ p[x.type] = x.value; });
+        if(p.year && p.month && p.day) return p.year + '-' + p.month + '-' + p.day;
+      } catch(e) {}
+    }
+  }
+  return (t && t.date) || '';
+}
+
+// Awaiting invoices matched against inbound Wise transfers within $1 tolerance.
+// A transfer is only suggested when it is dated on or after the invoice date
+// (both as Melbourne days, see wiseMelbDate) and is not already linked
+// (wise_transfer_id) to any invoice, whatever its status. Fortnightly invoices often carry the same amount, so matching is
+// one-to-one and oldest-first: invoices are taken in invoice_date order, each
+// gets the earliest eligible transfer, and a transfer suggested for an older
+// invoice is never offered for a newer one.
 function findWiseInvoiceMatches() {
   var awaiting = (S.invoiceLedger||[]).filter(function(i){ return i.status==='awaiting_payment'; });
   if(awaiting.length===0 || !S.wiseTransfers || S.wiseTransfers.length===0) return [];
 
-  var inbound = S.wiseTransfers.filter(function(t){ return t.direction==='in'; });
-  var matches = [];
+  var linked = {};
+  (S.invoiceLedger||[]).forEach(function(i){ if(i.wise_transfer_id) linked[i.wise_transfer_id] = true; });
 
+  var melb = {};
+  var inbound = S.wiseTransfers
+    .filter(function(t){ return t.direction==='in' && t.date && !linked[t.id]; })
+    .map(function(t){ melb[t.id] = wiseMelbDate(t); return t; })
+    .sort(function(a,b){ return melb[a.id] < melb[b.id] ? -1 : melb[a.id] > melb[b.id] ? 1 : 0; });
+
+  awaiting.sort(function(a,b){
+    var da = a.invoice_date||'', db = b.invoice_date||'';
+    if(da !== db) return da < db ? -1 : 1;
+    return (a.invoice_ref||'') < (b.invoice_ref||'') ? -1 : 1;
+  });
+
+  var claimed = {};
+  var matches = [];
   awaiting.forEach(function(inv) {
     var invAmt = +inv.amount||0;
-    inbound.forEach(function(t) {
-      var tAmt = +t.amount||0;
-      // Match within $1 tolerance
-      if(Math.abs(tAmt - invAmt) <= 1.00) {
-        // Check not already confirmed
-        var alreadyPaid = (S.invoiceLedger||[]).some(function(i){ return i.status==='paid' && i.wise_transfer_id===t.id; });
-        if(!alreadyPaid) matches.push({ inv: inv, transfer: t });
-      }
+    var invDate = inv.invoice_date||'';
+    var t = inbound.find(function(t) {
+      return !claimed[t.id]
+        && melb[t.id] >= invDate
+        && Math.abs((+t.amount||0) - invAmt) <= 1.00;
     });
+    if(t) { claimed[t.id] = true; matches.push({ inv: inv, transfer: t }); }
   });
 
   return matches;
@@ -9713,10 +9757,18 @@ async function _autoImportWiseIncomeInner() {
     }
 
     // A jar withdrawal is never an invoice payment, so it must not be swallowed
-    // by the amount-based invoice match below.
+    // by the amount-based invoice match below. Same eligibility as
+    // findWiseInvoiceMatches: an awaiting invoice only claims a transfer dated on
+    // or after its invoice date (Melbourne days), and an invoice already linked
+    // to a transfer claims no other. Without the date check, an older same-amount
+    // payment was held out of the cash book by a newer invoice.
+    var tMelbDate = wiseMelbDate(t);
     var matchedToInvoice = !jar && (S.invoiceLedger||[]).some(function(inv){
       if(inv.wise_transfer_id && inv.wise_transfer_id === t.id) return true;
-      if(inv.status === 'awaiting_payment' && Math.abs((+inv.amount||0) - tAmt) <= 1.00) return true;
+      if(inv.status === 'awaiting_payment'
+         && !inv.wise_transfer_id
+         && tMelbDate >= (inv.invoice_date||'')
+         && Math.abs((+inv.amount||0) - tAmt) <= 1.00) return true;
       return false;
     });
     if(matchedToInvoice) { skipped.invoiceMatch++; continue; }
