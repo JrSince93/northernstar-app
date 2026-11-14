@@ -366,7 +366,7 @@ input[type=number]{text-align:right;font-variant-numeric:tabular-nums}
     <div id="emp-list"><div class="loading"><div class="spin"></div>Loading...</div></div>
   </div>
   <div class="page" id="page-payroll">
-    <div class="section-header"><div class="section-title">Payroll</div><div style="display:flex;gap:8px"><button class="btn btn-outline btn-sm" onclick="refreshWiseTransfers()" style="border-color:#9fe870;color:#7ab648" title="Refresh Wise transfer statuses"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-right:3px"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>Wise</button><button class="btn btn-outline btn-sm" onclick="exportPaymentFile('revolut')" style="border-color:#7b61ff;color:#7b61ff">Revolut</button><button class="btn btn-outline btn-sm" onclick="exportPaymentFile('wise')" style="border-color:#9fe870;color:#7ab648">Wise</button><button class="btn btn-outline btn-sm" onclick="exportPaymentFile('generic')" style="border-color:var(--gold-dim);color:var(--gold)">Generic CSV</button><button class="btn btn-green" onclick="openPayModal()">+ New pay run</button></div></div>
+    <div class="section-header"><div class="section-title">Payroll</div><div style="display:flex;gap:8px;align-items:center"><span id="pr-wise-last" class="td-muted" style="display:none;font-size:11px;white-space:nowrap"></span><button class="btn btn-outline btn-sm" onclick="refreshWiseTransfers()" style="border-color:#9fe870;color:#7ab648" title="Refresh Wise transfer statuses"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-right:3px"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>Wise</button><button class="btn btn-outline btn-sm" onclick="exportPaymentFile('revolut')" style="border-color:#7b61ff;color:#7b61ff">Revolut</button><button class="btn btn-outline btn-sm" onclick="exportPaymentFile('wise')" style="border-color:#9fe870;color:#7ab648">Wise</button><button class="btn btn-outline btn-sm" onclick="exportPaymentFile('generic')" style="border-color:var(--gold-dim);color:var(--gold)">Generic CSV</button><button class="btn btn-green" onclick="openPayModal()">+ New pay run</button></div></div>
     <div class="kpi-grid" style="grid-template-columns:repeat(3,1fr)">
       <div class="kpi"><div class="kpi-label">Gross paid (YTD)</div><div class="kpi-val green" id="pr-gross">--</div></div>
       <div class="kpi"><div class="kpi-label">PAYG withheld (YTD)</div><div class="kpi-val red" id="pr-tax">--</div></div>
@@ -2496,6 +2496,7 @@ async function savePayRun(){
   var txRes=await sb2.from('transactions').insert({month:month,date:paidDate,description:'Payroll - '+(opt?opt.text:'Employee')+' [pending]',payment_type:'EFT',reference:pendingRef,amount_in:0,amount_out:0}).select();
   if(txRes.data&&txRes.data[0])S.tx.push(txRes.data[0]);
   setSync('ok');closeM('m-pay');renderPR();renderDash();renderCB();showToast('Pay run processed (cash book entry pending Wise transfer)','ok');
+  scheduleWisePayrunRechecks();
 }
 function renderPR(){
   eid('pr-gross').textContent=fmt(S.runs.reduce(function(s,r){return s+(+r.gross_pay||0);},0));
@@ -4663,6 +4664,8 @@ function doExportPaymentFile(platform, periodStartStr, periodEndStr) {
   a.download = names[platform] + '_Payroll_' + periodStartStr + '_to_' + periodEndStr + '.csv';
   a.click();
   showToast(names[platform] + ': ' + count + ' employees exported','ok');
+  // A Wise payment file means payday is imminent: recheck Wise shortly after.
+  if(platform === 'wise') scheduleWisePayrunRechecks();
 }
 
 
@@ -9682,17 +9685,25 @@ async function checkWiseForInvoices() {
 // ── Refresh Wise (for payroll page) ──
 async function refreshWiseTransfers() {
   if(!isAdmin()){ showToast('Wise sync is admin-only','err'); return; }  // see initWiseSync
-  showToast('Syncing Wise transfers...','');
-  setSync('saving');
-  await fetchWiseTransfers();
-  var updated = await syncPayRunWiseStatuses();
-  var reconciled = await reconcilePendingPayroll();
-  setSync('ok');
-  renderPR();
-  if(reconciled > 0) renderCB();
-  var msg = 'Wise synced — '+(updated||0)+' pay run(s) updated';
-  if(reconciled > 0) msg += ', '+reconciled+' payroll cash row(s) reconciled';
-  showToast(msg, 'ok');
+  if(_wiseSyncBusy){ showToast('Wise check already running','err'); return; }  // see wiseRecheck
+  _wiseSyncBusy = true;
+  try {
+    showToast('Syncing Wise transfers...','');
+    setSync('saving');
+    await fetchWiseTransfers();
+    var updated = await syncPayRunWiseStatuses();
+    var reconciled = await reconcilePendingPayroll();
+    setSync('ok');
+    renderPR();
+    if(reconciled > 0) renderCB();
+    var msg = 'Wise synced — '+(updated||0)+' pay run(s) updated';
+    if(reconciled > 0) msg += ', '+reconciled+' payroll cash row(s) reconciled';
+    showToast(msg, 'ok');
+    wiseNoteCheck(S.wiseSource === 'statement');
+  } finally {
+    _wiseSyncBusy = false;
+    renderWiseLastCheck();
+  }
 }
 
 // ── Dashboard invoice outstanding KPI ──
@@ -9709,19 +9720,149 @@ function getDashInvoiceOutstanding() {
 // as visible, double-counted expenses. The accountant can't write at all.
 async function initWiseSync() {
   if(!isAdmin()) return;
-  await fetchWiseTransfers();
-  await syncPayRunWiseStatuses();
-  await reconcilePendingPayroll();
-  await autoImportWiseExpenses();
-  await autoImportWiseIncome();
-  if(document.getElementById('page-payroll').classList.contains('active')) renderPR();
-  if(document.getElementById('page-invoices').classList.contains('active')) renderInvoices();
-  if(document.getElementById('page-cashbook').classList.contains('active')) renderCB();
-  // The first renderDash() ran before reconcilePendingPayroll rewrote the
-  // pending payroll rows (and before any import), so redraw it from the
-  // current S.tx. Also refreshes the Wise match banner.
-  renderDash();
-  renderDashWiseMatchBanner();
+  // Never overlap an automatic recheck: it would swap S.wiseTransfers out
+  // from under the importers. Wait for it, then run in full (importers must run).
+  if(_wiseRecheckPromise) { try { await _wiseRecheckPromise; } catch(_) {} }
+  _wiseSyncBusy = true;
+  try {
+    await fetchWiseTransfers();
+    await syncPayRunWiseStatuses();
+    await reconcilePendingPayroll();
+    await autoImportWiseExpenses();
+    await autoImportWiseIncome();
+    if(document.getElementById('page-payroll').classList.contains('active')) renderPR();
+    if(document.getElementById('page-invoices').classList.contains('active')) renderInvoices();
+    if(document.getElementById('page-cashbook').classList.contains('active')) renderCB();
+    // The first renderDash() ran before reconcilePendingPayroll rewrote the
+    // pending payroll rows (and before any import), so redraw it from the
+    // current S.tx. Also refreshes the Wise match banner.
+    renderDash();
+    renderDashWiseMatchBanner();
+    wiseNoteCheck(S.wiseSource === 'statement');
+  } finally {
+    _wiseSyncBusy = false;
+    renderWiseLastCheck();
+  }
+}
+
+// ── Automatic Wise recheck (admin only) ──
+// Does what the Refresh Wise button does, minus the importers, so a payout
+// made after the app was opened marks its run paid (and fires the payslip PDF
+// save via syncPayRunWiseStatuses → queuePayslipSave) without a reload.
+//
+// One proxy call per recheck: the statement, keyed on the WISE_AUD_BALANCE_ID
+// constant (fetchWiseTransfers spends a second call confirming that id). It
+// never falls back to the activities feed (the 2026-11-01 data source), and
+// S.wiseTransfers is replaced only by a good statement.
+//
+// Triggers: tab becomes visible; 2 and 10 minutes after a pay run is processed,
+// imported or exported as a Wise payment file (these fire even while the tab
+// is hidden — that's when you're paying in Wise); every 15 minutes while the
+// tab is visible. _wiseSyncBusy is the only limit: a trigger that arrives
+// while any Wise sync is running is skipped.
+//
+// Known limitation (accepted 2026-11-15): statement rows are balance debits
+// mapped as status 'COMPLETED', so "delivered" means "Wise took the money",
+// not "the worker's bank received it". A transfer that later bounces leaves
+// its run paid with a saved payslip. Follow-up to propose: read real transfer
+// state from Wise v1/transfers (needs adding to wise.js's allow-list).
+var _wiseSyncBusy = false;          // shared by initWiseSync, Refresh Wise and wiseRecheck
+var _wiseRecheckPromise = null;
+var _wiseLastCheckOk = null;        // Date of the last successful statement check
+var _wiseLastCheckFailed = null;    // Date of a failed attempt since then, if any
+var _wisePayrunTimers = [];
+var _wiseAutoStarted = false;
+var WISE_RECHECK_INTERVAL_MS = 15 * 60 * 1000;
+
+function wiseNoteCheck(ok) {
+  if(ok) { _wiseLastCheckOk = new Date(); _wiseLastCheckFailed = null; }
+  else _wiseLastCheckFailed = new Date();
+}
+
+async function wiseRecheckFetchStatement() {
+  var since = new Date(); since.setDate(since.getDate()-90);
+  var qs = 'currency=AUD&intervalStart=' + encodeURIComponent(since.toISOString().slice(0,10) + 'T00:00:00.000Z')
+         + '&intervalEnd=' + encodeURIComponent(new Date().toISOString()) + '&type=COMPACT';
+  var resp = await wiseFetch('v1/profiles/' + WISE_PROFILE_ID + '/balance-statements/'
+                             + WISE_AUD_BALANCE_ID + '/statement.json?' + qs);
+  if(!resp.ok) {
+    var body = '';
+    try { body = (await resp.text()).slice(0, 300); } catch(_) {}
+    throw new Error('HTTP ' + resp.status + ' ' + body);
+  }
+  var data = await resp.json();
+  var txs = (data && data.transactions) || [];
+  if(!txs.length) throw new Error('statement returned 0 transactions');
+  return txs.map(mapWiseStatementTx);
+}
+
+function wiseRecheck(reason) {
+  if(!isAdmin()) return Promise.resolve();
+  if(_wiseSyncBusy) {
+    console.log('[Wise recheck] skipped (' + reason + ') — a Wise sync is already running');
+    return Promise.resolve();
+  }
+  _wiseSyncBusy = true;
+  _wiseRecheckPromise = (async function(){
+    try {
+      S.wiseTransfers = await wiseRecheckFetchStatement();
+      S.wiseSource = 'statement';
+      var updated = (await syncPayRunWiseStatuses()) || 0;
+      var reconciled = (await reconcilePendingPayroll()) || 0;
+      wiseNoteCheck(true);
+      console.log('[Wise recheck] (' + reason + ') ' + updated + ' run(s) updated, ' + reconciled + ' reconciled');
+      if(updated || reconciled) {
+        if(eid('page-payroll').classList.contains('active')) renderPR();
+        if(eid('page-cashbook').classList.contains('active')) renderCB();
+        if(eid('page-dashboard').classList.contains('active')) renderDash();
+        showToast('Wise check: ' + updated + ' pay run(s) updated'
+                  + (reconciled ? ', ' + reconciled + ' payroll cash row(s) reconciled' : ''), 'ok');
+      }
+    } catch(e) {
+      wiseNoteCheck(false);
+      console.warn('[Wise recheck] (' + reason + ') failed:', e && e.message);
+    } finally {
+      _wiseSyncBusy = false;
+      _wiseRecheckPromise = null;
+      renderWiseLastCheck();
+    }
+  })();
+  return _wiseRecheckPromise;
+}
+
+// A new pay-run event replaces any pending pair, so timers never pile up.
+function scheduleWisePayrunRechecks() {
+  if(!isAdmin()) return;
+  _wisePayrunTimers.forEach(clearTimeout);
+  _wisePayrunTimers = [
+    setTimeout(function(){ wiseRecheck('payrun+2m'); },  2 * 60 * 1000),
+    setTimeout(function(){ wiseRecheck('payrun+10m'); }, 10 * 60 * 1000)
+  ];
+}
+
+function startWiseAutoRecheck() {
+  if(!isAdmin() || _wiseAutoStarted) return;
+  _wiseAutoStarted = true;
+  document.addEventListener('visibilitychange', function(){
+    if(document.visibilityState === 'visible') wiseRecheck('tab-visible');
+  });
+  setInterval(function(){
+    if(document.visibilityState === 'visible') wiseRecheck('timer-15m');
+  }, WISE_RECHECK_INTERVAL_MS);
+  renderWiseLastCheck();
+}
+
+function wiseHHMM(d) {
+  return d.toLocaleTimeString('en-AU', { hour:'2-digit', minute:'2-digit', hour12:false, timeZone:'Australia/Melbourne' });
+}
+
+function renderWiseLastCheck() {
+  var el = eid('pr-wise-last');
+  if(!el) return;
+  if(!isAdmin()) { el.style.display = 'none'; return; }
+  el.style.display = '';
+  el.textContent = 'Last Wise check: ' + (_wiseLastCheckOk ? wiseHHMM(_wiseLastCheckOk) : '—')
+                 + (_wiseLastCheckFailed ? ' · ' + wiseHHMM(_wiseLastCheckFailed) + ' failed' : '');
 }
 
 // ── Shared helper: counterparty name on a Wise transfer ──
@@ -10196,7 +10337,8 @@ loadAll = async function() {
     invKpi.style.color = outAmt > 0 ? 'var(--out)' : 'var(--in)';
   }
   // Background fetch Wise transfers (non-blocking)
-  initWiseSync().catch(function(e){ console.warn('Wise sync:', e); });
+  initWiseSync().catch(function(e){ console.warn('Wise sync:', e); })
+    .then(function(){ startWiseAutoRecheck(); });
 };
 
 checkAuth();
@@ -11189,6 +11331,7 @@ async function tsCreatePayRuns(){
     closeTsImport();
     renderPR();renderDash();renderCB();
     nav('payroll');
+    scheduleWisePayrunRechecks();
   }
 }
 
