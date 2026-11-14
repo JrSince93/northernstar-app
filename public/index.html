@@ -1130,6 +1130,8 @@ function fmt(n){var v=parseFloat(n);if(!v&&v!==0)return'--';return'$'+Math.abs(v
 // KPIs, Income vs Outgoings, Net by Month, P&L, Tax/BAS, Accountant exports and
 // the Expenses tab.
 function isInternalTransfer(t){ return !!t && t.payment_type === 'Internal Transfer'; }
+// Badge for a PAYROLL-PENDING- row; shared by the Cash Book and the Dashboard.
+var PENDING_BADGE_HTML = ' <span style="background:rgba(210,153,34,.18);color:var(--gold);font-size:9px;font-weight:700;padding:1px 6px;border-radius:8px;letter-spacing:.04em;text-transform:uppercase;margin-left:6px;vertical-align:middle">Pending</span>';
 function ini(n){return(n||'?').split(' ').map(function(w){return w[0];}).join('').slice(0,2).toUpperCase();}
 // Local (Melbourne) date. toISOString() is UTC, which before 10:00 (11:00 in
 // daylight saving) is still yesterday — new transactions defaulted to the wrong day.
@@ -1562,7 +1564,13 @@ function renderDash(){
   var recent=activeTx.slice().sort(function(a,b){return new Date(b.created_at)-new Date(a.created_at);}).slice(0,12);
   var rHtml=recent.length===0?'<div class="empty">No transactions yet</div>':'<div class="tbl-wrap"><table><thead><tr><th>Date</th><th>Description</th><th class="td-right">In</th><th class="td-right">Out</th></tr></thead><tbody>';
   if(recent.length>0){
-    recent.forEach(function(r){rHtml+='<tr><td class="td-muted">'+(r.date||'--')+'</td><td>'+(r.description||'--')+'</td><td class="td-right td-green">'+(+r.amount_in>0?fmt(r.amount_in):'')+'</td><td class="td-right td-red">'+(+r.amount_out>0?fmt(r.amount_out):'')+'</td></tr>';});
+    // Same pending treatment as the Cash Book: strip the stored " [pending]"
+    // tag and badge only rows that are still PAYROLL-PENDING-.
+    recent.forEach(function(r){
+      var isPending=(r.reference||'').indexOf('PAYROLL-PENDING-')===0;
+      var desc=(r.description||'--').replace(' [pending]','')+(isPending?PENDING_BADGE_HTML:'');
+      rHtml+='<tr'+(isPending?' style="opacity:.55"':'')+'><td class="td-muted">'+(r.date||'--')+'</td><td>'+desc+'</td><td class="td-right td-green">'+(+r.amount_in>0?fmt(r.amount_in):'')+'</td><td class="td-right td-red">'+(+r.amount_out>0?fmt(r.amount_out):'')+'</td></tr>';
+    });
     rHtml+='</tbody></table></div>';
   }
   eid('d-recent').innerHTML=rHtml;
@@ -1709,7 +1717,7 @@ function renderCB(){
     var bc=run>=0?'var(--in)':'var(--out)';
     var isPending = (r.reference||'').indexOf('PAYROLL-PENDING-') === 0;
     var rowStyle = isPending ? ' style="opacity:.55"' : '';
-    var pendingBadge = isPending ? ' <span style="background:rgba(210,153,34,.18);color:var(--gold);font-size:9px;font-weight:700;padding:1px 6px;border-radius:8px;letter-spacing:.04em;text-transform:uppercase;margin-left:6px;vertical-align:middle">Pending</span>' : '';
+    var pendingBadge = isPending ? PENDING_BADGE_HTML : '';
     var displayDesc = (r.description||'--').replace(' [pending]', '');
     // Pending rows: amount_out is 0, but show the awaited amount in brackets so the user can see what's coming
     var pendingOutHint = '';
@@ -8340,8 +8348,9 @@ function parseWiseFormattedAmount(s) {
   if(!numMatch) return { value:0, sign:sign, currency:currency };
   var val = parseFloat(numMatch[1].replace(/,/g,''));
   if(isNaN(val)) return { value:0, sign:sign, currency:currency };
-  // If we saw a number but no sign indicator at all, treat as positive.
-  return { value: val, sign: sign || 1, currency: currency };
+  // No sign indicator at all → sign 0 (unknown). It used to default to +1,
+  // which turned unsigned Wise batch-payroll payments into "Deposit" income.
+  return { value: val, sign: sign, currency: currency };
 }
 
 // Wise names the outbound leg of a jar move after the CURRENCY, not the jar:
@@ -8391,6 +8400,97 @@ function wiseRefMatches(txRef, suffix) {
   return r.indexOf('WISE-' + suffix) !== -1 || r.indexOf('WISE--' + suffix) !== -1;
 }
 
+// One Wise transfer arrives with different ids depending on the endpoint: the
+// statement gives "TRANSFER-2433035637", the activities fallback the bare
+// "2433035637". invoice_ledger.wise_transfer_id stores whichever was live at
+// confirm time. Compare ids ONLY through this, never with ===.
+function wiseIdKey(id) { return wiseRefSuffix(id); }
+function wiseSameTransfer(a, b) {
+  var ka = wiseIdKey(a), kb = wiseIdKey(b);
+  return !!ka && ka === kb;
+}
+
+// Whole days between two YYYY-MM-DD strings (absolute). Infinity if either is
+// missing, so a missing date never counts as "near".
+function wiseDayDiff(a, b) {
+  a = String(a||'').slice(0,10); b = String(b||'').slice(0,10);
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(a) || !/^\d{4}-\d{2}-\d{2}$/.test(b)) return Infinity;
+  return Math.abs(Date.parse(a+'T00:00:00Z') - Date.parse(b+'T00:00:00Z')) / 86400000;
+}
+
+var WISE_PAYMENT_NEAR_DAYS = 3;
+
+// Is this cash-book row an invoice payment (NDIS Payment / INV- reference)?
+function isInvoicePaymentTx(r) {
+  var ref = String((r && r.reference) || '');
+  return ref.indexOf('INV-') === 0 || ref.indexOf('NSSS-INV') === 0
+      || /^ndis payment/i.test(String((r && r.description) || ''));
+}
+
+// An invoice payment row already in the cash book for this amount, dated
+// within WISE_PAYMENT_NEAR_DAYS of `date`. Used by the income importer so a
+// deposit whose invoice was paid by any route is never imported again.
+function findInvoicePaymentTxNear(amt, date) {
+  return (S.tx||[]).find(function(r){
+    return isInvoicePaymentTx(r)
+      && Math.abs((+r.amount_in||0) - (+amt||0)) < 0.005
+      && wiseDayDiff(r.date, date) <= WISE_PAYMENT_NEAR_DAYS;
+  }) || null;
+}
+
+// A deposit the income importer already wrote for this payment, which the
+// confirm paths convert rather than duplicate. Prefers the row carrying this
+// transfer's own WISE- reference; otherwise a "Deposit - " row of the same
+// amount within WISE_PAYMENT_NEAR_DAYS (closest date wins). Never a jar row.
+function findImportedDepositTx(transferId, amt, date) {
+  var tx = S.tx||[];
+  var sfx = transferId ? wiseIdKey(transferId) : '';
+  if(sfx) {
+    var byRef = tx.find(function(r){
+      return wiseRefMatches(r.reference, sfx) && (+r.amount_in||0) > 0 && !isInternalTransfer(r);
+    });
+    if(byRef) return byRef;
+  }
+  var best = null, bestDiff = Infinity;
+  tx.forEach(function(r){
+    if(String(r.reference||'').indexOf('WISE-') !== 0) return;
+    if(!/^deposit - /i.test(String(r.description||''))) return;
+    if(isInternalTransfer(r)) return;
+    if(Math.abs((+r.amount_in||0) - (+amt||0)) >= 0.005) return;
+    var d = wiseDayDiff(r.date, date);
+    if(d <= WISE_PAYMENT_NEAR_DAYS && d < bestDiff) { best = r; bestDiff = d; }
+  });
+  return best;
+}
+
+// Turn an imported deposit row into the invoice's NDIS Payment row in place.
+// Keeps the row's own date (the bank's). Returns true when the update landed.
+async function convertDepositToPayment(row, inv) {
+  var patch = {
+    description: 'NDIS Payment - ' + (inv.participant_name||''),
+    reference: inv.invoice_ref,
+    budget_line_id: inv.budget_line_id||null
+  };
+  var res = await updateTolerant('transactions', row.id, patch, ['budget_line_id']);
+  if(res.error) { console.warn('[invoice payment] could not convert deposit', row.id, res.error.message); return false; }
+  if(!res.data || !res.data.length) { console.warn('[invoice payment] deposit convert hit 0 rows', row.id); return false; }
+  Object.assign(row, res.data[0]);
+  return true;
+}
+
+// The importers write to the cash book only from statement-endpoint data; see
+// fetchWiseTransfers. One toast per fetch, however many importers ask.
+var _wiseImportPausedToasted = false;
+function wiseImportPaused(who) {
+  if(S.wiseSource === 'statement') return false;
+  console.warn('[' + who + '] paused — Wise data source is "' + (S.wiseSource||'none') + '", not the statement endpoint');
+  if(S.wiseSource === 'activities' && !_wiseImportPausedToasted) {
+    _wiseImportPausedToasted = true;
+    showToast('Wise statement unavailable — auto-import paused', 'err');
+  }
+  return true;
+}
+
 // Balance ids hide in different places depending on the endpoint.
 function wiseBalanceRef(src, key) {
   if(!src || typeof src !== 'object') return null;
@@ -8423,7 +8523,7 @@ function detectWiseJarMove(t) {
   if(src && tgt && src !== tgt) return null;
   if((src && src !== 'AUD') || (tgt && tgt !== 'AUD')) return null;
   var m = String(t.description || '').match(/^moved\s+[\d,.]+\s+aud\s+(to|from)\s+(.+)$/i);
-  if(t.sourceBalanceId && t.targetBalanceId) {
+  if(t.sourceBalanceId && t.targetBalanceId && (t.direction === 'in' || t.direction === 'out')) {
     return {
       rule: 'balance-ids',
       direction: t.direction === 'in' ? 'in' : 'out',
@@ -8491,7 +8591,9 @@ function wiseActivityDirection(a, resource, sign) {
   if(type === 'DEPOSIT' || type === 'REFUND' || type === 'INTEREST') return 'in';
   if(sign > 0) return 'in';
   if(sign < 0) return 'out';
-  return 'out';
+  // Unknown. Never guess: 'unknown' is neither 'in' nor 'out', so every
+  // importer and matcher (which test === 'in' / === 'out') leaves it alone.
+  return 'unknown';
 }
 
 // Map an activity entry. primaryAmount is a formatted string with HTML; we parse
@@ -8538,7 +8640,16 @@ function mapWiseActivity(a) {
   };
 }
 
+// S.wiseSource records which endpoint the current S.wiseTransfers came from:
+// 'statement' (main AUD balance only, prefixed ids like TRANSFER-2433035637,
+// signed amounts), 'activities' (the fallback), or 'none'. The importers only
+// write to the cash book from 'statement' data. On 2026-11-01 the fallback
+// carried bare ids that defeated the invoice link, unsigned batch-payroll
+// amounts that read as money in, and purchases from the jar balances, and an
+// import from it put $33,742.25 of phantom income in the cash book.
 async function fetchWiseTransfers() {
+  S.wiseSource = 'none';
+  _wiseImportPausedToasted = false;
   try {
     var since = new Date(); since.setDate(since.getDate()-90);
     var sinceStr = since.toISOString().slice(0,10) + 'T00:00:00.000Z';
@@ -8571,13 +8682,20 @@ async function fetchWiseTransfers() {
           if(txs.length > 0) {
             try { console.log('[Wise debug] statement first tx:', JSON.stringify(txs[0]).slice(0,800)); } catch(_){}
             S.wiseTransfers = txs.map(mapWiseStatementTx);
+            S.wiseSource = 'statement';
             console.log('[Wise] Loaded ' + S.wiseTransfers.length + ' transfers from statement endpoint');
             return;
           }
+          console.warn('[Wise] statement endpoint returned 0 transactions — falling back to activities');
         } else {
-          console.warn('[Wise] statement endpoint HTTP ' + stmtResp.status);
+          // Log the body too: Wise explains SCA / permission refusals there.
+          var stmtErrBody = '';
+          try { stmtErrBody = (await stmtResp.text()).slice(0, 500); } catch(_) {}
+          console.warn('[Wise] statement endpoint HTTP ' + stmtResp.status, stmtErrBody);
         }
       } catch(e) { console.warn('Wise statement error:', e); }
+    } else {
+      console.warn('[Wise] AUD balance id not resolved — statement endpoint not tried');
     }
 
     // Step 3: fall back to the activities endpoint. primaryAmount is a formatted
@@ -8591,7 +8709,8 @@ async function fetchWiseTransfers() {
       try { console.log('[Wise debug] activities first item:', JSON.stringify(activities[0]).slice(0,1200)); } catch(_){}
     }
     S.wiseTransfers = activities.map(mapWiseActivity);
-    console.log('[Wise] Loaded ' + S.wiseTransfers.length + ' transfers from activities endpoint');
+    S.wiseSource = 'activities';
+    console.log('[Wise] Loaded ' + S.wiseTransfers.length + ' transfers from activities endpoint (fallback — cash book import paused)');
   } catch(e) {
     console.error('Wise transfers error:', e);
     S.wiseTransfers = [];
@@ -8611,7 +8730,7 @@ function getWiseStatusForPayRun(run) {
   // Find matching outbound Wise transfer
   var emp = S.emps.find(function(e){ return e.id===run.employee_id; });
   var match = S.wiseTransfers.find(function(t){
-    if(t.direction==='in') return false;
+    if(t.direction!=='out') return false;   // 'unknown' sign is not a payout
     var tAmt = Math.abs(+(t.amount||t.targetAmount||0));
     var amtClose = Math.abs(tAmt - netPay) < 0.02;
     if(!amtClose) return false;
@@ -8724,7 +8843,7 @@ async function reconcilePendingPayroll() {
     var periodEnd = run.period_end || run.paid_date || '';
     var periodEndMs = periodEnd ? new Date(periodEnd).getTime() : 0;
     var match = S.wiseTransfers.find(function(t){
-      if(t.direction === 'in') return false;
+      if(t.direction !== 'out') return false;   // 'unknown' sign is not a payout
       if(claimedTransferIds[t.id]) return false;
       var tAmt = Math.abs(+(t.amount || t.targetAmount || 0));
       if(Math.abs(tAmt - netPay) > 1.00) return false;
@@ -8905,11 +9024,13 @@ function findWiseInvoiceMatches() {
   if(awaiting.length===0 || !S.wiseTransfers || S.wiseTransfers.length===0) return [];
 
   var linked = {};
-  (S.invoiceLedger||[]).forEach(function(i){ if(i.wise_transfer_id) linked[i.wise_transfer_id] = true; });
+  // Keyed by normalised id: the ledger may hold "TRANSFER-…" while the live
+  // feed carries the bare number (see wiseIdKey).
+  (S.invoiceLedger||[]).forEach(function(i){ var k = wiseIdKey(i.wise_transfer_id); if(k) linked[k] = true; });
 
   var melb = {};
   var inbound = S.wiseTransfers
-    .filter(function(t){ return t.direction==='in' && t.date && !linked[t.id]; })
+    .filter(function(t){ return t.direction==='in' && t.date && !linked[wiseIdKey(t.id)]; })
     .map(function(t){ melb[t.id] = wiseMelbDate(t); return t; })
     .sort(function(a,b){ return melb[a.id] < melb[b.id] ? -1 : melb[a.id] > melb[b.id] ? 1 : 0; });
 
@@ -8991,6 +9112,18 @@ async function insertTolerant(table, row, optionalCols) {
       +' — inserted without them. Run migrations/2026-08-29-budget-line-linking.sql.');
     res = await sb2.from(table).insert(stripped).select();
     if(!res.error) res.droppedCols = true;
+  }
+  return res;
+}
+
+// Update counterpart of insertTolerant, by id. Returns the updated row(s) in
+// res.data; an RLS-blocked update comes back with no error and no rows.
+async function updateTolerant(table, id, patch, optionalCols) {
+  var res = await sb2.from(table).update(patch).eq('id', id).select();
+  if(res.error && isMissingColumnError(res.error, optionalCols)) {
+    var stripped = Object.assign({}, patch);
+    optionalCols.forEach(function(c){ delete stripped[c]; });
+    res = await sb2.from(table).update(stripped).eq('id', id).select();
   }
   return res;
 }
@@ -9269,6 +9402,20 @@ async function confirmWisePayment() {
       return;
     }
 
+    // 2b. The income importer may already have written this deposit. Convert
+    // that row into the NDIS Payment row rather than adding a second one.
+    var dep = findImportedDepositTx(wiseId, transfer.amount, payDate);
+    if(dep) {
+      var conv = await convertDepositToPayment(dep, inv);
+      setSync(conv ? 'ok' : 'error');
+      closeM('m-inv-wisepay');
+      renderInvoices();renderDash();
+      if(document.getElementById('page-cashbook').classList.contains('active')) renderCB();
+      showToast(conv ? 'Payment confirmed — existing Wise deposit relabelled as '+inv.invoice_ref
+                     : 'Invoice marked paid, but the cash book deposit could not be relabelled', conv ? 'ok' : 'err');
+      return;
+    }
+
     var month = MONTHS[new Date(payDate).getMonth()];
     var txRes = await insertTolerant('transactions', {
       month: month,
@@ -9294,6 +9441,24 @@ async function confirmWisePayment() {
   }
 }
 
+// The inbound Wise transfer a manual mark-paid most likely refers to: same
+// amount (to the cent), Melbourne day within WISE_PAYMENT_NEAR_DAYS of the
+// typed date, not already linked to a different invoice. Closest date wins.
+function findWiseTransferForManualPayment(inv, amt, payDate) {
+  var linked = {};
+  (S.invoiceLedger||[]).forEach(function(i){
+    if(i !== inv) { var k = wiseIdKey(i.wise_transfer_id); if(k) linked[k] = true; }
+  });
+  var best = null, bestDiff = Infinity;
+  (S.wiseTransfers||[]).forEach(function(t){
+    if(t.direction !== 'in' || linked[wiseIdKey(t.id)]) return;
+    if(Math.abs((+t.amount||0) - (+amt||0)) >= 0.005) return;
+    var d = wiseDayDiff(wiseMelbDate(t), payDate);
+    if(d <= WISE_PAYMENT_NEAR_DAYS && d < bestDiff) { best = t; bestDiff = d; }
+  });
+  return best;
+}
+
 // Manual mark paid (for non-Wise payments)
 async function manualMarkPaid(invId) {
   var inv = (S.invoiceLedger||[]).find(function(i){ return i.id===invId; });
@@ -9313,6 +9478,10 @@ async function manualMarkPaid(invId) {
     payment_date: payDate,
     payment_source: 'Manual'
   };
+  // Link the Wise deposit when one matches, so the income importer and the
+  // match banner recognise this payment by id later.
+  var wiseMatch = findWiseTransferForManualPayment(inv, amt, payDate);
+  if(wiseMatch) updateData.wise_transfer_id = wiseMatch.id;
 
   if(invId.indexOf('local-')!==0) {
     await sb2.from('invoice_ledger').update(updateData).eq('id', invId);
@@ -9324,6 +9493,18 @@ async function manualMarkPaid(invId) {
     setSync('ok');
     renderInvoices();renderDash();
     showToast('Payment already recorded in cash book — skipped duplicate','ok');
+    return;
+  }
+
+  // Already imported as a Wise deposit → convert it, don't add a second row.
+  var dep = findImportedDepositTx(wiseMatch ? wiseMatch.id : null, amt, payDate);
+  if(dep) {
+    var conv = await convertDepositToPayment(dep, inv);
+    setSync(conv ? 'ok' : 'error');
+    renderInvoices();renderDash();
+    if(document.getElementById('page-cashbook').classList.contains('active')) renderCB();
+    showToast(conv ? 'Invoice marked as '+(updateData.status==='paid'?'paid':'partially paid')+' — existing Wise deposit relabelled'
+                   : 'Invoice marked, but the cash book deposit could not be relabelled', conv ? 'ok' : 'err');
     return;
   }
 
@@ -9396,7 +9577,10 @@ async function initWiseSync() {
   if(document.getElementById('page-payroll').classList.contains('active')) renderPR();
   if(document.getElementById('page-invoices').classList.contains('active')) renderInvoices();
   if(document.getElementById('page-cashbook').classList.contains('active')) renderCB();
-  // Transfers only land here, after the initial renderDash() — refresh the banner.
+  // The first renderDash() ran before reconcilePendingPayroll rewrote the
+  // pending payroll rows (and before any import), so redraw it from the
+  // current S.tx. Also refreshes the Wise match banner.
+  renderDash();
   renderDashWiseMatchBanner();
 }
 
@@ -9475,6 +9659,7 @@ async function autoImportWiseExpenses() {
 
 async function _autoImportWiseExpensesInner() {
   if(!S.wiseTransfers||S.wiseTransfers.length===0) return;
+  if(wiseImportPaused('Wise auto-import')) return;
 
   // Diagnostic: dump all transfers to console once per sync so we can see shape
   try {
@@ -9485,13 +9670,16 @@ async function _autoImportWiseExpensesInner() {
     });
   } catch(e) {}
 
-  var outbound = S.wiseTransfers.filter(function(t){ return t.direction!=='in'; });
-  console.log('[Wise auto-import] outbound count:', outbound.length);
+  // Only rows Wise marked as money out. A row whose sign is unknown is never
+  // treated as out (or in) — it is counted in skipped.unknownSign.
+  var outbound = S.wiseTransfers.filter(function(t){ return t.direction==='out'; });
+  var unknownSign = S.wiseTransfers.filter(function(t){ return t.direction!=='in' && t.direction!=='out'; }).length;
+  console.log('[Wise auto-import] outbound count:', outbound.length, 'unknown sign:', unknownSign);
   if(outbound.length===0) return;
 
   var imported = 0;
   var jarImported = 0;
-  var skipped = { payroll:0, alreadyCB:0, feeOrConv:0, noData:0, notCompleted:0, inactive:0, ignoredOpening:0, dupInBatch:0 };
+  var skipped = { payroll:0, alreadyCB:0, feeOrConv:0, noData:0, notCompleted:0, inactive:0, ignoredOpening:0, dupInBatch:0, unknownSign:unknownSign };
 
   // Within-batch dedupe. The S.tx.push after a successful insert already covers
   // the same transfer appearing twice in one payload, but only while that push
@@ -9714,14 +9902,16 @@ async function autoImportWiseIncome() {
 // resolves before the insert lands, so two overlapping runs both insert.
 async function _autoImportWiseIncomeInner() {
   if(!S.wiseTransfers||S.wiseTransfers.length===0) return;
+  if(wiseImportPaused('Wise income-import')) return;
 
   var inbound = S.wiseTransfers.filter(function(t){ return t.direction==='in'; });
-  console.log('[Wise income-import] '+inbound.length+' inbound transfers to consider');
+  var unknownSign = S.wiseTransfers.filter(function(t){ return t.direction!=='in' && t.direction!=='out'; }).length;
+  console.log('[Wise income-import] '+inbound.length+' inbound transfers to consider, unknown sign: '+unknownSign);
   if(inbound.length===0) return;
 
   var internalTypesIn = ['MONEY_ADDED','TOPPED_UP','CASHBACK','CONVERSION','INTEREST_PAYMENT','BALANCE_TO_BALANCE'];
   var imported = 0;
-  var skipped = { invoiceMatch:0, alreadyCB:0, internal:0, noData:0, notCompleted:0, dupInBatch:0 };
+  var skipped = { invoiceMatch:0, invoicePaid:0, paymentInCB:0, payrollBatch:0, alreadyCB:0, internal:0, noData:0, notCompleted:0, dupInBatch:0, unknownSign:unknownSign };
   var seenRefs = {};   // within-batch dedupe; see the outbound importer
 
   for(var i=0; i<inbound.length; i++) {
@@ -9756,6 +9946,12 @@ async function _autoImportWiseIncomeInner() {
       skipped.internal++; continue;
     }
 
+    // A Wise batch payout (payroll) is money OUT, already booked as the pay
+    // runs' PAYROLL- rows. Backstop for a batch ever arriving marked 'in'.
+    if(/^wise_payroll_/i.test((t.description||'').trim()) || /^wise_payroll_/i.test((t.senderName||'').trim())) {
+      skipped.payrollBatch++; continue;
+    }
+
     // A jar withdrawal is never an invoice payment, so it must not be swallowed
     // by the amount-based invoice match below. Same eligibility as
     // findWiseInvoiceMatches: an awaiting invoice only claims a transfer dated on
@@ -9764,7 +9960,7 @@ async function _autoImportWiseIncomeInner() {
     // payment was held out of the cash book by a newer invoice.
     var tMelbDate = wiseMelbDate(t);
     var matchedToInvoice = !jar && (S.invoiceLedger||[]).some(function(inv){
-      if(inv.wise_transfer_id && inv.wise_transfer_id === t.id) return true;
+      if(inv.wise_transfer_id && wiseSameTransfer(inv.wise_transfer_id, t.id)) return true;
       if(inv.status === 'awaiting_payment'
          && !inv.wise_transfer_id
          && tMelbDate >= (inv.invoice_date||'')
@@ -9772,6 +9968,21 @@ async function _autoImportWiseIncomeInner() {
       return false;
     });
     if(matchedToInvoice) { skipped.invoiceMatch++; continue; }
+
+    // Paid by any route (Mark paid saves no transfer id when nothing matched):
+    // an invoice paid for this amount on a nearby date, or an NDIS Payment /
+    // INV- row already in the cash book, means this deposit is recorded.
+    if(!jar) {
+      var paidInv = (S.invoiceLedger||[]).some(function(inv){
+        if(inv.status !== 'paid' && inv.status !== 'partial') return false;
+        var pAmt = +(inv.payment_amount != null ? inv.payment_amount : inv.amount) || 0;
+        return Math.abs(pAmt - tAmt) < 0.005
+          && (wiseDayDiff(inv.payment_date, tDate) <= WISE_PAYMENT_NEAR_DAYS
+              || wiseDayDiff(inv.payment_date, tMelbDate) <= WISE_PAYMENT_NEAR_DAYS);
+      });
+      if(paidInv) { skipped.invoicePaid++; continue; }
+      if(findInvoicePaymentTxNear(tAmt, tDate)) { skipped.paymentInCB++; continue; }
+    }
 
     var refSuffix = wiseRefSuffix(t.id);
     var ref = 'WISE-'+(refSuffix||Date.now().toString().slice(-8));
