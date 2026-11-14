@@ -8445,6 +8445,13 @@ function findInvoicePaymentTxNear(amt, date) {
 function findImportedDepositTx(transferId, amt, date) {
   var tx = S.tx||[];
   var sfx = transferId ? wiseIdKey(transferId) : '';
+  var wid = transferId ? wiseIdFull(transferId) : '';
+  if(wid) {
+    var byId = tx.find(function(r){
+      return r.wise_id === wid && (+r.amount_in||0) > 0 && !isInternalTransfer(r) && !isInvoicePaymentTx(r);
+    });
+    if(byId) return byId;
+  }
   if(sfx) {
     var byRef = tx.find(function(r){
       return wiseRefMatches(r.reference, sfx) && (+r.amount_in||0) > 0 && !isInternalTransfer(r);
@@ -8464,14 +8471,21 @@ function findImportedDepositTx(transferId, amt, date) {
 }
 
 // Turn an imported deposit row into the invoice's NDIS Payment row in place.
-// Keeps the row's own date (the bank's). Returns true when the update landed.
-async function convertDepositToPayment(row, inv) {
+// Keeps the row's own date (the bank's), and gives it the Wise id when it has
+// none. Returns true when the update landed, 'conflict' when another row
+// already holds that Wise id (23505), false otherwise.
+async function convertDepositToPayment(row, inv, wid) {
   var patch = {
     description: 'NDIS Payment - ' + (inv.participant_name||''),
     reference: inv.invoice_ref,
     budget_line_id: inv.budget_line_id||null
   };
-  var res = await updateTolerant('transactions', row.id, patch, ['budget_line_id']);
+  if(!row.wise_id) withWiseId(patch, wid);
+  var res = await updateTolerant('transactions', row.id, patch, ['budget_line_id','wise_id']);
+  if(res.error && isUniqueViolation(res.error)) {
+    console.warn('[invoice payment] deposit', row.id, 'not converted: Wise id', wid, 'is already on another row');
+    return 'conflict';
+  }
   if(res.error) { console.warn('[invoice payment] could not convert deposit', row.id, res.error.message); return false; }
   if(!res.data || !res.data.length) { console.warn('[invoice payment] deposit convert hit 0 rows', row.id); return false; }
   Object.assign(row, res.data[0]);
@@ -8489,6 +8503,91 @@ function wiseImportPaused(who) {
     showToast('Wise statement unavailable — auto-import paused', 'err');
   }
   return true;
+}
+
+// ── wise_id: one Wise transaction, one cash-book row — enforced by the DB ──
+// transactions.wise_id holds the FULL Wise id: every digit after the last
+// hyphen, untruncated ("TRANSFER-2433035637" and "2433035637" both give
+// "2433035637"). wiseIdKey (8 digits) stays for matching legacy WISE-
+// references only. wiseIdFull must produce exactly what the SQL in
+// migrations/2026-11-14-transactions-wise-id.sql produces.
+//   transactions_wise_id_uniq          — a second row with the same wise_id
+//   invoice_ledger_wise_transfer_uniq  — one transfer paying two invoices
+// both reject with 23505. Every path that knows the Wise id sends it; a 23505
+// on transactions means "already recorded" and is skipped quietly, but only
+// after wiseResolveConflict confirms the existing row is the same money.
+function wiseIdFull(id) {
+  var s = String(id == null ? '' : id);
+  return s.slice(s.lastIndexOf('-') + 1).replace(/\D/g, '');
+}
+function isUniqueViolation(err) { return !!err && err.code === '23505'; }
+
+// Set once PostgREST reports transactions.wise_id missing (migration not run
+// yet). Writers then leave the column out and behave exactly as before.
+var _wiseIdColMissing = false;
+function withWiseId(row, wid) {
+  if(wid && !_wiseIdColMissing) row.wise_id = wid;
+  return row;
+}
+function wiseTxAmount(r) { return (+r.amount_in||0) + (+r.amount_out||0); }
+
+// The row that already holds this Wise transaction, by wise_id, else by its
+// WISE- reference. Pulled into S.tx when this tab doesn't have it: after a
+// 23505 the row exists in the database but not here, and every S.tx-derived
+// figure (running balance, KPIs, P&L) would be understated until a reload.
+async function wiseFindExisting(wid, ref) {
+  var tx = S.tx || (S.tx = []);
+  var row = (wid && tx.find(function(t){ return t.wise_id === wid; }))
+         || (ref && tx.find(function(t){ return t.reference === ref; })) || null;
+  try {
+    if(!row && wid && !_wiseIdColMissing) {
+      var g = await sb2.from('transactions').select('*').eq('wise_id', wid).limit(1);
+      if(!g.error && g.data && g.data[0]) row = g.data[0];
+    }
+    if(!row && ref) {
+      var g2 = await sb2.from('transactions').select('*').eq('reference', ref).limit(1);
+      if(!g2.error && g2.data && g2.data[0]) row = g2.data[0];
+    }
+  } catch(e) { console.warn('[wise_id] lookup failed', wid, ref, e); }
+  if(row && !tx.some(function(t){ return t.id === row.id; })) tx.push(row);
+  return row;
+}
+
+// After a 23505: is the existing row the same money? same:true → already
+// recorded, skip quietly. same:false → a DIFFERENT transaction holds this id
+// (two Wise types sharing a number, or bad data); the caller must surface it,
+// never hide it. A row we can't read (no access) is treated as recorded.
+async function wiseResolveConflict(wid, ref, amt) {
+  var row = await wiseFindExisting(wid, ref);
+  if(!row) {
+    console.warn('[wise_id] 23505 for', wid || ref, 'but the existing row could not be read — treated as already recorded');
+    return { row: null, same: true };
+  }
+  var same = Math.abs(wiseTxAmount(row) - (+amt||0)) < 0.005;
+  if(!same) console.error('[wise_id] id', wid || ref, 'is already on row', row.id, row.reference,
+                          'for', wiseTxAmount(row), '— this transaction is', amt, '— NOT recorded');
+  return { row: row, same: same };
+}
+
+// Fill an EMPTY wise_id on an existing row: the self-heal for rows written
+// before the column existed (importer rows kept only 8 digits in `reference`).
+// Returns 'conflict' when another row already holds the id — i.e. two rows for
+// one Wise transaction already exist — and undefined otherwise.
+async function wiseSetIdOnRow(row, wid) {
+  if(!row || !wid || row.wise_id || _wiseIdColMissing || !row.id) return;
+  try {
+    var res = await sb2.from('transactions').update({ wise_id: wid }).eq('id', row.id).is('wise_id', null).select('id');
+    if(res.error) {
+      if(isMissingColumnError(res.error, ['wise_id'])) { _wiseIdColMissing = true; return; }
+      if(isUniqueViolation(res.error)) {
+        console.warn('[wise_id] another row already holds', wid, '— row', row.id, row.reference, 'looks like a duplicate');
+        return 'conflict';
+      }
+      console.warn('[wise_id] could not set', wid, 'on', row.id, res.error.message);
+      return;
+    }
+    if(res.data && res.data.length) row.wise_id = wid;
+  } catch(e) { console.warn('[wise_id] set failed', wid, e); }
 }
 
 // Balance ids hide in different places depending on the endpoint.
@@ -8826,6 +8925,12 @@ async function reconcilePendingPayroll() {
     }
   });
 
+  // A transfer whose full Wise id is already on ANY cash-book row is taken.
+  // (claimedTransferIds above keys 8-digit references against raw ids, so it
+  // never matches; wise_id compares like with like.)
+  var claimedWise = {};
+  (S.tx||[]).forEach(function(t){ if(t.wise_id) claimedWise[t.wise_id] = true; });
+
   var reconciled = 0;
   for(var i = 0; i < pendingRows.length; i++) {
     var row = pendingRows[i];
@@ -8845,6 +8950,7 @@ async function reconcilePendingPayroll() {
     var match = S.wiseTransfers.find(function(t){
       if(t.direction !== 'out') return false;   // 'unknown' sign is not a payout
       if(claimedTransferIds[t.id]) return false;
+      if(claimedWise[wiseIdFull(t.id)]) return false;
       var tAmt = Math.abs(+(t.amount || t.targetAmount || 0));
       if(Math.abs(tAmt - netPay) > 1.00) return false;
       // 18-day window: transfer date must be within 18 days after period end
@@ -8875,17 +8981,27 @@ async function reconcilePendingPayroll() {
     var matchedDate = (match.date || row.date || '').slice(0,10) || row.date;
 
     var matchedMonth = MONTHS[new Date(matchedDate).getMonth()];
-    var upd = await sb2.from('transactions').update({
+    var matchWid = wiseIdFull(match.id);
+    claimedWise[matchWid] = true;
+    var updPatch = withWiseId({
       amount_out: actualOut,
       reference:  cleanRef,
       description: cleanDesc,
       date: matchedDate,
       month: matchedMonth
-    }).eq('id', row.id);
+    }, matchWid);
+    var upd = await updateTolerant('transactions', row.id, updPatch, ['wise_id']);
 
     if(!upd.error) {
-      Object.assign(row, { amount_out: actualOut, reference: cleanRef, description: cleanDesc, date: matchedDate, month: matchedMonth });
+      var applied = { amount_out: actualOut, reference: cleanRef, description: cleanDesc, date: matchedDate, month: matchedMonth };
+      if(updPatch.wise_id && !(upd.droppedCols||[]).length) applied.wise_id = updPatch.wise_id;
+      Object.assign(row, applied);
       reconciled++;
+    } else if(isUniqueViolation(upd.error)) {
+      // This Wise payout is already on another cash-book row (e.g. imported as
+      // an expense). Leave the run pending rather than count the money twice.
+      console.warn('[reconcilePendingPayroll] transfer', match.id, 'is already on another cash-book row — run',
+                   run.id.slice(0,8), 'left pending; check the Cash Book');
     } else {
       console.warn('[reconcilePendingPayroll] update failed for tx', row.id, upd.error.message);
     }
@@ -9103,29 +9219,33 @@ function isMissingColumnError(err, cols) {
   return cols.some(function(c){ return msg.indexOf(c)!==-1; });
 }
 
-async function insertTolerant(table, row, optionalCols) {
-  var res = await sb2.from(table).insert(row).select();
-  if(res.error && isMissingColumnError(res.error, optionalCols)) {
-    var stripped = Object.assign({}, row);
-    optionalCols.forEach(function(c){ delete stripped[c]; });
-    console.warn('['+table+'] missing column(s): '+optionalCols.join(', ')
-      +' — inserted without them. Run migrations/2026-08-29-budget-line-linking.sql.');
-    res = await sb2.from(table).insert(stripped).select();
-    if(!res.error) res.droppedCols = true;
+// Drops ONLY the optional columns the error names, one retry per missing
+// column, so a missing wise_id never takes budget_line_id down with it.
+async function writeTolerant(table, body, optionalCols, send) {
+  var cur = body, dropped = [], res;
+  for(var i = 0; i <= optionalCols.length; i++) {
+    res = await send(cur);
+    if(!res.error) break;
+    var left = optionalCols.filter(function(c){ return dropped.indexOf(c) === -1 && c in cur; });
+    var miss = left.filter(function(c){ return isMissingColumnError(res.error, [c]); });
+    if(!miss.length) break;
+    cur = Object.assign({}, cur);
+    miss.forEach(function(c){ delete cur[c]; dropped.push(c); });
+    if(table === 'transactions' && miss.indexOf('wise_id') !== -1) _wiseIdColMissing = true;
+    console.warn('['+table+'] missing column(s): '+miss.join(', ')+' — written without them. Run the pending migration.');
   }
+  if(dropped.length && !res.error) res.droppedCols = dropped;
   return res;
+}
+
+async function insertTolerant(table, row, optionalCols) {
+  return writeTolerant(table, row, optionalCols, function(r){ return sb2.from(table).insert(r).select(); });
 }
 
 // Update counterpart of insertTolerant, by id. Returns the updated row(s) in
 // res.data; an RLS-blocked update comes back with no error and no rows.
 async function updateTolerant(table, id, patch, optionalCols) {
-  var res = await sb2.from(table).update(patch).eq('id', id).select();
-  if(res.error && isMissingColumnError(res.error, optionalCols)) {
-    var stripped = Object.assign({}, patch);
-    optionalCols.forEach(function(c){ delete stripped[c]; });
-    res = await sb2.from(table).update(stripped).eq('id', id).select();
-  }
-  return res;
+  return writeTolerant(table, patch, optionalCols, function(p){ return sb2.from(table).update(p).eq('id', id).select(); });
 }
 
 // Every invoice generated this session, so a second generation can't silently
@@ -9378,61 +9498,32 @@ async function confirmWisePayment() {
   setSync('saving');
 
   try {
-    // 1. Update ledger entry to paid
+    // 1. Update ledger entry to paid. invoice_ledger_wise_transfer_uniq refuses
+    // a transfer that already pays another invoice: that is a real conflict,
+    // so nothing is recorded and the operator is told.
+    var payDate = transfer.date||tod();
     var updateData = {
       status: 'paid',
       payment_amount: transfer.amount,
-      payment_date: transfer.date||tod(),
+      payment_date: payDate,
       payment_source: 'Wise',
       wise_transfer_id: wiseId
     };
-
-    if(invId.indexOf('local-')!==0) {
-      await sb2.from('invoice_ledger').update(updateData).eq('id', invId);
+    var lerr = await saveLedgerPayment(inv, updateData);
+    if(lerr) {
+      setSync('error');
+      showToast(lerr.conflict ? 'This Wise payment is already linked to another invoice — nothing recorded'
+                              : 'Could not mark the invoice paid: '+lerr.error, 'err');
+      return;
     }
     Object.assign(inv, updateData);
 
-    // 2. Create cash book transaction — unless this payment is already recorded
-    var payDate = transfer.date||tod();
-    if(findExistingPaymentTx(inv.invoice_ref, transfer.amount, payDate)) {
-      setSync('ok');
-      closeM('m-inv-wisepay');
-      renderInvoices();renderDash();
-      showToast('Payment already recorded in cash book — skipped duplicate','ok');
-      return;
-    }
-
-    // 2b. The income importer may already have written this deposit. Convert
-    // that row into the NDIS Payment row rather than adding a second one.
-    var dep = findImportedDepositTx(wiseId, transfer.amount, payDate);
-    if(dep) {
-      var conv = await convertDepositToPayment(dep, inv);
-      setSync(conv ? 'ok' : 'error');
-      closeM('m-inv-wisepay');
-      renderInvoices();renderDash();
-      if(document.getElementById('page-cashbook').classList.contains('active')) renderCB();
-      showToast(conv ? 'Payment confirmed — existing Wise deposit relabelled as '+inv.invoice_ref
-                     : 'Invoice marked paid, but the cash book deposit could not be relabelled', conv ? 'ok' : 'err');
-      return;
-    }
-
-    var month = MONTHS[new Date(payDate).getMonth()];
-    var txRes = await insertTolerant('transactions', {
-      month: month,
-      date: payDate,
-      description: 'NDIS Payment - ' + (inv.participant_name||''),
-      payment_type: 'Wise Transfer',
-      reference: inv.invoice_ref,
-      amount_in: transfer.amount,
-      amount_out: 0,
-      budget_line_id: inv.budget_line_id||null
-    }, ['budget_line_id']);
-    if(txRes.data&&txRes.data[0]) S.tx.push(txRes.data[0]);
-
-    setSync('ok');
+    // 2. Cash book side, once (see recordInvoicePaymentTx).
+    var rec = await recordInvoicePaymentTx(inv, transfer.amount, payDate, wiseId, 'Wise Transfer');
     closeM('m-inv-wisepay');
     renderInvoices();renderDash();
-    showToast('Payment confirmed — $'+transfer.amount.toFixed(2)+' recorded in cash book','ok');
+    if(document.getElementById('page-cashbook').classList.contains('active')) renderCB();
+    reportInvoicePayment(rec, inv, transfer.amount, 'Payment confirmed');
   } catch(e) {
     setSync('error');
     showToast('Could not confirm payment: '+(e.message||e),'err');
@@ -9483,47 +9574,96 @@ async function manualMarkPaid(invId) {
   var wiseMatch = findWiseTransferForManualPayment(inv, amt, payDate);
   if(wiseMatch) updateData.wise_transfer_id = wiseMatch.id;
 
-  if(invId.indexOf('local-')!==0) {
-    await sb2.from('invoice_ledger').update(updateData).eq('id', invId);
+  var lerr = await saveLedgerPayment(inv, updateData);
+  if(lerr && lerr.conflict && updateData.wise_transfer_id) {
+    // Another invoice took this transfer meanwhile (another tab). The operator
+    // asked to mark THIS invoice paid, so record it without the link.
+    console.warn('[manualMarkPaid] transfer', wiseMatch.id, 'already pays another invoice — saving without the link');
+    delete updateData.wise_transfer_id;
+    wiseMatch = null;
+    lerr = await saveLedgerPayment(inv, updateData);
+  }
+  if(lerr) {
+    setSync('error');
+    showToast('Could not mark the invoice paid: '+(lerr.error||'Wise payment already linked to another invoice'), 'err');
+    return;
   }
   Object.assign(inv, updateData);
 
-  // Create cash book transaction — unless this payment is already recorded
-  if(findExistingPaymentTx(inv.invoice_ref, amt, payDate)) {
-    setSync('ok');
-    renderInvoices();renderDash();
-    showToast('Payment already recorded in cash book — skipped duplicate','ok');
-    return;
-  }
+  var rec = await recordInvoicePaymentTx(inv, amt, payDate, wiseMatch ? wiseMatch.id : null, 'Bank Transfer');
+  renderInvoices();renderDash();
+  if(document.getElementById('page-cashbook').classList.contains('active')) renderCB();
+  reportInvoicePayment(rec, inv, amt, 'Invoice marked as '+(updateData.status==='paid'?'paid':'partially paid'));
+}
 
-  // Already imported as a Wise deposit → convert it, don't add a second row.
-  var dep = findImportedDepositTx(wiseMatch ? wiseMatch.id : null, amt, payDate);
+// Ledger half of a payment. null on success, {conflict:true} when
+// invoice_ledger_wise_transfer_uniq says this transfer already pays another
+// invoice, {error} otherwise. local- rows (table missing) are memory-only.
+async function saveLedgerPayment(inv, updateData) {
+  if(String(inv.id||'').indexOf('local-') === 0) return null;
+  var r = await sb2.from('invoice_ledger').update(updateData).eq('id', inv.id).select('id');
+  if(!r.error) return null;
+  if(isUniqueViolation(r.error)) return { conflict: true };
+  return { error: r.error.message || String(r.error) };
+}
+
+// Cash-book half of an invoice payment, written once:
+//   1. an NDIS Payment row already there (same ref, amount, date) → keep it,
+//      and give it the Wise id if it has none;
+//   2. a deposit the income importer already wrote → convert it in place;
+//   3. otherwise insert the NDIS Payment row, carrying wise_id.
+// A 23505 at step 3 means another row already holds this Wise transaction. If
+// it is the same money the payment is already recorded (converted first if it
+// is still a plain deposit); if not, it is reported as a conflict.
+// Returns { outcome: 'existing'|'converted'|'inserted'|'conflict'|'error', msg }.
+async function recordInvoicePaymentTx(inv, amt, payDate, wiseTransferId, paymentType) {
+  var wid = wiseTransferId ? wiseIdFull(wiseTransferId) : '';
+  var existing = findExistingPaymentTx(inv.invoice_ref, amt, payDate);
+  if(existing) { await wiseSetIdOnRow(existing, wid); return { outcome: 'existing' }; }
+
+  var dep = findImportedDepositTx(wiseTransferId, amt, payDate);
   if(dep) {
-    var conv = await convertDepositToPayment(dep, inv);
-    setSync(conv ? 'ok' : 'error');
-    renderInvoices();renderDash();
-    if(document.getElementById('page-cashbook').classList.contains('active')) renderCB();
-    showToast(conv ? 'Invoice marked as '+(updateData.status==='paid'?'paid':'partially paid')+' — existing Wise deposit relabelled'
-                   : 'Invoice marked, but the cash book deposit could not be relabelled', conv ? 'ok' : 'err');
-    return;
+    var conv = await convertDepositToPayment(dep, inv, wid);
+    if(conv === true) return { outcome: 'converted' };
+    if(conv === 'conflict') return { outcome: 'conflict',
+      msg: 'two cash-book rows already hold this Wise payment ('+(dep.reference||dep.id)+' and another) — check the Cash Book' };
+    return { outcome: 'error', msg: 'the cash book deposit could not be relabelled' };
   }
 
-  var month = MONTHS[new Date(payDate).getMonth()];
-  var txRes = await insertTolerant('transactions', {
-    month: month,
+  var res = await insertTolerant('transactions', withWiseId({
+    month: MONTHS[new Date(payDate).getMonth()],
     date: payDate,
     description: 'NDIS Payment - ' + (inv.participant_name||''),
-    payment_type: 'Bank Transfer',
+    payment_type: paymentType,
     reference: inv.invoice_ref,
     amount_in: amt,
     amount_out: 0,
     budget_line_id: inv.budget_line_id||null
-  }, ['budget_line_id']);
-  if(txRes.data&&txRes.data[0]) S.tx.push(txRes.data[0]);
+  }, wid), ['budget_line_id','wise_id']);
+  if(!res.error) {
+    if(res.data && res.data[0]) S.tx.push(res.data[0]);
+    return { outcome: 'inserted' };
+  }
+  if(isUniqueViolation(res.error) && wid) {
+    var c = await wiseResolveConflict(wid, null, amt);
+    if(!c.same) return { outcome: 'conflict',
+      msg: 'Wise id '+wid+' is already on a different cash-book row ('+fmt(wiseTxAmount(c.row))+') — check the Cash Book' };
+    if(c.row && !isInvoicePaymentTx(c.row)) {
+      var conv2 = await convertDepositToPayment(c.row, inv, null);
+      return conv2 === true ? { outcome: 'converted' } : { outcome: 'error', msg: 'the cash book deposit could not be relabelled' };
+    }
+    return { outcome: 'existing' };
+  }
+  return { outcome: 'error', msg: res.error.message || String(res.error) };
+}
 
-  setSync('ok');
-  renderInvoices();renderDash();
-  showToast('Invoice marked as '+(updateData.status==='paid'?'paid':'partially paid'),'ok');
+function reportInvoicePayment(rec, inv, amt, okPrefix) {
+  var bad = rec.outcome === 'conflict' || rec.outcome === 'error';
+  setSync(bad ? 'error' : 'ok');
+  if(bad) { showToast('Invoice marked, but '+rec.msg, 'err'); return; }
+  if(rec.outcome === 'existing') showToast('Payment already recorded in cash book — skipped duplicate', 'ok');
+  else if(rec.outcome === 'converted') showToast(okPrefix+' — existing Wise deposit relabelled as '+inv.invoice_ref, 'ok');
+  else showToast(okPrefix+' — '+fmt(amt)+' recorded in cash book', 'ok');
 }
 
 // ── Check Wise for payments (button handler) ──
@@ -9622,28 +9762,49 @@ function wiseNameKeyword(name) {
 // insert's await resolves, so two overlapping runs both pass the check and both
 // insert — which is how WISE-07713285 landed twice, 1 ms apart. This flag stops
 // one page racing itself (a second enterApp, a reload mid-sync). It cannot stop
-// a second tab, which has its own S.tx: the partial unique index from
-// migrations/2026-10-13-wise-reference-unique-index.sql is the real backstop,
-// and a 23505 from it is handled below as "already imported", not as an error.
+// a second tab, which has its own S.tx: the partial unique indexes on
+// `reference` (2026-10-13) and `wise_id` (2026-11-14) are the real backstop,
+// and a 23505 from either is handled below as "already imported" (after
+// wiseResolveConflict checks it is the same money), not as an error.
 var _wiseImportInFlight = { out:false, in:false };
 
-// After a 23505 the row exists in the database but not in this tab's S.tx, so
-// every S.tx-derived figure here — the Cash Book running balance, the Dashboard
-// money-out KPI, P&L — is understated by that row until the next page load.
-// Nothing double-counts (the run that won the race holds the only copy), but the
-// toast is suppressed, so the operator would be looking at a balance that
-// silently disagrees with the bank. Pulling the winning row into S.tx costs one
-// indexed lookup and keeps this tab honest. Fails quietly: a tab that is merely
-// understated is still better than a broken import loop.
-async function wiseAdoptExistingTx(ref){
-  try {
-    var got = await sb2.from('transactions').select('*').eq('reference', ref).limit(1);
-    if(got.error || !got.data || !got.data[0]) return;
-    var row = got.data[0];
-    if(!(S.tx||[]).some(function(t){ return t.id === row.id; })) S.tx.push(row);
-  } catch(e) {
-    console.warn('[Wise import] could not adopt existing row for', ref, e);
+// Shared by both importers: the row this Wise transaction already has in S.tx,
+// by full wise_id first, then by the legacy 8-digit WISE- reference. A legacy
+// row found by reference gets its wise_id filled (self-heal) when the amount
+// agrees. Returns { row, dup } — dup is true when filling the id revealed a
+// second row already holding it.
+async function wiseImportExistingRow(t, wid, refSuffix, tAmt) {
+  var row = (S.tx||[]).find(function(tx){
+    return (wid && tx.wise_id === wid) || wiseRefMatches(tx.reference, refSuffix);
+  }) || null;
+  var dup = false;
+  if(row && !row.wise_id && Math.abs(wiseTxAmount(row) - tAmt) < 0.005) {
+    dup = (await wiseSetIdOnRow(row, wid)) === 'conflict';
   }
+  return { row: row, dup: dup };
+}
+
+// Shared by both importers: insert one imported row; on 23505 decide whether
+// it is the same money (quiet skip) or a conflict (counted, surfaced).
+async function wiseImportInsert(row, wid, ref, tAmt, skipped) {
+  var res = await insertTolerant('transactions', withWiseId(row, wid), ['wise_id']);
+  if(!res.error) {
+    if(res.data && res.data[0]) { S.tx.push(res.data[0]); return true; }
+    return false;
+  }
+  if(isUniqueViolation(res.error)) {
+    var c = await wiseResolveConflict(wid, ref, tAmt);
+    if(c.same) skipped.alreadyCB++; else skipped.idConflict++;
+    return false;
+  }
+  console.warn('[Wise import] insert error:', res.error.message, 'for', row.description);
+  return false;
+}
+
+// End-of-run toast when the database caught something the operator must see.
+function wiseImportReportProblems(who, skipped) {
+  var n = (skipped.idConflict||0) + (skipped.dupFound||0);
+  if(n) showToast(who+': '+n+' Wise transaction(s) clash with an existing cash-book row — see console', 'err');
 }
 
 // ── Auto-import Wise outbound transfers as cash book expenses ──
@@ -9679,7 +9840,7 @@ async function _autoImportWiseExpensesInner() {
 
   var imported = 0;
   var jarImported = 0;
-  var skipped = { payroll:0, alreadyCB:0, feeOrConv:0, noData:0, notCompleted:0, inactive:0, ignoredOpening:0, dupInBatch:0, unknownSign:unknownSign };
+  var skipped = { payroll:0, alreadyCB:0, feeOrConv:0, noData:0, notCompleted:0, inactive:0, ignoredOpening:0, dupInBatch:0, unknownSign:unknownSign, idConflict:0, dupFound:0 };
 
   // Within-batch dedupe. The S.tx.push after a successful insert already covers
   // the same transfer appearing twice in one payload, but only while that push
@@ -9801,14 +9962,16 @@ async function _autoImportWiseExpensesInner() {
     // Skip: already in cash book. Use specific identity, not the catch-all-on-match
     // that previously caused every transfer to be flagged as duplicate.
     var refSuffix = wiseRefSuffix(t.id);
+    var wid = wiseIdFull(t.id);
+    // Previously imported (by wise_id, or the legacy WISE- reference).
+    var prior = await wiseImportExistingRow(t, wid, refSuffix, tAmt);
+    if(prior.dup) skipped.dupFound++;
+    if(prior.row) { skipped.alreadyCB++; continue; }
     // Distinctive token from the counterparty name. The old code split the raw
     // description and took the first 5+ char word, which for "sent money to
     // yupa diepold" was "money" — so this guard never fired for statement rows.
     var tKey = wiseNameKeyword(tName);
     var alreadyInCB = S.tx.some(function(tx) {
-      // Previously auto-imported by us — identified by reference
-      var txRef = (tx.reference||'').toString();
-      if(wiseRefMatches(txRef, refSuffix)) return true;
       // Not this transfer? Skip the check.
       var txOut = +tx.amount_out||0;
       if(Math.abs(txOut - tAmt) > 0.02) return false;
@@ -9845,7 +10008,9 @@ async function _autoImportWiseExpensesInner() {
       // expense_month is deliberately absent from this field list — see the note
       // on expTxMonthKey. The importer records when the money moved; moving a
       // row to another Expenses month is an operator decision it must not undo.
-      var res = await sb2.from('transactions').insert({
+      // 23505 from either unique index = another run or tab already imported
+      // this transfer: a race, not a failure (see wiseImportInsert).
+      var ok = await wiseImportInsert({
         month: month,
         date: tDate,
         description: txDesc2,
@@ -9853,22 +10018,8 @@ async function _autoImportWiseExpensesInner() {
         reference: ref,
         amount_in: 0,
         amount_out: tAmt
-      }).select();
-
-      if(res.error) {
-        // 23505 = the partial unique index on WISE- references rejected this row,
-        // so another run (or another tab) already imported the transfer. That is
-        // the expected outcome of a race, not a failure: no toast, carry on.
-        if(res.error.code === '23505') {
-          skipped.alreadyCB++;
-          await wiseAdoptExistingTx(ref);
-          continue;
-        }
-        console.warn('[Wise auto-import] insert error:', res.error.message, 'for', txDesc2);
-        continue;
-      }
-      if(res.data&&res.data[0]) {
-        S.tx.push(res.data[0]);
+      }, wid, ref, tAmt, skipped);
+      if(ok) {
         imported++;
         if(jarName) jarImported++;
       }
@@ -9879,6 +10030,7 @@ async function _autoImportWiseExpensesInner() {
 
   console.log('[Wise auto-import] summary — imported:', imported,
               '(of which jar moves:', jarImported+')', 'skipped:', skipped);
+  wiseImportReportProblems('Wise expense import', skipped);
 
   if(imported > 0) {
     renderDash();
@@ -9911,7 +10063,7 @@ async function _autoImportWiseIncomeInner() {
 
   var internalTypesIn = ['MONEY_ADDED','TOPPED_UP','CASHBACK','CONVERSION','INTEREST_PAYMENT','BALANCE_TO_BALANCE'];
   var imported = 0;
-  var skipped = { invoiceMatch:0, invoicePaid:0, paymentInCB:0, payrollBatch:0, alreadyCB:0, internal:0, noData:0, notCompleted:0, dupInBatch:0, unknownSign:unknownSign };
+  var skipped = { invoiceMatch:0, invoicePaid:0, paymentInCB:0, payrollBatch:0, alreadyCB:0, internal:0, noData:0, notCompleted:0, dupInBatch:0, unknownSign:unknownSign, idConflict:0, dupFound:0 };
   var seenRefs = {};   // within-batch dedupe; see the outbound importer
 
   for(var i=0; i<inbound.length; i++) {
@@ -9985,11 +10137,13 @@ async function _autoImportWiseIncomeInner() {
     }
 
     var refSuffix = wiseRefSuffix(t.id);
+    var wid = wiseIdFull(t.id);
     var ref = 'WISE-'+(refSuffix||Date.now().toString().slice(-8));
-    var alreadyInCB = S.tx.some(function(tx){
-      return wiseRefMatches(tx.reference, refSuffix);
-    });
-    if(alreadyInCB) { skipped.alreadyCB++; continue; }
+    // Already in the cash book by wise_id or legacy WISE- reference (and
+    // self-heal the legacy row's wise_id).
+    var prior = await wiseImportExistingRow(t, wid, refSuffix, tAmt);
+    if(prior.dup) skipped.dupFound++;
+    if(prior.row) { skipped.alreadyCB++; continue; }
     if(seenRefs[ref]) { skipped.dupInBatch++; continue; }
     seenRefs[ref] = 1;
 
@@ -9999,7 +10153,8 @@ async function _autoImportWiseIncomeInner() {
 
     try {
       // expense_month deliberately absent — see the outbound importer's note.
-      var res = await sb2.from('transactions').insert({
+      // 23505 → a unique index caught a race; already imported, not a failure.
+      var ok = await wiseImportInsert({
         month: month,
         date: tDate,
         description: txDesc2,
@@ -10007,28 +10162,15 @@ async function _autoImportWiseIncomeInner() {
         reference: ref,
         amount_in: tAmt,
         amount_out: 0
-      }).select();
-
-      if(res.error) {
-        // 23505 → the unique index caught a race; already imported, not a failure.
-        if(res.error.code === '23505') {
-          skipped.alreadyCB++;
-          await wiseAdoptExistingTx(ref);
-          continue;
-        }
-        console.warn('[Wise income-import] insert error:', res.error.message, 'for', txDesc2);
-        continue;
-      }
-      if(res.data&&res.data[0]) {
-        S.tx.push(res.data[0]);
-        imported++;
-      }
+      }, wid, ref, tAmt, skipped);
+      if(ok) imported++;
     } catch(insertErr) {
       console.warn('[Wise income-import] insert exception:', insertErr);
     }
   }
 
   console.log('[Wise income-import] summary — imported:', imported, 'skipped:', skipped);
+  wiseImportReportProblems('Wise income import', skipped);
 
   if(imported > 0) {
     renderDash();

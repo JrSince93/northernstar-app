@@ -39,41 +39,82 @@ const FNS = [
   'wiseRefSuffix', 'wiseRefMatches', 'wiseIdKey', 'wiseSameTransfer', 'wiseDayDiff',
   'isInvoicePaymentTx', 'findInvoicePaymentTxNear', 'findImportedDepositTx', 'convertDepositToPayment',
   'wiseImportPaused', 'detectWiseJarMove', 'wiseMelbDate', 'isInternalTransfer',
-  'isMissingColumnError', 'insertTolerant', 'updateTolerant', 'findExistingPaymentTx',
+  'isMissingColumnError', 'writeTolerant', 'insertTolerant', 'updateTolerant', 'findExistingPaymentTx',
   'findWiseTransferForManualPayment', 'manualMarkPaid', 'confirmWisePayment',
-  'findWiseInvoiceMatches', 'wiseAdoptExistingTx', 'autoImportWiseIncome', '_autoImportWiseIncomeInner'
+  'saveLedgerPayment', 'recordInvoicePaymentTx', 'reportInvoicePayment',
+  'findWiseInvoiceMatches', 'autoImportWiseIncome', '_autoImportWiseIncomeInner',
+  'autoImportWiseExpenses', '_autoImportWiseExpensesInner', 'wiseCounterpartyName', 'wiseNameKeyword',
+  'wiseIdFull', 'isUniqueViolation', 'withWiseId', 'wiseTxAmount', 'wiseFindExisting',
+  'wiseResolveConflict', 'wiseSetIdOnRow', 'wiseImportExistingRow', 'wiseImportInsert',
+  'wiseImportReportProblems', 'reconcilePendingPayroll'
 ];
 
-// ── in-memory Supabase stub: records every write ──
-function makeDb(seed) {
-  const db = { tables: JSON.parse(JSON.stringify(seed)), writes: [] };
+// ── in-memory Supabase stub ──
+// Records every write and enforces the same unique indexes as production:
+//   transactions_wise_reference_uniq   reference ~ '^WISE-[0-9]{6,8}$'
+//   transactions_wise_id_uniq          wise_id where not null
+//   invoice_ledger_wise_transfer_uniq  digits after the last hyphen of wise_transfer_id
+// noWiseIdCol:true simulates the database before the migration ran.
+const sqlKey = v => String(v).replace(/^.*-/, '').replace(/\D/g, '');   // the migration's expression
+function violates(table, rows, cand, selfId) {
+  const others = rows.filter(r => r.id !== selfId);
+  if (table === 'transactions') {
+    if (cand.wise_id != null && others.some(r => r.wise_id === cand.wise_id)) return 'transactions_wise_id_uniq';
+    if (/^WISE-[0-9]{6,8}$/.test(cand.reference || '') && others.some(r => r.reference === cand.reference)) return 'transactions_wise_reference_uniq';
+  }
+  if (table === 'invoice_ledger' && cand.wise_transfer_id != null) {
+    if (others.some(r => r.wise_transfer_id != null && sqlKey(r.wise_transfer_id) === sqlKey(cand.wise_transfer_id))) return 'invoice_ledger_wise_transfer_uniq';
+  }
+  return null;
+}
+const dupErr = idx => ({ code: '23505', message: 'duplicate key value violates unique constraint "' + idx + '"' });
+const colErr = () => ({ code: 'PGRST204', message: "Could not find the 'wise_id' column of 'transactions' in the schema cache" });
+const copy = o => JSON.parse(JSON.stringify(o));
+
+function makeDb(seed, opts = {}) {
+  const db = { tables: copy(seed), writes: [] };
   let nextId = 1;
   function builder(table) {
     const rows = () => (db.tables[table] = db.tables[table] || []);
+    const noCol = body => opts.noWiseIdCol && table === 'transactions' && body && 'wise_id' in body;
     return {
       insert(row) {
         return { select: async () => {
+          if (noCol(row)) return { data: null, error: colErr() };
           const r = Object.assign({ id: 'new-' + (nextId++), created_at: new Date().toISOString() }, row);
+          const v = violates(table, rows(), r, null);
+          if (v) { db.writes.push({ op: 'insert-rejected', table, row: r, index: v }); return { data: null, error: dupErr(v) }; }
           rows().push(r); db.writes.push({ op: 'insert', table, row: r });
-          return { data: [JSON.parse(JSON.stringify(r))], error: null };
+          return { data: [copy(r)], error: null };
         } };
       },
       update(patch) {
         const filters = [];
         const run = () => {
-          const hit = rows().filter(r => filters.every(([k, v]) => r[k] === v));
+          if (noCol(patch)) return { data: null, error: colErr() };
+          const hit = rows().filter(r => filters.every(([k, v]) => (v === null ? r[k] == null : r[k] === v)));
+          for (const r of hit) {
+            const v = violates(table, rows(), Object.assign({}, r, patch), r.id);
+            if (v) { db.writes.push({ op: 'update-rejected', table, patch, index: v }); return { data: null, error: dupErr(v) }; }
+          }
           hit.forEach(r => Object.assign(r, patch));
           db.writes.push({ op: 'update', table, patch, filters: filters.slice(), n: hit.length });
-          return { data: JSON.parse(JSON.stringify(hit)), error: null };
+          return { data: copy(hit), error: null };
         };
         const chain = {
           eq(k, v) { filters.push([k, v]); return chain; },
+          is(k, v) { filters.push([k, v]); return chain; },
           select: async () => run(),
           then(res, rej) { try { res(run()); } catch (e) { rej(e); } }
         };
         return chain;
       },
-      select() { return { eq() { return { limit: async () => ({ data: [], error: null }) }; } }; }
+      select() {
+        return { eq(k, v) { return { limit: async n => {
+          if (opts.noWiseIdCol && table === 'transactions' && k === 'wise_id') return { data: null, error: colErr() };
+          return { data: copy(rows().filter(r => r[k] === v).slice(0, n)), error: null };
+        } }; } };
+      }
     };
   }
   db.client = { from: builder };
@@ -81,24 +122,31 @@ function makeDb(seed) {
 }
 
 // ── sandbox with the real functions plus minimal globals ──
-function makeSandbox({ tx = [], ledger = [], transfers = [], source = 'statement', prompts = [], eidValues = {} }) {
-  const db = makeDb({ transactions: tx, invoice_ledger: ledger });
+// Pass `db` to share one database between two sandboxes ("two tabs").
+function makeSandbox({ tx = [], ledger = [], transfers = [], source = 'statement', prompts = [], eidValues = {},
+                       db = null, dbOpts = {}, runs = [], emps = [] }) {
+  db = db || makeDb({ transactions: tx, invoice_ledger: ledger }, dbOpts);
   const toasts = [];
+  const errors = [];
   const el = () => ({ value: '', style: {}, classList: { contains: () => false }, disabled: false, textContent: '' });
   const ctx = {
-    console: { log() {}, warn() {}, error: console.error },
+    console: { log() {}, warn() {}, error: (...a) => errors.push(a.join(' ')) },
     S: {
-      tx: JSON.parse(JSON.stringify(tx)), invoiceLedger: JSON.parse(JSON.stringify(ledger)),
-      wiseTransfers: transfers, wiseSource: source
+      tx: copy(tx), invoiceLedger: copy(ledger),
+      wiseTransfers: transfers, wiseSource: source, runs: copy(runs), emps: copy(emps)
     },
     sb2: db.client,
     MONTHS: ['January','February','March','April','May','June','July','August','September','October','November','December'],
     WISE_PAYMENT_NEAR_DAYS: 3,
+    WISE_NAME_PREFIXES: ['sent money to ','payment to ','transfer to ','paid to '],
+    WISE_NAME_STOPWORDS: ['sent','money','transfer','payment','paid','from','to','the','for','ref'],
     _wiseImportInFlight: { out: false, in: false },
     _wiseImportPausedToasted: false,
+    _wiseIdColMissing: false,
     _melbDayFmt: null,
     showToast: (m, t) => toasts.push([m, t]),
     setSync() {}, renderDash() {}, renderCB() {}, renderInvoices() {}, closeM() {},
+    fmt: n => '$' + Math.abs(+n || 0).toFixed(2),
     tod: () => '2026-11-14',
     prompt: () => prompts.shift(),
     eid: id => Object.assign(el(), { value: eidValues[id] || '' }),
@@ -107,7 +155,7 @@ function makeSandbox({ tx = [], ledger = [], transfers = [], source = 'statement
   };
   vm.createContext(ctx);
   vm.runInContext(FNS.map(extractFn).join('\n\n'), ctx);
-  return { ctx, db, toasts };
+  return { ctx, db, toasts, errors };
 }
 
 // ── fixtures: the four October pairs, exactly as in the database ──
@@ -288,6 +336,188 @@ const inserts = db => db.writes.filter(w => w.op === 'insert' && w.table === 'tr
     ];
     const { ctx } = makeSandbox({ ledger, transfers: [actTransfer(p)] });
     eq(ctx.findWiseInvoiceMatches().length, 0, 'matches');
+  });
+
+  // ───────────── wise_id: the database refuses a second row ─────────────
+  console.log('\nwise_id unique index (one Wise transaction, one row)');
+  const errToasts = t => t.filter(x => x[1] === 'err');
+  const dbTx = db => db.tables.transactions;
+
+  await test('wiseIdFull matches the migration SQL expression for every id shape', async () => {
+    const { ctx } = makeSandbox({});
+    for (const id of ['TRANSFER-2433035637', '2433035637', 'BALANCE-6107067382', 'CONVERSION_ORDER-5942674', 'CARD_TRANSACTION-1234567890', 343, 'abc-'])
+      eq(ctx.wiseIdFull(id), sqlKey(id), 'id ' + id);
+    eq(ctx.wiseIdFull('TRANSFER-2433035637'), '2433035637', 'untruncated');
+  });
+
+  const deposit = { id: 'TRANSFER-2430648350', date: '2026-10-14', when: '2026-10-14T02:00:00Z', amount: 700,
+    direction: 'in', status: 'COMPLETED', type: 'DEPOSIT', senderName: 'State Trustees', description: '' };
+
+  await test('income importer: second tab imports the same deposit → 23505, quiet skip, row adopted', async () => {
+    const tab1 = makeSandbox({ transfers: [deposit] });
+    await tab1.ctx.autoImportWiseIncome();
+    eq(dbTx(tab1.db).length, 1, 'tab 1 wrote it');
+    eq(dbTx(tab1.db)[0].wise_id, '2430648350', 'with the full wise_id');
+    const tab2 = makeSandbox({ transfers: [deposit], db: tab1.db });   // fresh S.tx, same database
+    await tab2.ctx.autoImportWiseIncome();
+    eq(dbTx(tab1.db).length, 1, 'still one row');
+    eq(errToasts(tab2.toasts).length, 0, 'no error toast');
+    eq(tab2.ctx.S.tx.length, 1, 'tab 2 adopted the existing row');
+  });
+
+  const payout = { id: 'TRANSFER-2462701964', date: '2026-10-30', when: '2026-10-30T05:00:00Z', amount: 2600,
+    direction: 'out', status: 'COMPLETED', type: 'TRANSFER', recipientName: 'PDH Trust Account', description: 'Sent money to PDH Trust Account' };
+
+  await test('outbound importer: second tab imports the same payout → 23505, quiet skip, row adopted', async () => {
+    const tab1 = makeSandbox({ transfers: [payout] });
+    await tab1.ctx.autoImportWiseExpenses();
+    eq(dbTx(tab1.db).length, 1, 'tab 1 wrote it');
+    eq(dbTx(tab1.db)[0].wise_id, '2462701964', 'with the full wise_id');
+    const tab2 = makeSandbox({ transfers: [payout], db: tab1.db });
+    await tab2.ctx.autoImportWiseExpenses();
+    eq(dbTx(tab1.db).length, 1, 'still one row');
+    eq(errToasts(tab2.toasts).length, 0, 'no error toast');
+    eq(tab2.ctx.S.tx.length, 1, 'tab 2 adopted the existing row');
+  });
+
+  await test('importer: id too short for the reference index (WISE-10280) → only wise_id stops the second row', async () => {
+    const shortId = Object.assign({}, payout, { id: 'TRANSFER-10280', amount: 64.38, recipientName: 'Ring', description: 'Ring' });
+    const tab1 = makeSandbox({ transfers: [shortId] });
+    await tab1.ctx.autoImportWiseExpenses();
+    eq(dbTx(tab1.db)[0].reference, 'WISE-10280', 'outside ^WISE-[0-9]{6,8}$');
+    const tab2 = makeSandbox({ transfers: [shortId], db: tab1.db });
+    await tab2.ctx.autoImportWiseExpenses();
+    eq(dbTx(tab1.db).length, 1, 'still one row');
+    eq(tab1.db.writes.filter(w => w.op === 'insert-rejected')[0].index, 'transactions_wise_id_uniq', 'caught by wise_id');
+  });
+
+  await test('importer self-heal: a legacy WISE- row gets its full wise_id, nothing inserted', async () => {
+    const legacy = { id: 'tx-legacy', date: '2026-10-14', reference: 'WISE-30648350', description: 'Deposit - State Trustees',
+      payment_type: 'Wise Transfer', amount_in: 700, amount_out: 0 };
+    const { ctx, db } = makeSandbox({ tx: [legacy], transfers: [deposit] });
+    await ctx.autoImportWiseIncome();
+    eq(inserts(db).length, 0, 'inserts');
+    eq(dbTx(db)[0].wise_id, '2430648350', 'backfilled in the database');
+    eq(ctx.S.tx[0].wise_id, '2430648350', 'and in memory');
+  });
+
+  await test('importer: same wise_id but a different amount → counted as a conflict, error toast, not hidden', async () => {
+    const other = { id: 'tx-x', date: '2026-10-01', reference: 'PAYROLL-abcdef12', description: 'Payroll - X',
+      amount_in: 0, amount_out: 999, wise_id: '2430648350' };
+    const { ctx, db, toasts, errors } = makeSandbox({ tx: [other], transfers: [deposit] });
+    ctx.S.tx = [];                                   // this tab doesn't have the row
+    await ctx.autoImportWiseIncome();
+    eq(inserts(db).length, 0, 'inserts');
+    eq(errToasts(toasts).length, 1, 'error toast');
+    eq(errors.length > 0, true, 'console.error logged');
+  });
+
+  const inv0 = (over) => Object.assign({ id: 'inv-0', invoice_ref: PAIRS[0].ref, participant_name: LITA, invoice_date: PAIRS[0].invDate,
+    amount: PAIRS[0].amt, status: 'awaiting_payment', wise_transfer_id: null, budget_line_id: 'bl-x' }, over || {});
+
+  await test('confirmWisePayment twice (second, stale tab) → one NDIS Payment row, second reports "already recorded"', async () => {
+    const p = PAIRS[0];
+    const eidValues = { 'wp-inv-id': 'inv-0', 'wp-wise-id': 'TRANSFER-' + p.wiseNum };
+    const tab1 = makeSandbox({ ledger: [inv0()], transfers: [stmtTransfer(p)], eidValues });
+    await tab1.ctx.confirmWisePayment();
+    eq(dbTx(tab1.db).length, 1, 'tab 1 recorded it');
+    eq(dbTx(tab1.db)[0].wise_id, p.wiseNum, 'with wise_id');
+    eq(dbTx(tab1.db)[0].budget_line_id, 'bl-x', 'budget line kept');
+    const tab2 = makeSandbox({ ledger: [inv0()], transfers: [stmtTransfer(p)], eidValues, db: tab1.db });
+    await tab2.ctx.confirmWisePayment();
+    eq(dbTx(tab1.db).length, 1, 'still one row');
+    eq(errToasts(tab2.toasts).length, 0, 'no error toast');
+    eq(tab2.toasts[tab2.toasts.length - 1][0], 'Payment already recorded in cash book — skipped duplicate');
+  });
+
+  await test('confirmWisePayment: transfer already pays ANOTHER invoice → refused, error toast, no cash-book row', async () => {
+    const p = PAIRS[0];
+    const other = { id: 'inv-other', invoice_ref: 'INV-CF-OTHER', amount: p.amt, status: 'paid', wise_transfer_id: p.wiseNum };  // bare format
+    const { ctx, db, toasts } = makeSandbox({ ledger: [inv0(), other], transfers: [stmtTransfer(p)],
+      eidValues: { 'wp-inv-id': 'inv-0', 'wp-wise-id': 'TRANSFER-' + p.wiseNum } });
+    ctx.S.invoiceLedger = [inv0()];                  // this tab never saw the other link
+    await ctx.confirmWisePayment();
+    eq(dbTx(db).length, 0, 'no cash-book row');
+    eq(ctx.S.invoiceLedger[0].status, 'awaiting_payment', 'not marked paid');
+    eq(errToasts(toasts).length, 1, 'error toast');
+    eq(db.tables.invoice_ledger.find(r => r.id === 'inv-0').status, 'awaiting_payment', 'not marked paid in the database');
+  });
+
+  await test('manualMarkPaid after confirmWisePayment in another tab → one row, no error', async () => {
+    const p = PAIRS[0];
+    const tab1 = makeSandbox({ ledger: [inv0()], transfers: [stmtTransfer(p)],
+      eidValues: { 'wp-inv-id': 'inv-0', 'wp-wise-id': 'TRANSFER-' + p.wiseNum } });
+    await tab1.ctx.confirmWisePayment();
+    const tab2 = makeSandbox({ ledger: [inv0()], transfers: [stmtTransfer(p)], db: tab1.db,
+      prompts: [String(p.amt), '2026-10-16'] });   // typed a day later: same-ref check misses, the index doesn't
+    await tab2.ctx.manualMarkPaid('inv-0');
+    eq(dbTx(tab1.db).length, 1, 'still one row');
+    eq(errToasts(tab2.toasts).length, 0, 'no error toast');
+  });
+
+  await test('manualMarkPaid: matched transfer already pays another invoice → saved without the link', async () => {
+    const p = PAIRS[0];
+    const other = { id: 'inv-other', invoice_ref: 'INV-CF-OTHER', amount: p.amt, status: 'paid', wise_transfer_id: 'TRANSFER-' + p.wiseNum };
+    const { ctx, db } = makeSandbox({ ledger: [inv0(), other], transfers: [stmtTransfer(p)], prompts: [String(p.amt), p.date] });
+    ctx.S.invoiceLedger = [inv0()];
+    await ctx.manualMarkPaid('inv-0');
+    const saved = db.tables.invoice_ledger.find(r => r.id === 'inv-0');
+    eq(saved.status, 'paid', 'marked paid');
+    eq(saved.wise_transfer_id, null, 'without the contested link');
+  });
+
+  await test('deposit conversion: another row already holds the Wise id → conflict reported, nothing changed', async () => {
+    const p = PAIRS[2];
+    const dep = { id: 'dep-2', date: p.date, description: 'Deposit - ' + p.sender, payment_type: 'Wise Transfer',
+      reference: 'WISE-56267377', amount_in: p.amt, amount_out: 0 };
+    const holder = { id: 'tx-h', date: p.date, description: 'NDIS Payment - ' + LITA, reference: 'INV-SIL-ELSEWHERE',
+      amount_in: p.amt, amount_out: 0, wise_id: p.wiseNum };
+    const { ctx, db, toasts } = makeSandbox({ tx: [dep, holder], ledger: [Object.assign(inv0(), { id: 'inv-2', invoice_ref: p.ref, amount: p.amt })],
+      transfers: [stmtTransfer(p)], eidValues: { 'wp-inv-id': 'inv-2', 'wp-wise-id': 'TRANSFER-' + p.wiseNum } });
+    ctx.S.tx = [dep];
+    await ctx.confirmWisePayment();
+    eq(inserts(db).length, 0, 'inserts');
+    eq(dbTx(db).find(r => r.id === 'dep-2').reference, 'WISE-56267377', 'deposit left as is');
+    eq(errToasts(toasts).length, 1, 'error toast');
+  });
+
+  const runs = [{ id: '93d061c2-0000-0000-0000-000000000000', net_pay: 1588.61, period_end: '2026-09-27', employee_id: 'e1' }];
+  const pendingRow = () => ({ id: 'pend-1', date: '2026-10-02', reference: 'PAYROLL-PENDING-93d061c2',
+    description: 'Payroll - Simon [pending]', amount_in: 0, amount_out: 0 });
+  const pay = { id: 'TRANSFER-2400924450', date: '2026-09-30', amount: 1588.61, direction: 'out', status: 'COMPLETED', type: 'TRANSFER' };
+
+  await test('reconcilePendingPayroll: stores the payout\'s wise_id on the PAYROLL row', async () => {
+    const { ctx, db } = makeSandbox({ tx: [pendingRow()], transfers: [pay], runs });
+    eq(await ctx.reconcilePendingPayroll(), 1, 'reconciled');
+    const r = dbTx(db)[0];
+    eq(r.reference, 'PAYROLL-93d061c2'); eq(r.wise_id, '2400924450'); eq(r.amount_out, 1588.61);
+  });
+
+  await test('reconcilePendingPayroll: payout already on another row → run left pending, nothing double-counted', async () => {
+    const elsewhere = { id: 'tx-e', date: '2026-09-30', reference: 'WISE-00924450', description: 'Simon',
+      amount_in: 0, amount_out: 1588.61, wise_id: '2400924450' };
+    // (a) this tab can see the row: never matched
+    const a = makeSandbox({ tx: [pendingRow(), elsewhere], transfers: [pay], runs });
+    eq(await a.ctx.reconcilePendingPayroll(), 0, 'not reconciled (visible)');
+    // (b) this tab can't: the index refuses the update
+    const b = makeSandbox({ tx: [pendingRow(), elsewhere], transfers: [pay], runs });
+    b.ctx.S.tx = [pendingRow()];
+    eq(await b.ctx.reconcilePendingPayroll(), 0, 'not reconciled (index)');
+    eq(dbTx(b.db).find(r => r.id === 'pend-1').reference, 'PAYROLL-PENDING-93d061c2', 'still pending');
+  });
+
+  await test('before the migration (no wise_id column): imports work, confirm keeps budget_line_id', async () => {
+    const tab = makeSandbox({ transfers: [deposit], dbOpts: { noWiseIdCol: true } });
+    await tab.ctx.autoImportWiseIncome();
+    eq(dbTx(tab.db).length, 1, 'imported');
+    eq('wise_id' in dbTx(tab.db)[0], false, 'without wise_id');
+    const p = PAIRS[0];
+    const c = makeSandbox({ ledger: [inv0()], transfers: [stmtTransfer(p)], dbOpts: { noWiseIdCol: true },
+      eidValues: { 'wp-inv-id': 'inv-0', 'wp-wise-id': 'TRANSFER-' + p.wiseNum } });
+    await c.ctx.confirmWisePayment();
+    eq(dbTx(c.db).length, 1, 'recorded');
+    eq(dbTx(c.db)[0].budget_line_id, 'bl-x', 'budget_line_id NOT dropped with wise_id');
+    eq(errToasts(c.toasts).length, 0, 'no error toast');
   });
 
   console.log('\n' + pass + ' passed, ' + fail + ' failed');
