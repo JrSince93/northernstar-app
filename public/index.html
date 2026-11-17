@@ -882,8 +882,8 @@ input[type=number]{text-align:right;font-variant-numeric:tabular-nums}
       <div class="field"><label>Budget line</label><select id="ndis-inv-bl" onchange="ndisInvApplyBudgetLineDefaults()"></select></div>
     </div>
     <div class="form-row">
-      <div class="field"><label>Service period start</label><input type="date" id="ndis-inv-start"></div>
-      <div class="field"><label>Service period end</label><input type="date" id="ndis-inv-end"></div>
+      <div class="field"><label>Service period start</label><input type="date" id="ndis-inv-start" onchange="ndisInvPeriodChanged()"></div>
+      <div class="field"><label>Service period end</label><input type="date" id="ndis-inv-end" onchange="ndisInvPeriodChanged()"></div>
     </div>
     <!-- Dynamic hour inputs — populated by ndisInvApplyBudgetLineDefaults() -->
     <div id="ndis-inv-hrs-section"></div>
@@ -7484,15 +7484,156 @@ function iiDaysSelectorHtml(prefix){
   return '<div style="margin-top:5px">'
     +'<label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:11px;color:var(--text2)">'
       +'<input type="checkbox" id="'+prefix+'-days-toggle" class="cb-circle" style="width:16px;height:16px" '
-      +'onchange="eid(\''+prefix+'-days-row\').style.display=this.checked?\'flex\':\'none\';updateDaysReadout(\''+prefix+'\')"> Specific days</label>'
+      +'onchange="eid(\''+prefix+'-days-row\').style.display=this.checked?\'flex\':\'none\';updateDaysReadout(\''+prefix+'\');iiOvrRender(\''+prefix+'\')"> Specific days</label>'
     +'<div id="'+prefix+'-days-row" style="display:none;gap:5px;flex-wrap:wrap;margin-top:6px">'
     +days.map(function(d,i){
       return '<label style="display:flex;align-items:center;gap:4px;font-size:11px;cursor:pointer;background:var(--bg5);border:1px solid var(--border2);border-radius:var(--r);padding:3px 7px">'
-        +'<input type="checkbox" id="'+prefix+'-day-'+i+'" checked onchange="updateDaysReadout(\''+prefix+'\')">'+d+'</label>';
+        +'<input type="checkbox" id="'+prefix+'-day-'+i+'" checked onchange="updateDaysReadout(\''+prefix+'\');iiOvrRender(\''+prefix+'\')">'+d+'</label>';
     }).join('')
     +'</div>'
     +'<span id="'+prefix+'-days-readout" style="display:none;font-size:10px;margin-top:4px"></span>'
+    // Per-date hours overrides (mainly public holidays). Rows are filled by
+    // iiOvrRender() from the service period; see getDateOverridesFor().
+    +'<div style="margin-top:6px">'
+      +'<div style="font-size:11px;color:var(--text2)">Date overrides</div>'
+      +'<div id="'+prefix+'-ovr"></div>'
+      +'<a href="#" style="font-size:11px;color:var(--blue)" onclick="iiOvrAddCustom(\''+prefix+'\');return false">+ Add date</a>'
+      +'<span id="'+prefix+'-ovr-readout" style="display:none;font-size:10px;margin-top:4px"></span>'
+    +'</div>'
     +'</div>';
+}
+
+// ── Per-date hours overrides for the hours-per-day fields ───────────────────
+// State per field prefix: hol = touched holiday rows {date: hrs string};
+// custom = manually added rows [{date, hrs}]. Holiday rows the user hasn't
+// edited are NOT overrides — they display the field's standard hours and
+// follow it. Reset whenever ndisInvApplyBudgetLineDefaults() rebuilds the
+// hours section, same lifetime as the "Specific days" selection.
+var _iiOvr = {};
+function _iiOvrState(prefix){
+  if(!_iiOvr[prefix]) _iiOvr[prefix] = { hol:{}, custom:[] };
+  return _iiOvr[prefix];
+}
+function _iiOvrPeriod(){
+  var s = (eid('ndis-inv-start')||{}).value, e = (eid('ndis-inv-end')||{}).value;
+  return (s && e && s<=e) ? {start:s, end:e} : null;
+}
+function _iiOvrLabel(ds){
+  var p = ds.split('-'), d = new Date(+p[0], +p[1]-1, +p[2]);
+  return ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][d.getDay()]+' '+p[2]+'/'+p[1];
+}
+function _iiOvrDow(ds){ var p = ds.split('-'); return new Date(+p[0], +p[1]-1, +p[2]).getDay(); }
+// Holiday dates in the period whose weekday the field's day filter allows —
+// a filtered-out holiday isn't billed at all, so it gets no row.
+function _iiOvrHolidayDates(prefix){
+  var per = _iiOvrPeriod(); if(!per) return [];
+  var restrict = getRestrictedDaysFor(prefix);
+  return Object.keys(VIC_HOLIDAYS).filter(function(ds){
+    return ds>=per.start && ds<=per.end && (!restrict || restrict.indexOf(_iiOvrDow(ds))!==-1);
+  }).sort();
+}
+
+function iiOvrRender(prefix){
+  var box = eid(prefix+'-ovr');
+  if(!box) return;
+  var st = _iiOvrState(prefix), per = _iiOvrPeriod();
+  var std = (eid(prefix)||{value:''}).value;
+  var rowCss = 'display:flex;align-items:center;gap:5px;flex-wrap:wrap;margin-top:4px;font-size:11px';
+  var inCss = 'width:60px;padding:2px 4px';
+  var xBtn = function(onclick, title){
+    return '<button type="button" class="btn-icon" title="'+title+'" style="font-size:11px;padding:0 4px" onclick="'+onclick+'">&#x2715;</button>';
+  };
+  var html = _iiOvrHolidayDates(prefix).map(function(ds){
+    var touched = Object.prototype.hasOwnProperty.call(st.hol, ds);
+    return '<div style="'+rowCss+'">'
+      +'<span style="flex:1;min-width:110px;color:'+(touched?'var(--gold)':'var(--text2)')+'">'+_iiOvrLabel(ds)+' - '+VIC_HOLIDAYS[ds]+'</span>'
+      +'<input type="number" step="0.5" min="0" style="'+inCss+'" value="'+(touched?st.hol[ds]:std)+'" data-touched="'+(touched?'1':'')+'" '
+        +'oninput="iiOvrSetHol(\''+prefix+'\',\''+ds+'\',this)">'
+      +(touched ? xBtn('iiOvrClearHol(\''+prefix+'\',\''+ds+'\')','Remove override (bill standard hours)') : '')
+      +'</div>';
+  }).join('');
+  html += st.custom.map(function(c, i){
+    var out = c.date && per && (c.date<per.start || c.date>per.end);
+    return '<div style="'+rowCss+'">'
+      +'<input type="date" style="flex:1;min-width:110px;padding:2px 4px" value="'+(c.date||'')+'"'
+        +(per?' min="'+per.start+'" max="'+per.end+'"':'')
+        +' onchange="iiOvrSetCustomDate(\''+prefix+'\','+i+',this)">'
+      +'<input type="number" step="0.5" min="0" style="'+inCss+'" value="'+(c.hrs==null?'':c.hrs)+'" '
+        +'oninput="iiOvrSetCustomHrs(\''+prefix+'\','+i+',this)">'
+      +xBtn('iiOvrRemoveCustom(\''+prefix+'\','+i+')','Remove this date')
+      +(out ? '<span style="width:100%;font-size:10px;color:var(--gold)">Outside the service period — not billed</span>' : '')
+      +'</div>';
+  }).join('');
+  box.innerHTML = html;
+  iiOvrReadout(prefix);
+}
+function iiOvrSetHol(prefix, ds, el){
+  _iiOvrState(prefix).hol[ds] = el.value;
+  el.dataset.touched = '1';
+  if(el.previousSibling) el.previousSibling.style.color = 'var(--gold)';
+  // Show the x without re-rendering (which would steal focus mid-typing).
+  if(!el.nextSibling) el.insertAdjacentHTML('afterend',
+    '<button type="button" class="btn-icon" title="Remove override (bill standard hours)" style="font-size:11px;padding:0 4px" onclick="iiOvrClearHol(\''+prefix+'\',\''+ds+'\')">&#x2715;</button>');
+  iiOvrReadout(prefix);
+}
+function iiOvrClearHol(prefix, ds){ delete _iiOvrState(prefix).hol[ds]; iiOvrRender(prefix); }
+function iiOvrAddCustom(prefix){
+  if(!_iiOvrPeriod()){ showToast('Set the service period first','err'); return; }
+  _iiOvrState(prefix).custom.push({date:'', hrs:(eid(prefix)||{value:''}).value});
+  iiOvrRender(prefix);
+}
+function iiOvrSetCustomDate(prefix, i, el){
+  var st = _iiOvrState(prefix), ds = el.value, per = _iiOvrPeriod();
+  if(ds && per && (ds<per.start || ds>per.end)){ showToast('Date must be inside the service period','err'); el.value = st.custom[i].date||''; return; }
+  var dup = ds && (_iiOvrHolidayDates(prefix).indexOf(ds)!==-1
+    || st.custom.some(function(c, j){ return j!==i && c.date===ds; }));
+  if(dup){ showToast(_iiOvrLabel(ds)+' already has a row','err'); el.value = st.custom[i].date||''; return; }
+  st.custom[i].date = ds;
+  iiOvrRender(prefix);
+}
+function iiOvrSetCustomHrs(prefix, i, el){ _iiOvrState(prefix).custom[i].hrs = el.value; iiOvrReadout(prefix); }
+function iiOvrRemoveCustom(prefix, i){ _iiOvrState(prefix).custom.splice(i,1); iiOvrRender(prefix); }
+
+// Returns null when the field has no override UI or no overrides (= every
+// day bills the standard hours, the pre-existing behaviour); otherwise
+// {'YYYY-MM-DD': hours}. Only edited holiday rows still shown (in period and
+// on an allowed weekday) and added dates inside the period count. A blank
+// input is no override; 0 means bill nothing that day. Because hidden
+// holiday rows are left out here, the builder can let every override date
+// bypass the weekday filter — which is what added dates need.
+function getDateOverridesFor(fieldPrefix){
+  if(!eid(fieldPrefix+'-ovr')) return null;
+  var st = _iiOvr[fieldPrefix]; if(!st) return null;
+  var per = _iiOvrPeriod(); if(!per) return null;
+  var out = {}, n = 0;
+  var put = function(ds, v){
+    var s = String(v==null?'':v).trim(); if(s==='') return;
+    var h = parseFloat(s); if(isNaN(h) || h<0) return;
+    out[ds] = h; n++;
+  };
+  _iiOvrHolidayDates(fieldPrefix).forEach(function(ds){
+    if(Object.prototype.hasOwnProperty.call(st.hol, ds)) put(ds, st.hol[ds]);
+  });
+  st.custom.forEach(function(c){ if(c.date && c.date>=per.start && c.date<=per.end) put(c.date, c.hrs); });
+  return n ? out : null;
+}
+
+function iiOvrReadout(prefix){
+  var el = eid(prefix+'-ovr-readout');
+  if(!el) return;
+  var o = getDateOverridesFor(prefix);
+  if(!o){ el.style.display='none'; el.textContent=''; return; }
+  el.style.display = 'block';
+  el.style.color = 'var(--text3)';
+  el.textContent = 'Overrides: ' + Object.keys(o).sort().map(function(ds){
+    return _iiOvrLabel(ds)+' = '+o[ds]+'h'+(o[ds]<=0?' (not billed)':'');
+  }).join(', ');
+}
+
+// Service period changed: rebuild every field's holiday rows. Touched values
+// live in _iiOvr keyed by date, so a date still in range keeps its value.
+function ndisInvPeriodChanged(){
+  ['ii-hrs','ii-hrs-0107','ii-hrs-0125'].forEach(iiOvrRender);
 }
 
 // Live plain-text readout of the ACTUAL stored day selection — what
@@ -7556,18 +7697,21 @@ function ndisInvApplyBudgetLineDefaults() {
       +'</div>';
   } else if(card==='core_combined') {
     sec = '<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">'
-      +'<div class="field"><label style="color:var(--blue)">Hours per day — 0107 Daily Life</label><input type="number" id="ii-hrs-0107" value="8" min="0" step="0.5">'+iiDaysSelectorHtml('ii-hrs-0107')+'</div>'
-      +'<div class="field"><label style="color:var(--purple)">Hours per day — 0125 Community</label><input type="number" id="ii-hrs-0125" value="0" min="0" step="0.5">'+iiDaysSelectorHtml('ii-hrs-0125')+'</div>'
+      +'<div class="field"><label style="color:var(--blue)">Hours per day — 0107 Daily Life</label><input type="number" id="ii-hrs-0107" value="8" min="0" step="0.5" oninput="iiOvrRender(\'ii-hrs-0107\')">'+iiDaysSelectorHtml('ii-hrs-0107')+'</div>'
+      +'<div class="field"><label style="color:var(--purple)">Hours per day — 0125 Community</label><input type="number" id="ii-hrs-0125" value="0" min="0" step="0.5" oninput="iiOvrRender(\'ii-hrs-0125\')">'+iiDaysSelectorHtml('ii-hrs-0125')+'</div>'
       +'</div>';
   } else if(card==='employment') {
     sec = '<div class="field"><label>Total hours (period)</label><input type="number" id="ii-hrs" value="0" min="0" step="0.5"></div>';
   } else {
-    sec = '<div class="field"><label>Hours per day</label><input type="number" id="ii-hrs" value="8" min="0" step="0.5">'+iiDaysSelectorHtml('ii-hrs')+'</div>';
+    sec = '<div class="field"><label>Hours per day</label><input type="number" id="ii-hrs" value="8" min="0" step="0.5" oninput="iiOvrRender(\'ii-hrs\')">'+iiDaysSelectorHtml('ii-hrs')+'</div>';
   }
   eid('ndis-inv-hrs-section').innerHTML = sec;
+  // Fresh hours section = fresh invoice context: drop any date overrides
+  // along with the day filters the rebuild just reset.
+  _iiOvr = {};
   // Sync each day-filter readout with the freshly injected (default) markup —
   // no-ops for prefixes the active card doesn't render.
-  ['ii-hrs','ii-hrs-0107','ii-hrs-0125'].forEach(updateDaysReadout);
+  ['ii-hrs','ii-hrs-0107','ii-hrs-0125'].forEach(function(p){ updateDaysReadout(p); iiOvrRender(p); });
   var rates = bl.rates||[];
   var rateLines = rates.filter(function(r){return r.day_type!=='travel_km';}).map(function(r){
     return (r.group&&BL_GROUP_LABELS[r.group]?BL_GROUP_LABELS[r.group]+' ':'')+r.day_type+' $'+Number(r.rate).toFixed(2)+'/hr';
@@ -7633,7 +7777,10 @@ function _buildInvLines(bl, periodStart, periodEnd, travelKm, travelMin, opts) {
       {group:'community',  prefix:'ii-hrs-0125', title:'Community Participation (0125)',    hrs:parseFloat((eid('ii-hrs-0125')||{value:'0'}).value)||0}
     ];
     ccGroups.forEach(function(g){
-      if(g.hrs<=0) return;
+      // Per-date hours overrides ({'YYYY-MM-DD': hrs}, or null). A group whose
+      // standard hours are 0 still bills its override dates.
+      var groupOvr = opts && opts.dateOverrides ? opts.dateOverrides[g.prefix] : null;
+      if(g.hrs<=0 && !groupOvr) return;
       // Each group filters its delivery days independently: 0107 can bill every
       // day while 0125 bills Mon/Wed/Fri only, in the same invoice. null =
       // every day (unchanged default). Travel walk below is unaffected.
@@ -7642,12 +7789,17 @@ function _buildInvLines(bl, periodStart, periodEnd, travelKm, travelMin, opts) {
       var curG=new Date(parseInt(ps[0]),parseInt(ps[1])-1,parseInt(ps[2]));
       while(curG<=end4){
         var dsG=fmtDate(curG); var dowG=curG.getDay(); var isHolG=!!VIC_HOLIDAYS[dsG];
-        if(groupRestrict && groupRestrict.indexOf(dowG)===-1){ curG.setDate(curG.getDate()+1); continue; }
+        // An override date bills even on a filtered-out weekday: the override
+        // list only carries holiday rows the filter allows, plus added dates.
+        var hasOvrG = !!groupOvr && groupOvr[dsG]!==undefined;
+        if(!hasOvrG && groupRestrict && groupRestrict.indexOf(dowG)===-1){ curG.setDate(curG.getDate()+1); continue; }
+        var hrsForDayG = hasOvrG ? groupOvr[dsG] : g.hrs;
+        if(hrsForDayG<=0){ curG.setDate(curG.getDate()+1); continue; }
         var dtG=isHolG?'public_holiday':dowG===6?'saturday':dowG===0?'sunday':'weekday';
         var riG=blRateG(bl,g.group,dtG)||blRateG(bl,g.group,'weekday');
         if(riG){
           var dateStrG=String(curG.getDate()).padStart(2,'0')+'/'+String(curG.getMonth()+1).padStart(2,'0')+'/'+curG.getFullYear();
-          gLines.push({ date:dateStrG, day:DNShort[dowG], desc:riG.desc+(isHolG?' ('+VIC_HOLIDAYS[dsG]+')':''), code:riG.code, qty:g.hrs, rate:riG.rate, amt:+(g.hrs*riG.rate).toFixed(2) });
+          gLines.push({ date:dateStrG, day:DNShort[dowG], desc:riG.desc+(isHolG?' ('+VIC_HOLIDAYS[dsG]+')':''), code:riG.code, qty:hrsForDayG, rate:riG.rate, amt:+(hrsForDayG*riG.rate).toFixed(2) });
         }
         curG.setDate(curG.getDate()+1);
       }
@@ -7712,14 +7864,19 @@ function _buildInvLines(bl, periodStart, periodEnd, travelKm, travelMin, opts) {
     // Applies to the active-support line only — travel below keeps its own
     // independent bl.travel.days check.
     var hrsRestrict = opts && opts.dayRestrictions ? opts.dayRestrictions['ii-hrs'] : null;
+    // Per-date hours overrides ({'YYYY-MM-DD': hrs}, or null) — same rules
+    // as the core_combined groups above.
+    var hrsOvr = opts && opts.dateOverrides ? opts.dateOverrides['ii-hrs'] : null;
     var cur6=new Date(parseInt(ps[0]),parseInt(ps[1])-1,parseInt(ps[2]));
     while(cur6<=end4){
       var ds6=fmtDate(cur6); var dow6=cur6.getDay(); var isHol6=!!VIC_HOLIDAYS[ds6];
       var dt6=isHol6?'public_holiday':dow6===6?'saturday':dow6===0?'sunday':'weekday';
       var dateStr6=String(cur6.getDate()).padStart(2,'0')+'/'+String(cur6.getMonth()+1).padStart(2,'0')+'/'+cur6.getFullYear();
-      if(hrsPerDay>0 && (!hrsRestrict || hrsRestrict.indexOf(dow6)!==-1)){
+      var hasOvr6 = !!hrsOvr && hrsOvr[ds6]!==undefined;
+      var hrsForDay6 = hasOvr6 ? hrsOvr[ds6] : hrsPerDay;
+      if(hrsForDay6>0 && (hasOvr6 || !hrsRestrict || hrsRestrict.indexOf(dow6)!==-1)){
         var ri6=blRate(bl,dt6)||blRate(bl,'weekday');
-        if(ri6) lines.push({ date:dateStr6, day:DNShort[dow6], desc:ri6.desc+(isHol6?' ('+VIC_HOLIDAYS[ds6]+')':''), code:ri6.code, qty:hrsPerDay, rate:ri6.rate, amt:+(hrsPerDay*ri6.rate).toFixed(2) });
+        if(ri6) lines.push({ date:dateStr6, day:DNShort[dow6], desc:ri6.desc+(isHol6?' ('+VIC_HOLIDAYS[ds6]+')':''), code:ri6.code, qty:hrsForDay6, rate:ri6.rate, amt:+(hrsForDay6*ri6.rate).toFixed(2) });
       }
       if(travelDays.indexOf(dow6)!==-1){
         if(travelMin>0){
@@ -7798,6 +7955,10 @@ function genNDISInvoice() {
     'ii-hrs':      getRestrictedDaysFor('ii-hrs'),
     'ii-hrs-0107': getRestrictedDaysFor('ii-hrs-0107'),
     'ii-hrs-0125': getRestrictedDaysFor('ii-hrs-0125')
+  }, dateOverrides: {
+    'ii-hrs':      getDateOverridesFor('ii-hrs'),
+    'ii-hrs-0107': getDateOverridesFor('ii-hrs-0107'),
+    'ii-hrs-0125': getDateOverridesFor('ii-hrs-0125')
   }};
   if(slOpts2) invOpts2.sleepovers = slOpts2;
   var lines = _buildInvLines(bl, periodStart, periodEnd, travelKm, travelMin, invOpts2);
@@ -7933,6 +8094,10 @@ function genMyPlaceCSV() {
     'ii-hrs':      getRestrictedDaysFor('ii-hrs'),
     'ii-hrs-0107': getRestrictedDaysFor('ii-hrs-0107'),
     'ii-hrs-0125': getRestrictedDaysFor('ii-hrs-0125')
+  }, dateOverrides: {
+    'ii-hrs':      getDateOverridesFor('ii-hrs'),
+    'ii-hrs-0107': getDateOverridesFor('ii-hrs-0107'),
+    'ii-hrs-0125': getDateOverridesFor('ii-hrs-0125')
   }};
   if(slOptsC) invOptsC.sleepovers = slOptsC;
   var lines = _buildInvLines(bl, periodStart, periodEnd, travelKm, travelMin, invOptsC);
